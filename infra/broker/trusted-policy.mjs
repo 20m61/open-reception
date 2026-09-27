@@ -171,26 +171,55 @@ function iamGlobMatches(pattern, value) {
   return re.test(value);
 }
 
-/** Could this action pattern include any DynamoDB action? (`*`, `dynamo*`, `dynamodb:*`, `*:*` ...) */
+/**
+ * Could this action pattern include any DynamoDB action? The service part (before the first `:`,
+ * or the whole pattern) is glob-matched against `dynamodb`, so `*`, `*:UpdateItem`, `dynamo*`,
+ * `dynamod?:PutItem` and `dynamodb:*` all count. A non-string action is opaque and counts too.
+ */
 function actionMayIncludeDynamo(action) {
-  const a = String(action).toLowerCase();
-  return iamGlobMatches(a, 'dynamodb:putitem') || a.startsWith('dynamodb:');
+  if (typeof action !== 'string') return true;
+  const a = action.toLowerCase();
+  const service = a.includes(':') ? a.slice(0, a.indexOf(':')) : a;
+  return iamGlobMatches(service, 'dynamodb');
 }
 
 /**
- * A resource reference whose target is fully determined by THIS template: `GetAtt X.Arn|StreamArn`
- * or `Ref X` of a resource declared here, or `Fn::Join('', [that, '/literal-suffix'])` (CDK's
- * index / stream grants). Anything else (parameters, mappings, imports, Sub, Select, dynamic
- * references ...) cannot be resolved by this policy and fails closed.
+ * Reference attributes whose value the SERVICE fixes (an ARN / name of a resource this template
+ * declares). Custom resources are excluded: their Ref / GetAtt values are whatever the provider
+ * Lambda returns, which candidate code can control.
+ */
+const SERVICE_FIXED_REFERENCES = Object.freeze({
+  'AWS::DynamoDB::Table': ['Ref', 'Arn', 'StreamArn'],
+  'AWS::S3::Bucket': ['Arn'],
+  'AWS::Lambda::Function': ['Arn'],
+  'AWS::Logs::LogGroup': ['Arn'],
+  'AWS::IAM::Role': ['Arn'],
+  'AWS::SNS::Topic': ['Ref'],
+  'AWS::SQS::Queue': ['Arn'],
+  'AWS::Cognito::UserPool': ['Arn'],
+});
+
+const serviceFixed = (templateResources, logicalId, attribute) => {
+  const target = typeof logicalId === 'string' && Object.hasOwn(templateResources, logicalId) ? templateResources[logicalId] : null;
+  const allowed = isRecord(target) && typeof target.Type === 'string' ? SERVICE_FIXED_REFERENCES[target.Type] : undefined;
+  return Array.isArray(allowed) && allowed.includes(attribute);
+};
+
+/**
+ * A resource reference whose target is fully determined by THIS template and the service:
+ * `GetAtt X.<attr>` / `Ref X` of a declared resource of a reviewed type (see
+ * SERVICE_FIXED_REFERENCES), or `Fn::Join('', [that, '/literal-suffix'])` (CDK's index / stream
+ * grants). Anything else (parameters, mappings, imports, Sub, Select, dynamic references,
+ * custom resources ...) cannot be resolved by this policy and fails closed.
  */
 function isLocalResourceRef(value, templateResources) {
   if (!isRecord(value)) return false;
   const keys = Object.keys(value);
   if (keys.length !== 1) return false;
-  if (keys[0] === 'Ref') return typeof value.Ref === 'string' && Object.hasOwn(templateResources, value.Ref);
+  if (keys[0] === 'Ref') return serviceFixed(templateResources, value.Ref, 'Ref');
   if (keys[0] === 'Fn::GetAtt') {
     const g = value['Fn::GetAtt'];
-    return Array.isArray(g) && g.length === 2 && typeof g[0] === 'string' && Object.hasOwn(templateResources, g[0]) && (g[1] === 'Arn' || g[1] === 'StreamArn');
+    return Array.isArray(g) && g.length === 2 && serviceFixed(templateResources, g[0], g[1]);
   }
   if (keys[0] === 'Fn::Join') {
     const j = value['Fn::Join'];
@@ -242,6 +271,13 @@ function resolveManagedPolicyArn(value) {
   return null;
 }
 
+/** A statement this policy cannot evaluate: not a plain record, intrinsic keys, or a non-literal Effect. */
+function isOpaqueStatement(statement) {
+  if (!isRecord(statement)) return true;
+  if (Object.keys(statement).some((k) => k.startsWith('Fn::'))) return true;
+  return statement.Effect !== 'Allow' && statement.Effect !== 'Deny';
+}
+
 function boundaryLooksCorrect(value) {
   return JSON.stringify(value).includes('OpenReceptionClaudeBoundary');
 }
@@ -253,7 +289,11 @@ function policyDocumentViolations(stackName, logicalId, document, templateResour
     return out;
   }
   for (const statement of document.Statement) {
-    if (!isRecord(statement) || statement.Effect !== 'Allow') continue;
+    if (isOpaqueStatement(statement)) {
+      out.push(violation('IAM_POLICY_OPAQUE', stackName, logicalId, 'statement is not a plain object with a literal Effect (e.g. Fn::If)'));
+      continue;
+    }
+    if (statement.Effect !== 'Allow') continue;
     const actions = asArray(statement.Action).filter((x) => typeof x === 'string').map((x) => x.toLowerCase());
     const resources = asArray(statement.Resource);
     if (actions.includes('*') || actions.includes('iam:*') || actions.includes('sts:*') || actions.includes('kms:*')) {
@@ -328,7 +368,11 @@ function evaluateResource(stackName, logicalId, resource, templateResources = {}
         continue;
       }
       for (const statement of statements) {
-        if (!isRecord(statement) || statement.Effect !== 'Allow') continue;
+        if (isOpaqueStatement(statement)) {
+          out.push(violation('IAM_POLICY_OPAQUE', stackName, logicalId, 'inline statement is not a plain object with a literal Effect (e.g. Fn::If)'));
+          continue;
+        }
+        if (statement.Effect !== 'Allow') continue;
         if (statement.NotResource !== undefined) {
           out.push(violation('IAM_NOT_RESOURCE', stackName, logicalId, 'inline Allow with NotResource'));
         }

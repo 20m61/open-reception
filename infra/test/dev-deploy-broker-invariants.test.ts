@@ -551,7 +551,8 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
       const re = new RegExp(param!.AllowedPattern!);
       for (const ok of [
         'arn:aws:iam::822063948773:role/cdk-hnb659fds-cfn-exec-role-822063948773-ap-northeast-1',
-        'arn:aws:iam::822063948773:role/OpenReceptionLedgerOverrideIssuer',
+        'arn:aws:iam::822063948773:role/LedgerOverrideIssuer',
+        'arn:aws:iam::822063948773:role/humans/LedgerOverrideIssuer',
       ]) {
         expect(re.test(ok), ok).toBe(true);
       }
@@ -561,6 +562,11 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
         'arn:aws:iam::822063948773:role/OpenReceptionClaudeEntry',
         'arn:aws:iam::822063948773:role/OpenReceptionTrustedDevDeployBrokerRole',
         'arn:aws:iam::822063948773:role/OpenReceptionDevDeployValidationRole',
+        'arn:aws:iam::822063948773:role/OpenReception-Web-dev-ServerFnServiceRole282D3E61-ABC',
+        'arn:aws:iam::822063948773:role/some/path/OpenReceptionClaudeDeploy-dev',
+        'arn:aws:iam::822063948773:role/nodi-worker',
+        'arn:aws:iam::822063948773:role/salon-loop-fn',
+        'arn:aws:iam::822063948773:role/KiaffRuntime',
         'arn:aws:iam::822063948773:user/CDK',
         'arn:aws:iam::822063948773:role/x y',
       ]) {

@@ -34,13 +34,15 @@ export const SPARSE_LEDGER_PROJECT_KEY = 'PROJECT#open-reception';
  * cannot forge an override or reset a counter even though it lives in the same account.
  */
 /**
- * Pattern for the two human role ARN parameters. The negative lookahead refuses the roles that
- * must never hold ledger authority: Claude's deploy chain / CDK bootstrap roles
- * (`cdk-orcloud01-*`, `OpenReceptionClaude*`) and this stack's own broker / validation roles.
+ * Pattern for the two human role ARN parameters. The negative lookahead (on the role name, after
+ * any path) refuses roles that must never hold ledger authority: Claude's deploy chain / CDK
+ * bootstrap roles (`cdk-orcloud01-*`), every `OpenReception*` role (Claude's entry / deploy
+ * roles, this stack's broker / validation roles, and candidate workload roles such as
+ * `OpenReception-Web-dev-*`), and other projects' workload prefixes in the same account.
  * CloudFormation AllowedPattern is a Java regex, which supports lookahead.
  */
 export const HUMAN_ROLE_ARN_PATTERN =
-  '^arn:aws[^:]*:iam::[0-9]{12}:role/(?!cdk-orcloud01-|OpenReceptionClaude|OpenReceptionDevDeploy|OpenReceptionTrustedDevDeploy)[A-Za-z0-9+=,.@_/-]+$';
+  '^arn:aws[^:]*:iam::[0-9]{12}:role/(?:[A-Za-z0-9+=,.@_-]+/)*(?!cdk-orcloud01-|OpenReception|nodi-|salon-loop-|Kiaff)[A-Za-z0-9+=,.@_-]+$';
 
 export const SPARSE_LEDGER_PROTECTED_WRITES = [
   'dynamodb:PutItem',

@@ -198,7 +198,11 @@ describe.skipIf(!ENABLED)('sparse deploy ledger × real DynamoDB engine (emulato
       allowed.push(...results.filter((r) => r.result === 'allowed'));
       for (const r of results) {
         if (r.result === 'denied') {
-          expect(['SPARSE_LEDGER_CONFLICT', 'SPARSE_DAILY_ATTEMPT_CEILING']).toContain(r.rule);
+          // SPARSE_LEDGER_CORRUPT / UNAVAILABLE are also correct (fail-closed) answers here: moto
+          // does not isolate TransactGetItems from concurrent TransactWriteItems, so a racer can
+          // read a torn snapshot. Real DynamoDB serializes them (a conflicting read is cancelled,
+          // which surfaces as UNAVAILABLE). The safety property below is what this test pins.
+          expect(['SPARSE_LEDGER_CONFLICT', 'SPARSE_DAILY_ATTEMPT_CEILING', 'SPARSE_LEDGER_CORRUPT', 'SPARSE_LEDGER_UNAVAILABLE']).toContain(r.rule);
         }
       }
     }

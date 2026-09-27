@@ -245,12 +245,56 @@ describe('trusted dev-deploy cloud assembly policy (#1146)', () => {
     expect(rules(assembly)).not.toContain('IAM_REACHES_SPARSE_LEDGER');
   });
 
+  it('does not accept Ref / GetAtt of a custom resource (its value is whatever the provider returns)', () => {
+    for (const resource of [
+      { 'Fn::GetAtt': ['XCr', 'Arn'] },
+      { Ref: 'XCr' },
+      { 'Fn::Join': ['', [{ 'Fn::GetAtt': ['XCr', 'Arn'] }, '/*']] },
+    ]) {
+      const assembly = makeAssembly({
+        'OpenReception-Web-dev': {
+          XCr: { Type: 'Custom::S3AutoDeleteObjects', Properties: { ServiceToken: 'x' } },
+          RuntimePolicy: {
+            Type: 'AWS::IAM::Policy',
+            Properties: { PolicyDocument: { Statement: [{ Effect: 'Allow', Action: 'dynamodb:*', Resource: [resource] }] } },
+          },
+        },
+      });
+      expect(rules(assembly), JSON.stringify(resource)).toContain('IAM_REACHES_SPARSE_LEDGER');
+    }
+  });
+
+  it.each([
+    ['Fn::If statement', { 'Fn::If': ['Always', { Effect: 'Allow', Action: 'dynamodb:*', Resource: '*' }, { Ref: 'AWS::NoValue' }] }],
+    ['Fn::If effect', { Effect: { 'Fn::If': ['C', 'Allow', 'Deny'] }, Action: 'dynamodb:*', Resource: '*' }],
+    ['missing effect', { Action: 'dynamodb:*', Resource: '*' }],
+  ])('rejects an opaque statement (%s) in standalone and inline policies', (_label, statement) => {
+    const standalone = makeAssembly({
+      'OpenReception-Web-dev': {
+        RuntimePolicy: { Type: 'AWS::IAM::Policy', Properties: { PolicyDocument: { Statement: [statement] } } },
+      },
+    });
+    expect(rules(standalone)).toContain('IAM_POLICY_OPAQUE');
+    const inline = makeAssembly({
+      'OpenReception-Web-dev': {
+        RuntimeRole: {
+          Type: 'AWS::IAM::Role',
+          Properties: { PermissionsBoundary: 'OpenReceptionClaudeBoundary', Policies: [{ PolicyDocument: { Statement: [statement] } }] },
+        },
+      },
+    });
+    expect(rules(inline)).toContain('IAM_POLICY_OPAQUE');
+  });
+
   it.each([
     ['NotAction', { NotAction: 's3:*' }],
     ['action wildcard', { Action: '*' }],
     ['service wildcard', { Action: 'dynamo*' }],
     ['any service', { Action: '*:*' }],
     ['a read action', { Action: 'dynamodb:GetItem' }],
+    ['wildcard service with a DynamoDB verb', { Action: ['*:UpdateItem', '*:DeleteItem'] }],
+    ['single-char service wildcard', { Action: 'dynamod?:PutItem' }],
+    ['non-string action', { Action: [{ Ref: 'A' }] }],
   ])('treats %s as DynamoDB-capable', (_label, action) => {
     const assembly = makeAssembly({
       'OpenReception-Web-dev': {
