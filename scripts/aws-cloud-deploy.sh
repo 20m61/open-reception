@@ -92,7 +92,7 @@ fi
 # 🔴 **廃止した生 origin-verify secret が残っていれば、どのサブコマンドでも止める（#1148）。**
 # diff / deploy だけで見ると、verify や smoke しか走らせないセッションでは、環境ダイアログに
 # 残った secret が黙って渡り続ける。AWS に触れる前に、変数名だけを示して止める。
-if ! npx tsx "${ROOT}/scripts/aws-deploy-context.ts" --retired-only; then
+if ! npx --no-install tsx "${ROOT}/scripts/aws-deploy-context.ts" --retired-only; then
   exit 2
 fi
 

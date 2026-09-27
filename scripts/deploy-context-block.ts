@@ -52,11 +52,15 @@ const fromFile = readContextFile(path);
 const merged: Record<string, string | undefined> = { ...fromFile, ...process.env };
 
 // 廃止変数は --no-context で回避させない（ファイルに残った生 secret を消させる）ため、別の終了コード。
+// 位置引数 `retired-only` はこの検査だけを行う（`aws-issue-credentials.sh` が --no-context でも必ず呼ぶ）。
 const retired = findRetiredDeployContextVars(merged);
 if (retired.length > 0) {
   process.stderr.write(`${retiredDeployContextMessage(retired)}\n\n`);
   process.stderr.write(`環境変数と、次のファイルの両方から削除してください: ${path}\n`);
   process.exit(3);
+}
+if (process.argv.slice(2).includes('retired-only')) {
+  process.exit(0);
 }
 
 const result = resolveDeployContextEnvBlock(merged);

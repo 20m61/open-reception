@@ -79,6 +79,13 @@ fi
 #
 # 値は stdout 経由でのみ受け取る（argv に載せない＝ `ps` に秘密が出ない）。
 # 失敗時の stderr はそのまま通す ―― 純関数側が「変数名だけで値を出さない」診断を作る。
+# 🔴 廃止した生 origin-verify secret（#1148）は --no-context でも検査する。
+# 環境変数にも context ファイルにも残さない（残っていれば窓を開けない）。
+if ! npx --no-install tsx "${ROOT}/scripts/deploy-context-block.ts" retired-only; then
+  echo "廃止された変数が残っているため、窓を開けずに終了します（削除してから再実行してください）" >&2
+  exit 2
+fi
+
 CONTEXT_BLOCK=""
 if [ "${WITH_CONTEXT}" = true ]; then
   CONTEXT_STATUS=0

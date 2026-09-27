@@ -104,15 +104,19 @@ describe('廃止した生 origin secret は全サブコマンドの先頭で止�
     expect(`${stdout}${stderr}`).not.toContain(RAW);
   });
 
-  it('検査はサブコマンドの分岐（verify を含む）より前に置かれている', () => {
-    const src = readFileSync(WRAPPER, 'utf8');
-    const check = src.indexOf('scripts/aws-deploy-context.ts" --retired-only');
+  it('検査はサブコマンドの分岐（verify を含む）より前に、無条件で置かれている', () => {
+    // コメントを除いた本文で見る（コメントに同じ綴りがあっても一致させない）。
+    const src = stripBashComments(readFileSync(WRAPPER, 'utf8'));
+    // 🔴 行頭・無条件の形だけを許す。`[ "${SUB}" != verify ] && ...` のような
+    // サブコマンドごとの除外は、この形に一致しないので落ちる。
+    const unconditional =
+      /^if ! npx --no-install tsx "\$\{ROOT\}\/scripts\/aws-deploy-context\.ts" --retired-only; then\n\s+exit 2\nfi$/m;
+    const match = unconditional.exec(src);
+    expect(match).not.toBeNull();
+    expect(src.match(/--retired-only/g)).toHaveLength(1);
     const dispatch = src.indexOf('case "${SUB}" in\n  preflight)');
-    expect(check).toBeGreaterThan(0);
     expect(dispatch).toBeGreaterThan(0);
-    expect(check).toBeLessThan(dispatch);
-    // 失敗時は止まる（`if ! ...; then exit`）。
-    expect(src.slice(check, check + 120)).toMatch(/--retired-only; then\n\s+exit 2/);
+    expect(match!.index).toBeLessThan(dispatch);
   });
 
   it('空文字でも止める（存在そのものが問題）', () => {

@@ -7,6 +7,9 @@
  * 成功時: `-c` と `key=value` を **1 行に 1 つ**印字する（値に空白が入っても壊れないよう、
  * シェル側は `while IFS= read -r` で配列へ積む）。
  * 失敗時: 診断を stderr に出して**非ゼロで終わる**。呼び出し側はそこで止まる。
+ *
+ * `--retired-only`: 廃止変数（#1148）だけを見る。問題なければ**何も印字せず 0**、
+ * 残っていれば変数名だけの診断を stderr に出して 1。
  */
 import { resolveCustomDomainContext } from '../src/domain/governance/custom-domain-context';
 import {

@@ -152,7 +152,7 @@ export const MANUAL_ONLY_ALLOWLIST: Readonly<Record<string, string>> = {
   'aws-command-preflight.ts':
     'deploy wrapper が AWS を呼ぶ前に依存コマンドの有無を確かめる CLI。デプロイ時にしか走らない。',
   'aws-deploy-context.ts':
-    'デプロイに必須の CDK context を解決する CLI。`diff` / `deploy` の実行時にしか意味が無い。',
+    'デプロイに必須の CDK context を解決する CLI。`diff` / `deploy` の実行時にしか意味が無い（`--retired-only` は deploy wrapper の全サブコマンドの先頭で廃止変数だけを見る。#1148）。',
   'aws-stack-selection.ts':
     '`--only` を解決してデプロイ対象を決める CLI。`diff` / `deploy` の実行時にしか意味が無い。',
 };

@@ -247,6 +247,18 @@ describe('デプロイ context もクリップボードへ載せる (#989)', () 
     expect(stderr).not.toContain(raw);
   });
 
+  it('🔴 --no-context でも廃止変数は検査する (#1148)', () => {
+    const raw = 'raw-origin-verify-value-no-context';
+    const { status, stderr } = run(['--hours', '1', '--no-context'], {
+      ...NO_CONTEXT_FILE,
+      OR_ORIGIN_VERIFY_SECRET: raw,
+    });
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('OR_ORIGIN_VERIFY_SECRET');
+    expect(stderr).not.toContain('VITEST');
+    expect(stderr).not.toContain(raw);
+  });
+
   it('--no-context なら 3 変数が無くても context では止まらない', () => {
     const { status, stderr } = run(['--hours', '1', '--no-context'], NO_CONTEXT_FILE);
     expect(status).not.toBe(0);
