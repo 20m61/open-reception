@@ -28,7 +28,7 @@ flowchart TD
   subgraph TRUSTED_BROKER[Trusted broker boundary]
     K --> L[Trusted Broker CodeBuild]
     L --> M[Stack-owned inline broker buildspec]
-    U[Content-addressed trusted policy S3 asset] --> M
+    U[Content-addressed trusted policy S3 asset, sha256-pinned] --> M
     M --> P[Independent static policy over cloud assembly]
     P --> N{Mutation armed?}
     N -- No --> O[DENY: BROKER_NOT_ARMED]
@@ -114,7 +114,7 @@ Candidate code is allowed to execute only in **Validation CodeBuild**. That role
 
 The GitHub App connection terminates in **CodePipeline Source**, so package lifecycle scripts or tests cannot request the GitHub connection token.
 
-The **Trusted Broker CodeBuild** consumes the validation artifact as **untrusted input**. Its buildspec is embedded into the broker stack with CDK. The trusted cloud-assembly policy is a content-addressed S3 asset published when the human-managed broker stack is deployed, and only the broker role receives read access to that object.
+The **Trusted Broker CodeBuild** consumes the validation artifact as **untrusted input**. Its buildspec is embedded into the broker stack with CDK. The trusted cloud-assembly policy is an S3 asset published when the human-managed broker stack is deployed. It lives in the **shared CDK bootstrap asset bucket** (`cdk-*-assets-<account>-<region>`), so the broker role is *not* the only principal that can read it, and any principal with write access to that bucket (e.g. CDK file-publishing roles, other stacks' deploy pipelines) could replace the object. Bucket access is therefore not the control. The control is a **content hash pin**: at synth the stack computes the SHA-256 of `infra/broker/trusted-policy.mjs` and injects it as `OR_TRUSTED_POLICY_SHA256`; the broker recomputes the SHA-256 of the downloaded file and fails closed (non-zero exit, no result file) on a missing/malformed pin or any mismatch **before** executing it. (The CDK asset fingerprint used in the object key is not a content hash of the file and is not used as the pin.)
 
 A candidate commit can edit the TypeScript/policy source that proposes a future broker configuration, but that edit does not change the already-deployed broker. Updating the broker stack is bootstrap/human work. The broker never executes repository scripts with its privileged identity.
 
@@ -160,9 +160,10 @@ The pipeline still ends at `BROKER_NOT_ARMED`. The Trusted Broker role has no `s
 The unarmed broker writes `broker-result.json` (and prints it) with:
 `result` (`denied`), `source_revision` (trusted CodePipeline `CommitId`, full 40-hex), `attempt_id`
 (`CODEBUILD_BUILD_ID`, unique per attempt), `decided_at` (broker clock, RFC3339), `policy_version`
-(`trusted-policy@<POLICY_VERSION>+sha256:<policy asset hash>`), `stage`, `rule` (`BROKER_NOT_ARMED`),
+(`trusted-policy@<POLICY_VERSION>+sha256:<SHA-256 of the policy file content, verified before execution>`), `stage`, `rule` (`BROKER_NOT_ARMED`),
 `resource`, `reason`, `retryable` (`false`), `evidence_ref`. A missing trusted revision, attempt id,
-policy asset hash, or a non-`allowed` policy result writes no result and fails the build.
+policy SHA-256 pin, a policy file whose SHA-256 differs from the pin, or a non-`allowed` policy
+result writes no result and fails the build.
 Delivering this result to GitHub is not implemented yet.
 
 ### Known residual risk (must be closed before arming)
@@ -175,6 +176,29 @@ delete any object in the pipeline artifact bucket, so candidate code of one exec
 overwrite another execution's artifacts. While unarmed this cannot mutate AWS; before arming, the
 content that is deployed must be bound to the promoted revision independently of candidate-written
 files (e.g. broker-side verification or a narrower artifact write scope).
+
+### Phase 2 pre-arming blockers (recorded from adversarial review, not fixed in Phase 1)
+
+These do not affect the unarmed Phase 1 (no mutation path exists), but each must be closed and
+tested before the broker may assume any deploy role:
+
+1. **Trusted policy approves dangerous assemblies.** The static policy currently lets through:
+   cross-account / admin trust in role trust policies; a permissions boundary matched by substring
+   instead of exact ARN; `NotAction` statements; `iam:PassRole` / `sts:AssumeRole` /
+   `cloudformation:*` on `*`; a top-level template `Transform` (macros expand after review);
+   deploy/lookup role ARNs in the manifest that point at a foreign account; nested cloud assemblies.
+2. **Artifact bucket write/delete by the Validation role.** The CDK default grant lets candidate
+   code of one execution overwrite or delete another execution's artifacts (cross-execution
+   substitution). Needs per-execution write scope or broker-side content binding.
+3. **No deploy-account pinning.** The target account is the stack's own `AWS::AccountId`; there is
+   no independent, human-reviewed pin of the one dev account the broker may deploy to.
+4. **Stale retry reuses an old CommitId.** Retrying an old failed `BrokerBoundary` stage re-runs
+   with that execution's original CommitId and artifacts, which may be long superseded; arming
+   needs freshness (e.g. `dev-deploy` pointer / ledger check) before mutation.
+5. **Artifact bucket has no lifecycle rule.** Candidate artifacts accumulate indefinitely (cost and
+   stale-artifact reuse surface).
+6. **Fixed physical names + `RETAIN`.** Fixed role/project/log-group names with retained log
+   groups cause name conflicts when the stack is deleted and recreated.
 
 ## Before mutation can be armed
 
