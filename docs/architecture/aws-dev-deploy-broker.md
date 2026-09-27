@@ -256,6 +256,8 @@ Who can write the ledger. The ledger lives in the same account as the dev worklo
 
 The broker role itself gets only `dynamodb:GetItem` / `PutItem` / `UpdateItem` on the table, for the `PROJECT#open-reception` partition (`dynamodb:LeadingKeys`); no Delete, Scan, Query or table management. The Validation role and every other role in the stack have no statement on it.
 
+Owner steps for the issuer role, the policy versions, the stack deploy, genesis and overrides: [`docs/runbook-sparse-ledger-activation.md`](../runbook-sparse-ledger-activation.md).
+
 Not done yet (arming work, Human Gate):
 
 - Wiring. The broker buildspec does not call the ledger. When wired, the module must be delivered like the trusted policy (stack-published asset, content SHA-256 verified before execution), never from the candidate artifact. `reserveAttempt` must run strictly **after** every other deny-capable gate (static policy, live ChangeSet evaluation) and immediately before mutation, because a reserved attempt has consumed budget and its only outcomes are succeeded / failed.

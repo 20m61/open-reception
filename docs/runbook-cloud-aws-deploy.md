@@ -1456,6 +1456,9 @@ CloudFormation が dynamic reference を解決できず stack 操作が失敗す
 3. deploy では Lambda の env と CloudFront のヘッダが同時に新しい値へ変わる。
    CloudFront への反映の間、**一時的に 403** が出うる。利用の少ない時間に行う。
 
+コマンド単位の手順（値を画面・argv・ファイルに残さない生成、成功の確認、rollback）は
+[`runbook-origin-verify-secret-migration.md`](./runbook-origin-verify-secret-migration.md)。
+
 ### 🔴 `OR_APP_SECRETS_NAME` は「非秘密だから」落ちやすい（2026-09-06）
 
 2026-09-06 の 3 回目のデプロイでは、当時の必須 context のうち
