@@ -185,8 +185,14 @@ tested before the broker may assume any deploy role:
 1. **Trusted policy approves dangerous assemblies.** The static policy currently lets through:
    cross-account / admin trust in role trust policies; a permissions boundary matched by substring
    instead of exact ARN; `NotAction` statements; `iam:PassRole` / `sts:AssumeRole` /
-   `cloudformation:*` on `*`; a top-level template `Transform` (macros expand after review);
-   deploy/lookup role ARNs in the manifest that point at a foreign account; nested cloud assemblies.
+   `cloudformation:*` on wildcard-pattern resources such as `arn:aws:iam::*:role/*` (a bare
+   `Resource: "*"` is flagged; the pattern form is not); a top-level template `Transform` (macros
+   expand after review); deploy/lookup role ARNs in the manifest that point at a foreign account;
+   nested cloud assemblies. It also never inspects a role's inline `Policies` or
+   `ManagedPolicyArns`; exempts carve-out roles by logical ID alone (a candidate can reuse the
+   id); accepts a Lambda `Role` given as a literal existing-role ARN; accepts `Custom::*` resources
+   with an arbitrary `ServiceToken`; and does not check a `BucketPolicy` with `Principal: "*"` or a
+   `Lambda::Permission` granted to a foreign account.
 2. **Artifact bucket write/delete by the Validation role.** The CDK default grant lets candidate
    code of one execution overwrite or delete another execution's artifacts (cross-execution
    substitution). Needs per-execution write scope or broker-side content binding.
@@ -207,7 +213,7 @@ Required prerequisites:
 1. #1149 merged/tested: origin-verify uses only the existing Secrets Manager-name/dynamic-reference path; no raw secret reaches Validation.
 2. #1151 merged/tested: dev Server/Image Lambda concurrency is physically bounded at 5/2.
 3. Trusted static policy tested against a real current cloud assembly; do **not** widen the allowlist merely to turn it green.
-4. Sparse deploy ledger implemented (target 1 success/day, soft ceiling 2, third requires human override bound to the candidate revision).
+4. Sparse deploy ledger implemented per Foundation safe-dev-deploy S6/S6b and the owner decision on #1153: record every attempt that reaches the mutation boundary and its outcome, count **attempts** against the daily limit (target 1, soft ceiling 2) over one declared IANA timezone (Asia/Tokyo), deny when the ledger is missing or unreadable (S6a), and allow a further attempt only through an S5a override bound to one revision **and one rule**, single-use, expiring and audited.
 5. Live CloudFormation ChangeSet evaluation remains in front of execution, preserving ADR 0009 removal/replacement/unknown-action defenses.
 6. Only then may the Trusted Broker be allowed to assume the existing ADR 0009 entry-role chain, through a separately reviewed human/bootstrap change.
 
@@ -215,4 +221,4 @@ Required prerequisites:
 
 The pipeline uses CodePipeline V1 and two `BUILD_GENERAL1_SMALL` CodeBuild projects, both with concurrency 1. The `dev-deploy` branch is a **promotion branch**, not a normal development branch. Normal pushes do not update it, so they do not start this pipeline.
 
-The portfolio target remains one successful real-AWS dev deploy per project per local day, soft ceiling two. The third potential success requires a human override tied to that immutable source revision. The durable ledger is not implemented yet, so mutation remains unarmed.
+The portfolio target is one real-AWS dev deploy **attempt** per project per accounting day (Asia/Tokyo), soft ceiling two, counting every attempt that reaches the mutation boundary whether it succeeds or fails (Foundation S6/S6b; owner decision recorded on #1153). A third attempt requires an S5a override bound to that immutable source revision and to the daily-limit rule only. The durable ledger is not implemented yet, so mutation remains unarmed.
