@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
@@ -13,16 +15,38 @@ export const DEV_DEPLOY_PROMOTION_BRANCH = 'dev-deploy';
 const VALIDATION_PROJECT_NAME = 'OpenReceptionDevDeployValidation';
 const BROKER_PROJECT_NAME = 'OpenReceptionTrustedDevDeployBroker';
 
+/** Source of the trusted cloud-assembly policy that the broker stack publishes as an asset. */
+export const TRUSTED_POLICY_SOURCE_PATH = path.join(__dirname, '../../broker/trusted-policy.mjs');
+
+/** Broker-local download target of the trusted policy (outside the candidate artifact tree). */
+export const TRUSTED_POLICY_LOCAL_PATH = '/tmp/open-reception-trusted-policy.mjs';
+
 /**
- * Wrap a dependency-free JS snippet as a POSIX-shell-safe `node -e '<script>'` command.
- * Shell single quotes disable every expansion (`$`, backticks, `\`), so the snippet must not
- * contain a single quote itself; JS string literals inside use double quotes.
+ * SHA-256 of the trusted policy file content, computed at synth time.
+ *
+ * This is deliberately NOT the CDK asset fingerprint (`Asset.assetHash`), which is a CDK-internal
+ * staging hash and cannot be recomputed from the downloaded object. The broker verifies the
+ * downloaded bytes against this value before executing them.
  */
-export const nodeEval = (script: string): string => {
+export const trustedPolicySha256 = (file: string = TRUSTED_POLICY_SOURCE_PATH): string =>
+  createHash('sha256').update(readFileSync(file)).digest('hex');
+
+/**
+ * Wrap a dependency-free JS snippet as a POSIX-shell-safe `node -e '<script>' [args...]` command.
+ * Shell single quotes disable every expansion (`$`, backticks, `\`), so the snippet must not
+ * contain a single quote itself; JS string literals inside use double quotes. Positional args
+ * (read via `process.argv[1..]`) are restricted to plain absolute/relative path characters.
+ */
+export const nodeEval = (script: string, ...args: string[]): string => {
   if (script.includes("'")) {
     throw new Error('inline broker script must not contain a single quote');
   }
-  return `node -e '${script}'`;
+  for (const arg of args) {
+    if (!/^[A-Za-z0-9_./-]+$/.test(arg)) {
+      throw new Error(`inline broker script argument must be a plain path: ${arg}`);
+    }
+  }
+  return [`node -e '${script}'`, ...args].join(' ');
 };
 
 /** Validation: record the trusted CodePipeline CommitId (never candidate metadata). */
@@ -53,13 +77,33 @@ export const BROKER_REVISION_CHECK_SCRIPT = [
 ].join(' ');
 
 /**
+ * Broker: verify the downloaded trusted policy before executing it.
+ *
+ * The object lives in the shared CDK bootstrap asset bucket, so read access is not exclusive to
+ * the broker role and any principal with write access to that bucket could replace it. The
+ * content SHA-256 pinned at synth (`OR_TRUSTED_POLICY_SHA256`) is the control: a missing or
+ * malformed pin, a missing file, or any byte difference fails closed before `node` runs it.
+ * The file path is `process.argv[1]`.
+ */
+export const BROKER_POLICY_HASH_CHECK_SCRIPT = [
+  'const fs=require("fs");',
+  'const crypto=require("crypto");',
+  'const expected=process.env.OR_TRUSTED_POLICY_SHA256;',
+  'if(typeof expected!=="string"||!/^[0-9a-f]{64}$/.test(expected)){throw new Error("trusted policy sha256 pin missing or invalid")}',
+  'const file=process.argv[1];',
+  'if(typeof file!=="string"||!file){throw new Error("trusted policy path missing")}',
+  'const actual=crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");',
+  'if(actual!==expected){throw new Error("trusted policy sha256 mismatch")}',
+].join(' ');
+
+/**
  * Broker: even an allowed static assembly cannot mutate yet.
  *
  * Emits the Foundation safe-dev-deploy S11 minimum shape. `source_revision` is the trusted
  * CodePipeline CommitId; `attempt_id` is the CodeBuild build id (unique per attempt, so two
  * attempts on one revision differ); `decided_at` is the broker clock; `policy_version` binds the
  * decision to the stack-owned policy (`POLICY_VERSION` reported by the trusted policy run, plus
- * the content hash of the deployed policy asset). Missing inputs fail closed (no result file).
+ * the synth-time content SHA-256 of the policy file, verified before the policy ran). Missing inputs fail closed (no result file).
  */
 export const BROKER_NOT_ARMED_RESULT_SCRIPT = [
   'const fs=require("fs");',
@@ -68,11 +112,11 @@ export const BROKER_NOT_ARMED_RESULT_SCRIPT = [
   'if(!isFullSha(sourceRevision)){throw new Error("trusted source revision missing or invalid")}',
   'const attemptId=process.env.CODEBUILD_BUILD_ID;',
   'if(typeof attemptId!=="string"||!attemptId){throw new Error("attempt id missing")}',
-  'const assetHash=process.env.OR_TRUSTED_POLICY_ASSET_HASH;',
-  'if(typeof assetHash!=="string"||!/^[0-9a-f]{64}$/.test(assetHash)){throw new Error("trusted policy asset hash missing or invalid")}',
+  'const policySha256=process.env.OR_TRUSTED_POLICY_SHA256;',
+  'if(typeof policySha256!=="string"||!/^[0-9a-f]{64}$/.test(policySha256)){throw new Error("trusted policy sha256 missing or invalid")}',
   'const policy=JSON.parse(fs.readFileSync("trusted-policy-result.json","utf8"));',
   'if(policy===null||typeof policy!=="object"||policy.result!=="allowed"||!Number.isInteger(policy.policyVersion)){throw new Error("trusted policy result missing or not allowed")}',
-  'const result={result:"denied",source_revision:sourceRevision,attempt_id:attemptId,decided_at:new Date().toISOString(),policy_version:"trusted-policy@"+policy.policyVersion+"+sha256:"+assetHash,stage:"broker-bootstrap",rule:"BROKER_NOT_ARMED",resource:null,reason:"Static trusted policy passed, but sparse ledger/live ChangeSet/role chain are intentionally not armed",retryable:false,evidence_ref:process.env.CODEBUILD_BUILD_ARN||"unknown"};',
+  'const result={result:"denied",source_revision:sourceRevision,attempt_id:attemptId,decided_at:new Date().toISOString(),policy_version:"trusted-policy@"+policy.policyVersion+"+sha256:"+policySha256,stage:"broker-bootstrap",rule:"BROKER_NOT_ARMED",resource:null,reason:"Static trusted policy passed, but sparse ledger/live ChangeSet/role chain are intentionally not armed",retryable:false,evidence_ref:process.env.CODEBUILD_BUILD_ARN||"unknown"};',
   'fs.writeFileSync("broker-result.json",JSON.stringify(result,null,2));',
   'console.log(JSON.stringify(result));',
 ].join(' ');
@@ -123,11 +167,14 @@ export class DevDeployBrokerStack extends cdk.Stack {
         'Trusted broker; static policy only. Mutation role chain is intentionally unarmed.',
     });
 
-    // This asset is content-addressed and published when the human-managed broker stack is
+    // Published to the shared CDK bootstrap asset bucket when the human-managed broker stack is
     // deployed. Candidate pipeline artifacts never supply the trusted policy implementation.
+    // Read access to that bucket is not exclusive to the broker, so the broker pins and verifies
+    // the file's content SHA-256 (computed here from the same source file) before executing it.
     const trustedPolicyAsset = new s3assets.Asset(this, 'TrustedPolicyAsset', {
-      path: path.join(__dirname, '../../broker/trusted-policy.mjs'),
+      path: TRUSTED_POLICY_SOURCE_PATH,
     });
+    const trustedPolicyContentSha256 = trustedPolicySha256();
     trustedPolicyAsset.grantRead(brokerRole);
 
     const validationLogs = new logs.LogGroup(this, 'ValidationLogs', {
@@ -220,7 +267,7 @@ export class DevDeployBrokerStack extends cdk.Stack {
           OR_BROKER_TARGET_ACCOUNT: { value: cdk.Aws.ACCOUNT_ID },
           OR_TRUSTED_POLICY_BUCKET: { value: trustedPolicyAsset.s3BucketName },
           OR_TRUSTED_POLICY_KEY: { value: trustedPolicyAsset.s3ObjectKey },
-          OR_TRUSTED_POLICY_ASSET_HASH: { value: trustedPolicyAsset.assetHash },
+          OR_TRUSTED_POLICY_SHA256: { value: trustedPolicyContentSha256 },
         },
       },
       logging: {
@@ -235,9 +282,11 @@ export class DevDeployBrokerStack extends cdk.Stack {
               'test -f broker-evidence.json',
               'test -f infra/cdk.out/manifest.json',
               nodeEval(BROKER_REVISION_CHECK_SCRIPT),
-              // Download policy by the content-addressed S3 location injected by this stack.
-              'aws s3 cp "s3://$OR_TRUSTED_POLICY_BUCKET/$OR_TRUSTED_POLICY_KEY" /tmp/open-reception-trusted-policy.mjs --only-show-errors',
-              'node /tmp/open-reception-trusted-policy.mjs --assembly infra/cdk.out --account "$OR_BROKER_TARGET_ACCOUNT" > trusted-policy-result.json',
+              // Download policy by the S3 location injected by this stack, then verify the pinned
+              // content SHA-256 before executing it (fail closed on any mismatch).
+              `aws s3 cp "s3://$OR_TRUSTED_POLICY_BUCKET/$OR_TRUSTED_POLICY_KEY" ${TRUSTED_POLICY_LOCAL_PATH} --only-show-errors`,
+              nodeEval(BROKER_POLICY_HASH_CHECK_SCRIPT, TRUSTED_POLICY_LOCAL_PATH),
+              `node ${TRUSTED_POLICY_LOCAL_PATH} --assembly infra/cdk.out --account "$OR_BROKER_TARGET_ACCOUNT" > trusted-policy-result.json`,
               // Even an allowed static assembly cannot mutate yet.
               nodeEval(BROKER_NOT_ARMED_RESULT_SCRIPT),
               'echo "Trusted broker is intentionally unarmed." >&2',

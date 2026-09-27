@@ -2,15 +2,20 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import * as cdk from 'aws-cdk-lib';
 import { Template } from 'aws-cdk-lib/assertions';
+import { createHash } from 'node:crypto';
 import {
   BROKER_NOT_ARMED_RESULT_SCRIPT,
+  BROKER_POLICY_HASH_CHECK_SCRIPT,
   BROKER_REVISION_CHECK_SCRIPT,
   DevDeployBrokerStack,
+  TRUSTED_POLICY_LOCAL_PATH,
+  TRUSTED_POLICY_SOURCE_PATH,
   VALIDATION_EVIDENCE_SCRIPT,
   nodeEval,
+  trustedPolicySha256,
 } from '../lib/stacks/dev-deploy-broker-stack';
 
 /**
@@ -21,7 +26,15 @@ import {
  */
 
 type Json = Record<string, unknown>;
-type Statement = { Effect: string; Action: string | string[]; Resource: unknown };
+type Statement = {
+  Effect: string;
+  Action?: string | string[];
+  NotAction?: unknown;
+  Resource?: unknown;
+  NotResource?: unknown;
+  Principal?: unknown;
+  NotPrincipal?: unknown;
+};
 
 const VALIDATION_PROJECT = 'OpenReceptionDevDeployValidation';
 const BROKER_PROJECT = 'OpenReceptionTrustedDevDeployBroker';
@@ -78,15 +91,67 @@ const roleLogicalId = (roleName: string): string => {
   return found![0];
 };
 
-const statementsFor = (roleLogical: string): Statement[] =>
-  byType('AWS::IAM::Policy')
+const documentStatements = (doc: unknown): Statement[] => {
+  const statement = (doc as { Statement?: Statement | Statement[] } | undefined)?.Statement;
+  if (statement === undefined) return [];
+  return Array.isArray(statement) ? statement : [statement];
+};
+
+/** Does a CloudFormation role reference (`{Ref}`, `{Fn::GetAtt}` or literal name) name this role? */
+const refersToRole = (ref: unknown, roleLogical: string): boolean => {
+  if (typeof ref === 'string') {
+    return ref === roleLogical || ref === resources[roleLogical]?.Properties.RoleName;
+  }
+  const r = ref as { Ref?: string; 'Fn::GetAtt'?: [string, string] } | null;
+  return r?.Ref === roleLogical || r?.['Fn::GetAtt']?.[0] === roleLogical;
+};
+
+/**
+ * Every identity-policy statement that can take effect for a role, regardless of how it is
+ * attached: standalone AWS::IAM::Policy / AWS::IAM::ManagedPolicy (via `Roles`),
+ * AWS::IAM::RolePolicy (via `RoleName`), and the role's own inline `Policies`. AWS-managed or
+ * external `ManagedPolicyArns` cannot be inspected here, so they are asserted absent separately.
+ * A permissions boundary only ever narrows these; the invariants do not rely on one.
+ */
+const statementsFor = (roleLogical: string): Statement[] => {
+  const attached = [...byType('AWS::IAM::Policy'), ...byType('AWS::IAM::ManagedPolicy')]
     .filter(([, r]) =>
-      ((r.Properties.Roles ?? []) as Array<{ Ref?: string }>).some((x) => x?.Ref === roleLogical),
+      ((r.Properties.Roles ?? []) as unknown[]).some((x) => refersToRole(x, roleLogical)),
     )
-    .flatMap(([, r]) => (r.Properties.PolicyDocument as { Statement: Statement[] }).Statement);
+    .flatMap(([, r]) => documentStatements(r.Properties.PolicyDocument));
+  const rolePolicies = byType('AWS::IAM::RolePolicy')
+    .filter(([, r]) => refersToRole(r.Properties.RoleName, roleLogical))
+    .flatMap(([, r]) => documentStatements(r.Properties.PolicyDocument));
+  const inline = ((resources[roleLogical]?.Properties.Policies ?? []) as Array<{
+    PolicyDocument?: unknown;
+  }>).flatMap((p) => documentStatements(p.PolicyDocument));
+  return [...attached, ...rolePolicies, ...inline];
+};
+
+/** Every identity-policy statement in the stack (all roles, all attachment styles). */
+const allIdentityStatements = (): Statement[] => [
+  ...[
+    ...byType('AWS::IAM::Policy'),
+    ...byType('AWS::IAM::ManagedPolicy'),
+    ...byType('AWS::IAM::RolePolicy'),
+  ].flatMap(([, r]) => documentStatements(r.Properties.PolicyDocument)),
+  ...byType('AWS::IAM::Role').flatMap(([, r]) =>
+    ((r.Properties.Policies ?? []) as Array<{ PolicyDocument?: unknown }>).flatMap((p) =>
+      documentStatements(p.PolicyDocument),
+    ),
+  ),
+];
 
 const actionsOf = (s: Statement): string[] =>
-  (Array.isArray(s.Action) ? s.Action : [s.Action]).map((a) => a.toLowerCase());
+  (s.Action === undefined ? [] : Array.isArray(s.Action) ? s.Action : [s.Action]).map((a) =>
+    a.toLowerCase(),
+  );
+
+/** Exact environment variable names a CodeBuild project declares at project level. */
+const projectEnvNames = (name: string): string[] =>
+  (((project(name).Environment as Json).EnvironmentVariables ?? []) as Array<{ Name: string }>)
+    .map((v) => v.Name)
+    .sort();
 
 const allowedActions = (roleName: string): string[] =>
   statementsFor(roleLogicalId(roleName))
@@ -110,6 +175,80 @@ const FORBIDDEN_ACTION_PREFIXES = [
   'codepipeline:',
   'codebuild:startbuild',
 ];
+
+describe('dev deploy broker invariants: IAM attachment surface (managed / inline / standalone)', () => {
+  it('declares only AWS::IAM::Role and AWS::IAM::Policy (no ManagedPolicy / RolePolicy / User / Group)', () => {
+    const iamTypes = [...new Set(Object.values(resources).map((r) => r.Type))]
+      .filter((t) => t.startsWith('AWS::IAM::'))
+      .sort();
+    expect(iamTypes).toEqual(['AWS::IAM::Policy', 'AWS::IAM::Role']);
+  });
+
+  it('no role carries ManagedPolicyArns (AWS-managed or external) or inline Policies', () => {
+    for (const [id, role] of byType('AWS::IAM::Role')) {
+      expect(role.Properties.ManagedPolicyArns, `${id} ManagedPolicyArns`).toBeUndefined();
+      expect(role.Properties.Policies, `${id} inline Policies`).toBeUndefined();
+    }
+  });
+
+  it('validation and broker roles have exactly the reviewed property set', () => {
+    for (const roleName of [VALIDATION_ROLE, BROKER_ROLE]) {
+      const props = resources[roleLogicalId(roleName)]!.Properties;
+      expect(Object.keys(props).sort(), roleName).toEqual(
+        ['AssumeRolePolicyDocument', 'Description', 'RoleName', 'Tags'].sort(),
+      );
+    }
+  });
+
+  it('no statement anywhere uses NotAction / NotResource / NotPrincipal or a wildcard action', () => {
+    const statements = allIdentityStatements();
+    expect(statements.length).toBeGreaterThan(0);
+    for (const statement of statements) {
+      const text = JSON.stringify(statement);
+      expect(statement.NotAction, text).toBeUndefined();
+      expect(statement.NotResource, text).toBeUndefined();
+      expect(statement.NotPrincipal, text).toBeUndefined();
+      expect(statement.Action, text).toBeDefined();
+      for (const action of actionsOf(statement)) {
+        expect(action === '*' || /^[a-z0-9-]+:\*$/.test(action), `wildcard action in ${text}`).toBe(
+          false,
+        );
+      }
+    }
+  });
+});
+
+describe('dev deploy broker invariants: build environment allowlist', () => {
+  it('validation project declares exactly the reviewed environment variable names', () => {
+    expect(projectEnvNames(VALIDATION_PROJECT)).toEqual(
+      [
+        'OR_APP_SECRETS_NAME',
+        'OR_BROKER_TARGET_ACCOUNT',
+        'OR_BROKER_TARGET_REGION',
+        'OR_PROVIDER_SECRET_BACKEND',
+        'OR_PUBLIC_ORIGIN_OVERRIDE',
+      ].sort(),
+    );
+  });
+
+  it('broker project declares exactly the reviewed environment variable names (no NODE_OPTIONS etc.)', () => {
+    expect(projectEnvNames(BROKER_PROJECT)).toEqual(
+      [
+        'OR_BROKER_TARGET_ACCOUNT',
+        'OR_TRUSTED_POLICY_BUCKET',
+        'OR_TRUSTED_POLICY_KEY',
+        'OR_TRUSTED_POLICY_SHA256',
+      ].sort(),
+    );
+  });
+
+  it('buildspecs carry no env / proxy / reports / batch sections that could inject variables', () => {
+    expect(Object.keys(buildSpec(VALIDATION_PROJECT)).sort()).toEqual(
+      ['artifacts', 'phases', 'version'].sort(),
+    );
+    expect(Object.keys(buildSpec(BROKER_PROJECT)).sort()).toEqual(['phases', 'version'].sort());
+  });
+});
 
 describe('dev deploy broker invariants: validation role (candidate code executes here)', () => {
   it('holds no AssumeRole / PassRole / CloudFormation / connection-token / secret authority', () => {
@@ -180,6 +319,7 @@ describe('dev deploy broker invariants: trusted broker (stack-owned buildspec, u
       /^test -f [A-Za-z0-9_./-]+\.json$/,
       /^node -e '[^']*'$/,
       /^aws s3 cp "s3:\/\/\$OR_TRUSTED_POLICY_BUCKET\/\$OR_TRUSTED_POLICY_KEY" \/tmp\/open-reception-trusted-policy\.mjs --only-show-errors$/,
+      /^node -e '[^']*' \/tmp\/open-reception-trusted-policy\.mjs$/,
       /^node \/tmp\/open-reception-trusted-policy\.mjs --assembly infra\/cdk\.out --account "\$OR_BROKER_TARGET_ACCOUNT" > trusted-policy-result\.json$/,
       /^echo "[^"$`]*" >&2$/,
       /^exit 42$/,
@@ -190,9 +330,12 @@ describe('dev deploy broker invariants: trusted broker (stack-owned buildspec, u
         `unexpected broker command: ${command}`,
       ).toBe(true);
       if (command.startsWith("node -e '")) {
-        // Inline JS may only use the fs builtin: no child processes, dynamic imports or eval.
+        // Inline JS may only use the fs/crypto builtins: no child processes, dynamic imports or eval.
         const requires = [...command.matchAll(/require\(([^)]*)\)/g)].map((m) => m[1]);
-        expect(requires.every((r) => r === '"fs"'), `requires: ${requires.join(',')}`).toBe(true);
+        expect(
+          requires.every((r) => r === '"fs"' || r === '"crypto"'),
+          `requires: ${requires.join(',')}`,
+        ).toBe(true);
         expect(command).not.toMatch(/child_process|\bimport\(|\beval\(|new Function|spawn|exec/);
       } else {
         expect(command).not.toMatch(/(^|[\s;&|(])(npm|npx|yarn|pnpm|bash|sh|source|make|cdk)(\s|$)/);
@@ -243,17 +386,34 @@ describe('dev deploy broker invariants: trusted broker (stack-owned buildspec, u
     expect((p.Environment as Json).PrivilegedMode).toBe(false);
   });
 
-  it('pins the policy to the content-addressed asset and exposes its hash for policy_version', () => {
+  it('pins the real content SHA-256 of the trusted policy file (not the CDK asset fingerprint)', () => {
     const vars = Object.fromEntries(
       ((project(BROKER_PROJECT).Environment as Json).EnvironmentVariables as Array<{
         Name: string;
         Value: unknown;
       }>).map((v) => [v.Name, v.Value]),
     );
-    expect(vars.OR_TRUSTED_POLICY_ASSET_HASH).toMatch(/^[0-9a-f]{64}$/);
-    expect(vars.OR_TRUSTED_POLICY_KEY).toBe(`${vars.OR_TRUSTED_POLICY_ASSET_HASH}.mjs`);
+    const contentSha256 = createHash('sha256')
+      .update(readFileSync(resolve(__dirname, '../broker/trusted-policy.mjs')))
+      .digest('hex');
+    expect(TRUSTED_POLICY_SOURCE_PATH).toBe(resolve(__dirname, '../broker/trusted-policy.mjs'));
+    expect(trustedPolicySha256()).toBe(contentSha256);
+    expect(vars.OR_TRUSTED_POLICY_SHA256).toBe(contentSha256);
+    expect(vars.OR_TRUSTED_POLICY_KEY).toMatch(/^[0-9a-f]{64}\.mjs$/);
     // The trusted revision is NOT a project-level default; only the pipeline action injects it.
     expect(vars.OR_TRUSTED_SOURCE_REVISION).toBeUndefined();
+  });
+
+  it('verifies the downloaded policy hash immediately after download and before executing it', () => {
+    const commands = allCommands(BROKER_PROJECT);
+    const download = commands.findIndex((c) => c.startsWith('aws s3 cp '));
+    const verify = commands.indexOf(nodeEval(BROKER_POLICY_HASH_CHECK_SCRIPT, TRUSTED_POLICY_LOCAL_PATH));
+    const execute = commands.findIndex((c) => c.startsWith(`node ${TRUSTED_POLICY_LOCAL_PATH} `));
+    expect(download).toBeGreaterThanOrEqual(0);
+    expect(verify).toBe(download + 1);
+    expect(execute).toBe(verify + 1);
+    // Exactly one download and one execution of the policy file.
+    expect(commands.filter((c) => c.includes(TRUSTED_POLICY_LOCAL_PATH))).toHaveLength(3);
   });
 });
 
@@ -288,10 +448,15 @@ describe('dev deploy broker invariants: trusted source revision', () => {
     expect(allCommands(VALIDATION_PROJECT)).toContain(nodeEval(VALIDATION_EVIDENCE_SCRIPT));
     expect(allCommands(BROKER_PROJECT)).toContain(nodeEval(BROKER_REVISION_CHECK_SCRIPT));
     expect(allCommands(BROKER_PROJECT)).toContain(nodeEval(BROKER_NOT_ARMED_RESULT_SCRIPT));
+    expect(allCommands(BROKER_PROJECT)).toContain(
+      nodeEval(BROKER_POLICY_HASH_CHECK_SCRIPT, TRUSTED_POLICY_LOCAL_PATH),
+    );
   });
 
   it('nodeEval refuses snippets that would break shell single quoting', () => {
     expect(() => nodeEval("console.log('x')")).toThrow();
+    expect(() => nodeEval('1', '$(id)')).toThrow();
+    expect(() => nodeEval('1', 'a b')).toThrow();
   });
 });
 
@@ -394,7 +559,7 @@ describe('BROKER_NOT_ARMED result carries the Foundation S11 fields', () => {
     OR_TRUSTED_SOURCE_REVISION: REV_A,
     CODEBUILD_BUILD_ID: 'OpenReceptionTrustedDevDeployBroker:11111111-1111-1111-1111-111111111111',
     CODEBUILD_BUILD_ARN: 'arn:aws:codebuild:ap-northeast-1:123456789012:build/x',
-    OR_TRUSTED_POLICY_ASSET_HASH: HASH,
+    OR_TRUSTED_POLICY_SHA256: HASH,
     ...overrides,
   });
   const prepared = (policy: unknown = allowedPolicy): string => {
@@ -454,8 +619,8 @@ describe('BROKER_NOT_ARMED result carries the Foundation S11 fields', () => {
     ['short source revision', baseEnv({ OR_TRUSTED_SOURCE_REVISION: REV_A.slice(0, 7) })],
     ['missing source revision', baseEnv({ OR_TRUSTED_SOURCE_REVISION: undefined })],
     ['missing attempt id', baseEnv({ CODEBUILD_BUILD_ID: undefined })],
-    ['missing policy asset hash', baseEnv({ OR_TRUSTED_POLICY_ASSET_HASH: undefined })],
-    ['malformed policy asset hash', baseEnv({ OR_TRUSTED_POLICY_ASSET_HASH: 'abc' })],
+    ['missing policy sha256', baseEnv({ OR_TRUSTED_POLICY_SHA256: undefined })],
+    ['malformed policy sha256', baseEnv({ OR_TRUSTED_POLICY_SHA256: 'abc' })],
   ])('writes no result and fails on %s', (_label, env) => {
     const dir = prepared();
     expect(run(notArmed(), dir, env).ok).toBe(false);
@@ -470,6 +635,79 @@ describe('BROKER_NOT_ARMED result carries the Foundation S11 fields', () => {
     const missing = workspace();
     expect(run(notArmed(), missing, baseEnv()).ok).toBe(false);
     expect(existsSync(join(missing, 'broker-result.json'))).toBe(false);
+  });
+});
+
+describe('trusted policy hash pin (shared bootstrap asset bucket substitution)', () => {
+  const pinnedSha256 = trustedPolicySha256();
+  const hashCheckCommand = () => commandContaining(BROKER_PROJECT, 'trusted policy sha256 mismatch');
+  /** Run the exact synthesized check, pointing only its path argument at a scratch copy. */
+  const check = (file: string, env: Record<string, string | undefined>) => {
+    const command = hashCheckCommand();
+    expect(command.endsWith(` ${TRUSTED_POLICY_LOCAL_PATH}`)).toBe(true);
+    const scratch = command.slice(0, -TRUSTED_POLICY_LOCAL_PATH.length) + file;
+    return run(scratch, dirname(file), env);
+  };
+  const copyOfPolicy = (mutate: (text: string) => string = (t) => t): string => {
+    const dir = workspace();
+    const file = join(dir, 'open-reception-trusted-policy.mjs');
+    writeFileSync(file, mutate(readFileSync(TRUSTED_POLICY_SOURCE_PATH, 'utf8')));
+    return file;
+  };
+
+  it('accepts the untouched policy file', () => {
+    const r = check(copyOfPolicy(), { OR_TRUSTED_POLICY_SHA256: pinnedSha256 });
+    expect(r.ok, r.stderr).toBe(true);
+  });
+
+  it.each([
+    ['appended statement', (t: string) => `${t}\nprocess.exit(0);\n`],
+    ['single byte flip', (t: string) => t.replace('allowed', 'allowes')],
+    ['trailing newline removed', (t: string) => t.replace(/\n$/, '')],
+    ['empty file', () => ''],
+  ])('fails closed on a tampered policy (%s)', (_label, mutate) => {
+    const file = copyOfPolicy(mutate);
+    expect(readFileSync(file, 'utf8')).not.toBe(readFileSync(TRUSTED_POLICY_SOURCE_PATH, 'utf8'));
+    const r = check(file, { OR_TRUSTED_POLICY_SHA256: pinnedSha256 });
+    expect(r.ok).toBe(false);
+    expect(r.stderr).toContain('trusted policy sha256 mismatch');
+  });
+
+  it.each([
+    ['missing pin', undefined],
+    ['empty pin', ''],
+    ['uppercase pin', pinnedSha256.toUpperCase()],
+    ['short pin', pinnedSha256.slice(0, 63)],
+  ])('fails closed on %s', (_label, pin) => {
+    const r = check(copyOfPolicy(), { OR_TRUSTED_POLICY_SHA256: pin });
+    expect(r.ok).toBe(false);
+    expect(r.stderr).toContain('trusted policy sha256 pin missing or invalid');
+  });
+
+  it('fails closed when the downloaded file is missing', () => {
+    const dir = workspace();
+    expect(check(join(dir, 'absent.mjs'), { OR_TRUSTED_POLICY_SHA256: pinnedSha256 }).ok).toBe(false);
+  });
+
+  it('a verification failure stops the broker before the policy runs or a result is written', () => {
+    // CodeBuild buildspec 0.2 stops a phase at the first failing command; emulate with `set -e`
+    // over the exact synthesized verify -> execute -> result sequence, with the path redirected.
+    const commands = allCommands(BROKER_PROJECT);
+    const start = commands.indexOf(nodeEval(BROKER_POLICY_HASH_CHECK_SCRIPT, TRUSTED_POLICY_LOCAL_PATH));
+    const sequence = commands.slice(start, start + 3);
+    expect(sequence[2]).toBe(nodeEval(BROKER_NOT_ARMED_RESULT_SCRIPT));
+    const file = copyOfPolicy((t) => `${t}\n// tampered\n`);
+    const dir = dirname(file);
+    const script = ['set -e', ...sequence.map((c) => c.split(TRUSTED_POLICY_LOCAL_PATH).join(file))].join('\n');
+    const r = run(script, dir, {
+      OR_TRUSTED_POLICY_SHA256: pinnedSha256,
+      OR_TRUSTED_SOURCE_REVISION: REV_A,
+      CODEBUILD_BUILD_ID: 'p:attempt',
+      OR_BROKER_TARGET_ACCOUNT: '123456789012',
+    });
+    expect(r.ok).toBe(false);
+    expect(existsSync(join(dir, 'trusted-policy-result.json'))).toBe(false);
+    expect(existsSync(join(dir, 'broker-result.json'))).toBe(false);
   });
 });
 
