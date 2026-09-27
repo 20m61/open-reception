@@ -1,0 +1,613 @@
+#!/usr/bin/env node
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+export const POLICY_VERSION = 1;
+
+export const APPROVED_STACKS = Object.freeze({
+  'OpenReception-Web-dev': 'ap-northeast-1',
+  'OpenReception-WebMonitoring-dev': 'ap-northeast-1',
+  'OpenReception-CfMon-dev': 'us-east-1',
+});
+
+export const REVIEWED_CARVE_OUT_ROLES = new Set([
+  'CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092',
+  'CustomCrossRegionExportWriterCustomResourceProviderRoleC951B1E1',
+  'CustomCrossRegionExportReaderCustomResourceProviderRole10531BBD',
+  'CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRole89A01265',
+]);
+
+const APPROVED_FUNCTION_URLS = Object.freeze({
+  ServerFnFunctionUrlFFF9E3E1: { authType: 'NONE', functionLogicalId: 'ServerFn4F3A536E' },
+  ImageFnFunctionUrlBBD47D3E: { authType: 'AWS_IAM', functionLogicalId: 'ImageFnCD541B83' },
+});
+
+const APPROVED_PUBLIC_PERMISSIONS = Object.freeze({
+  ServerFninvokefunctionurl715820CF: 'ServerFn4F3A536E',
+  ServerFninvokefunctionA3A7399A: 'ServerFn4F3A536E',
+});
+
+const PRODUCT_LAMBDA_CONCURRENCY = Object.freeze({
+  ServerFn4F3A536E: 5,
+  ImageFnCD541B83: 2,
+});
+
+export const APPROVED_RESOURCE_TYPES = new Set([
+  'AWS::CDK::Metadata',
+  'AWS::CloudFront::Distribution',
+  'AWS::CloudFront::OriginAccessControl',
+  'AWS::CloudFront::CachePolicy',
+  'AWS::CloudFront::ResponseHeadersPolicy',
+  'AWS::Lambda::Function',
+  'AWS::Lambda::Permission',
+  'AWS::Lambda::Url',
+  'AWS::IAM::Role',
+  'AWS::IAM::Policy',
+  'AWS::S3::Bucket',
+  'AWS::S3::BucketPolicy',
+  'AWS::DynamoDB::Table',
+  'AWS::Cognito::UserPool',
+  'AWS::Cognito::UserPoolClient',
+  'AWS::Logs::LogGroup',
+  'AWS::Logs::MetricFilter',
+  'AWS::CloudWatch::Alarm',
+  'AWS::CloudWatch::Dashboard',
+  'AWS::SNS::Topic',
+  'AWS::SNS::TopicPolicy',
+  'AWS::SNS::Subscription',
+  'Custom::S3AutoDeleteObjects',
+  'Custom::CDKBucketDeployment',
+  'Custom::CrossRegionExportWriter',
+  'Custom::CrossRegionExportReader',
+]);
+
+const HUMAN_GATE_RESOURCE_TYPES = new Map([
+  ['AWS::EC2::NatGateway', 'fixed-cost NAT Gateway'],
+  ['AWS::EC2::Instance', 'persistent EC2 compute'],
+  ['AWS::EC2::LaunchTemplate', 'persistent/elastic EC2 compute'],
+  ['AWS::AutoScaling::AutoScalingGroup', 'elastic EC2 compute'],
+  ['AWS::RDS::DBInstance', 'persistent database'],
+  ['AWS::RDS::DBCluster', 'persistent database'],
+  ['AWS::OpenSearchService::Domain', 'persistent search cluster'],
+  ['AWS::Elasticsearch::Domain', 'persistent search cluster'],
+  ['AWS::MSK::Cluster', 'persistent streaming cluster'],
+  ['AWS::MSK::ServerlessCluster', 'streaming service'],
+  ['AWS::EKS::Cluster', 'Kubernetes control plane'],
+  ['AWS::ECS::Service', 'long-running container service'],
+  ['AWS::Redshift::Cluster', 'persistent warehouse'],
+  ['AWS::ElastiCache::CacheCluster', 'persistent cache'],
+  ['AWS::ElastiCache::ReplicationGroup', 'persistent cache'],
+  ['AWS::MemoryDB::Cluster', 'persistent cache'],
+  ['AWS::SageMaker::Endpoint', 'persistent ML endpoint'],
+  ['AWS::SageMaker::EndpointConfig', 'persistent ML endpoint'],
+  ['AWS::AppRunner::Service', 'long-running service'],
+  ['AWS::Events::Rule', 'scheduled/event-driven loop surface'],
+  ['AWS::Scheduler::Schedule', 'scheduled loop surface'],
+  ['AWS::StepFunctions::StateMachine', 'workflow/retry loop surface'],
+  ['AWS::Lambda::EventSourceMapping', 'event-driven concurrency surface'],
+  ['AWS::SQS::Queue', 'async retry/backlog surface'],
+]);
+
+const RESOURCE_COUNT_CAPS = Object.freeze({
+  'AWS::Lambda::Function': 16,
+  'AWS::IAM::Role': 18,
+  'AWS::IAM::Policy': 20,
+  'AWS::S3::Bucket': 4,
+  'AWS::DynamoDB::Table': 3,
+  'AWS::CloudFront::Distribution': 2,
+  'AWS::CloudFront::CachePolicy': 4,
+  'AWS::CloudFront::ResponseHeadersPolicy': 4,
+  'AWS::Cognito::UserPool': 1,
+  'AWS::Cognito::UserPoolClient': 2,
+  'AWS::CloudWatch::Alarm': 30,
+  'AWS::CloudWatch::Dashboard': 4,
+  'AWS::SNS::Topic': 4,
+  'AWS::Logs::LogGroup': 20,
+  'AWS::Logs::MetricFilter': 12,
+  'Custom::CDKBucketDeployment': 2,
+});
+const MAX_TOTAL_RESOURCES = 220;
+const MAX_RESOURCES_PER_STACK = 140;
+
+const GLOBAL_RESOURCE_SAFE_ACTIONS = new Set([
+  'ce:getcostandusage',
+  'ce:getcostforecast',
+  'cloudwatch:getmetricdata',
+  'cloudwatch:getmetricstatistics',
+  'cloudwatch:listmetrics',
+]);
+
+const LOOP_CAPABLE_IAM_ACTIONS = new Set([
+  'lambda:invokefunction',
+  'events:putevents',
+  'states:startexecution',
+  'sqs:sendmessage',
+  'sns:publish',
+  'scheduler:createschedule',
+  'scheduler:updateschedule',
+  'ecs:runtask',
+  'ec2:runinstances',
+]);
+
+function isRecord(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function asArray(value) {
+  if (value === undefined) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
+function violation(rule, stack, resource, reason) {
+  return { rule, stack, resource, reason };
+}
+
+function resolvesToLogicalId(value, logicalId) {
+  if (!isRecord(value)) return false;
+  if (value.Ref === logicalId) return true;
+  const getAtt = value['Fn::GetAtt'];
+  return Array.isArray(getAtt) && getAtt[0] === logicalId;
+}
+
+/*
+ * Candidate IAM that could reach the broker stack's ledger table - exact, prefix, wildcard, or
+ * built by an intrinsic - would let a deployed workload forge overrides or reset counters
+ * (#1153, Foundation S6a), so it is rejected before mutation.
+ */
+
+/** IAM resource glob: `*` any run of characters (including `/`), `?` one character, case-sensitive. */
+function iamGlobMatches(pattern, value) {
+  const re = new RegExp(
+    `^${[...pattern].map((c) => (c === '*' ? '.*' : c === '?' ? '.' : c.replace(/[.+^${}()|[\]\\]/g, '\\$&'))).join('')}$`,
+  );
+  return re.test(value);
+}
+
+/**
+ * Could this action pattern include any DynamoDB action? The service part (before the first `:`,
+ * or the whole pattern) is glob-matched against `dynamodb`, so `*`, `*:UpdateItem`, `dynamo*`,
+ * `dynamod?:PutItem` and `dynamodb:*` all count. A non-string action is opaque and counts too.
+ */
+function actionMayIncludeDynamo(action) {
+  if (typeof action !== 'string') return true;
+  const a = action.toLowerCase();
+  const service = a.includes(':') ? a.slice(0, a.indexOf(':')) : a;
+  return iamGlobMatches(service, 'dynamodb');
+}
+
+/**
+ * Reference attributes whose value the SERVICE fixes (an ARN / name of a resource this template
+ * declares). Custom resources are excluded: their Ref / GetAtt values are whatever the provider
+ * Lambda returns, which candidate code can control.
+ */
+const SERVICE_FIXED_REFERENCES = Object.freeze({
+  'AWS::DynamoDB::Table': ['Ref', 'Arn', 'StreamArn'],
+  'AWS::S3::Bucket': ['Arn'],
+  'AWS::Lambda::Function': ['Arn'],
+  'AWS::Logs::LogGroup': ['Arn'],
+  'AWS::IAM::Role': ['Arn'],
+  'AWS::SNS::Topic': ['Ref'],
+  'AWS::SQS::Queue': ['Arn'],
+  'AWS::Cognito::UserPool': ['Arn'],
+});
+
+const serviceFixed = (templateResources, logicalId, attribute) => {
+  const target = typeof logicalId === 'string' && Object.hasOwn(templateResources, logicalId) ? templateResources[logicalId] : null;
+  const allowed = isRecord(target) && typeof target.Type === 'string' ? SERVICE_FIXED_REFERENCES[target.Type] : undefined;
+  return Array.isArray(allowed) && allowed.includes(attribute);
+};
+
+/**
+ * A resource reference whose target is fully determined by THIS template and the service:
+ * `GetAtt X.<attr>` / `Ref X` of a declared resource of a reviewed type (see
+ * SERVICE_FIXED_REFERENCES), or `Fn::Join('', [that, '/literal-suffix'])` (CDK's index / stream
+ * grants). Anything else (parameters, mappings, imports, Sub, Select, dynamic references,
+ * custom resources ...) cannot be resolved by this policy and fails closed.
+ */
+function isLocalResourceRef(value, templateResources) {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  if (keys.length !== 1) return false;
+  if (keys[0] === 'Ref') return serviceFixed(templateResources, value.Ref, 'Ref');
+  if (keys[0] === 'Fn::GetAtt') {
+    const g = value['Fn::GetAtt'];
+    return Array.isArray(g) && g.length === 2 && serviceFixed(templateResources, g[0], g[1]);
+  }
+  if (keys[0] === 'Fn::Join') {
+    const j = value['Fn::Join'];
+    if (!Array.isArray(j) || j.length !== 2 || j[0] !== '' || !Array.isArray(j[1]) || j[1].length !== 2) return false;
+    const [head, tail] = j[1];
+    return isLocalResourceRef(head, templateResources) && !isRecord(head['Fn::Join'] ?? null) && typeof tail === 'string' && /^\/[A-Za-z0-9_.*/-]*$/.test(tail);
+  }
+  return false;
+}
+
+/**
+ * Resource-part prefix of every ledger table ARN and each of its sub-resources (stream, index,
+ * backup, export). CloudFormation names the table `<stack name>-<logical id><hash>-<random>`.
+ */
+const SPARSE_LEDGER_RESOURCE_PREFIX = 'table/OpenReception-DevDeployBroker-';
+
+/**
+ * Can IAM glob `pattern` (`*` = any run, `?` = one character) match SOME string that starts with
+ * `prefix`? Walk the pattern against the prefix: a literal must equal, `?` takes any character,
+ * and the first `*` can absorb the rest of the prefix (after it, the remainder of the string is
+ * free to satisfy the rest of the pattern). Running out of pattern before the prefix ends means
+ * no match.
+ */
+function globMayMatchStringWithPrefix(pattern, prefix) {
+  for (let i = 0; i < prefix.length; i += 1) {
+    const p = pattern[i];
+    if (p === '*') return true;
+    if (p === undefined || (p !== '?' && p !== prefix[i])) return false;
+  }
+  return true;
+}
+
+function reachesSparseLedger(resource, templateResources) {
+  if (typeof resource !== 'string') return !isLocalResourceRef(resource, templateResources);
+  if (resource.includes('{{resolve:')) return true;
+  // IAM policy variables (`${aws:PrincipalTag/x}` ...) are substituted per request, and a
+  // candidate controls its own role's tags: the resource is not determined by the template.
+  if (resource.includes('${')) return true;
+  if (/DevDeployBroker|SparseDeployLedger/i.test(resource)) return true;
+  // Match segment by segment: partition and service are glob-matched, region / account are the
+  // assembly's own and cannot rule the ledger out (any value counts as matching), and the
+  // resource part (everything after the fifth `:`) must not be able to match anything starting
+  // with the ledger prefix - this covers globs on the real (deterministic) name hash and mangled
+  // `table/` literals. Real IAM lets a segment-final `*` expand across `:`; that only matters for
+  // ARNs with more than five colons, and every ledger ARN has exactly five because the table has
+  // no stream (pinned in dev-deploy-broker-invariants.test.ts).
+  const parts = resource.split(':');
+  if (parts.length < 6 || parts[0] !== 'arn') return /[*?]/.test(resource);
+  const [, partition, service] = parts;
+  if (!iamGlobMatches(partition.toLowerCase(), 'aws') || !iamGlobMatches(service.toLowerCase(), 'dynamodb')) return false;
+  return globMayMatchStringWithPrefix(parts.slice(5).join(':'), SPARSE_LEDGER_RESOURCE_PREFIX);
+}
+
+/** Only statements that can grant a DynamoDB action are relevant to the ledger. */
+function statementReachesSparseLedger(statement, templateResources) {
+  const actions = asArray(statement.Action);
+  const dynamoCapable = statement.NotAction !== undefined || actions.some((a) => typeof a !== 'string' || actionMayIncludeDynamo(a));
+  if (!dynamoCapable) return false;
+  return asArray(statement.Resource).some((r) => reachesSparseLedger(r, templateResources));
+}
+
+/** AWS-managed policies a candidate role may attach. Everything else is unreviewed authority. */
+const REVIEWED_MANAGED_POLICIES = new Set([
+  'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole',
+]);
+
+/** Resolve the CDK shapes of an AWS-managed policy ARN (literal, Sub / Join with AWS::Partition). */
+function resolveManagedPolicyArn(value) {
+  if (typeof value === 'string') return value;
+  if (!isRecord(value)) return null;
+  if (typeof value['Fn::Sub'] === 'string') return value['Fn::Sub'].replaceAll('${AWS::Partition}', 'aws');
+  const j = value['Fn::Join'];
+  if (Array.isArray(j) && j.length === 2 && j[0] === '' && Array.isArray(j[1])) {
+    const parts = j[1].map((p) => (typeof p === 'string' ? p : isRecord(p) && p.Ref === 'AWS::Partition' ? 'aws' : null));
+    return parts.includes(null) ? null : parts.join('');
+  }
+  return null;
+}
+
+/** A statement this policy cannot evaluate: not a plain record, intrinsic keys, or a non-literal Effect. */
+function isOpaqueStatement(statement) {
+  if (!isRecord(statement)) return true;
+  if (Object.keys(statement).some((k) => k.startsWith('Fn::'))) return true;
+  return statement.Effect !== 'Allow' && statement.Effect !== 'Deny';
+}
+
+function boundaryLooksCorrect(value) {
+  return JSON.stringify(value).includes('OpenReceptionClaudeBoundary');
+}
+
+function policyDocumentViolations(stackName, logicalId, document, templateResources) {
+  const out = [];
+  if (!isRecord(document) || !Array.isArray(document.Statement)) {
+    out.push(violation('IAM_POLICY_OPAQUE', stackName, logicalId, 'PolicyDocument.Statement is not a concrete array'));
+    return out;
+  }
+  for (const statement of document.Statement) {
+    if (isOpaqueStatement(statement)) {
+      out.push(violation('IAM_POLICY_OPAQUE', stackName, logicalId, 'statement is not a plain object with a literal Effect (e.g. Fn::If)'));
+      continue;
+    }
+    if (statement.Effect !== 'Allow') continue;
+    const actions = asArray(statement.Action).filter((x) => typeof x === 'string').map((x) => x.toLowerCase());
+    const resources = asArray(statement.Resource);
+    if (actions.includes('*') || actions.includes('iam:*') || actions.includes('sts:*') || actions.includes('kms:*')) {
+      out.push(violation('IAM_ADMIN_OR_CONTROL_PLANE', stackName, logicalId, `broad control-plane action: ${actions.join(',')}`));
+    }
+    for (const action of actions) {
+      if (LOOP_CAPABLE_IAM_ACTIONS.has(action)) {
+        out.push(violation('IAM_LOOP_CAPABLE_ACTION', stackName, logicalId, `runtime role may trigger work recursively: ${action}`));
+      }
+    }
+    if (statement.NotResource !== undefined) {
+      out.push(violation('IAM_NOT_RESOURCE', stackName, logicalId, 'Allow with NotResource grants everything except a list, including the sparse deploy ledger'));
+    }
+    if (statementReachesSparseLedger(statement, templateResources)) {
+      out.push(violation('IAM_REACHES_SPARSE_LEDGER', stackName, logicalId, 'candidate IAM may reach the broker-only sparse deploy ledger'));
+    }
+    if (resources.includes('*')) {
+      const unsafe = actions.filter((action) => !GLOBAL_RESOURCE_SAFE_ACTIONS.has(action));
+      if (unsafe.length > 0) {
+        out.push(violation('IAM_UNSCOPED_RESOURCE', stackName, logicalId, `Resource:* with non-reviewed actions: ${unsafe.join(',')}`));
+      }
+    }
+  }
+  return out;
+}
+
+function evaluateResource(stackName, logicalId, resource, templateResources = {}) {
+  const out = [];
+  if (!isRecord(resource) || typeof resource.Type !== 'string') {
+    return [violation('RESOURCE_SHAPE_INVALID', stackName, logicalId, 'resource has no concrete Type')];
+  }
+  const type = resource.Type;
+  const props = isRecord(resource.Properties) ? resource.Properties : {};
+
+  if (HUMAN_GATE_RESOURCE_TYPES.has(type)) {
+    out.push(violation('RESOURCE_TYPE_HUMAN_GATE', stackName, logicalId, HUMAN_GATE_RESOURCE_TYPES.get(type)));
+    return out;
+  }
+  if (!APPROVED_RESOURCE_TYPES.has(type)) {
+    out.push(violation('RESOURCE_TYPE_NOT_APPROVED', stackName, logicalId, `resource type ${type} is outside the reviewed dev set`));
+    return out;
+  }
+
+  if (type === 'AWS::IAM::Role' && !REVIEWED_CARVE_OUT_ROLES.has(logicalId)) {
+    if (!('PermissionsBoundary' in props) || !boundaryLooksCorrect(props.PermissionsBoundary)) {
+      out.push(violation('IAM_BOUNDARY_REQUIRED', stackName, logicalId, 'role must carry OpenReceptionClaudeBoundary'));
+    }
+  }
+
+  if (type === 'AWS::IAM::Policy') {
+    out.push(...policyDocumentViolations(stackName, logicalId, props.PolicyDocument, templateResources));
+  }
+
+  // Managed policies are authority this file cannot inspect: only reviewed AWS-managed ones.
+  if (type === 'AWS::IAM::Role' && props.ManagedPolicyArns !== undefined) {
+    for (const arn of asArray(props.ManagedPolicyArns)) {
+      const resolved = resolveManagedPolicyArn(arn);
+      if (resolved === null || !REVIEWED_MANAGED_POLICIES.has(resolved)) {
+        out.push(violation('IAM_MANAGED_POLICY_NOT_REVIEWED', stackName, logicalId, `managed policy outside the reviewed set: ${JSON.stringify(arn)}`));
+      }
+    }
+  }
+
+  // Role inline policies: at least the ledger / NotResource checks apply to every role, including
+  // reviewed CDK carve-outs (the full inline-policy review is pre-arming blocker 1).
+  if (type === 'AWS::IAM::Role' && props.Policies !== undefined) {
+    const inline = Array.isArray(props.Policies) ? props.Policies : [props.Policies];
+    for (const policy of inline) {
+      const statements = isRecord(policy) && isRecord(policy.PolicyDocument) ? policy.PolicyDocument.Statement : undefined;
+      if (!Array.isArray(statements)) {
+        out.push(violation('IAM_POLICY_OPAQUE', stackName, logicalId, 'role inline policy has no concrete Statement array'));
+        continue;
+      }
+      for (const statement of statements) {
+        if (isOpaqueStatement(statement)) {
+          out.push(violation('IAM_POLICY_OPAQUE', stackName, logicalId, 'inline statement is not a plain object with a literal Effect (e.g. Fn::If)'));
+          continue;
+        }
+        if (statement.Effect !== 'Allow') continue;
+        if (statement.NotResource !== undefined) {
+          out.push(violation('IAM_NOT_RESOURCE', stackName, logicalId, 'inline Allow with NotResource'));
+        }
+        if (statementReachesSparseLedger(statement, templateResources)) {
+          out.push(violation('IAM_REACHES_SPARSE_LEDGER', stackName, logicalId, 'role inline policy may reach the broker-only sparse deploy ledger'));
+        }
+      }
+    }
+  }
+
+  if (type === 'AWS::Lambda::Function') {
+    const memory = props.MemorySize;
+    if (typeof memory === 'number' && memory > 2048) {
+      out.push(violation('LAMBDA_MEMORY_TOO_HIGH', stackName, logicalId, `MemorySize ${memory}MB exceeds dev ceiling 2048MB`));
+    }
+    if (Object.prototype.hasOwnProperty.call(PRODUCT_LAMBDA_CONCURRENCY, logicalId)) {
+      const max = PRODUCT_LAMBDA_CONCURRENCY[logicalId];
+      const reserved = props.ReservedConcurrentExecutions;
+      if (typeof reserved !== 'number') {
+        out.push(violation('LAMBDA_CONCURRENCY_REQUIRED', stackName, logicalId, `product Lambda requires ReservedConcurrentExecutions <= ${max}`));
+      } else if (reserved < 1 || reserved > max) {
+        out.push(violation('LAMBDA_CONCURRENCY_TOO_HIGH', stackName, logicalId, `ReservedConcurrentExecutions ${reserved} outside 1..${max}`));
+      }
+    }
+  }
+
+  if (type === 'AWS::DynamoDB::Table') {
+    if (props.BillingMode !== 'PAY_PER_REQUEST') {
+      out.push(violation('DYNAMODB_ON_DEMAND_REQUIRED', stackName, logicalId, 'dev table must use PAY_PER_REQUEST'));
+    }
+    if ('ProvisionedThroughput' in props) {
+      out.push(violation('DYNAMODB_PROVISIONED_FORBIDDEN', stackName, logicalId, 'ProvisionedThroughput is not allowed in dev'));
+    }
+  }
+
+  if (type === 'AWS::S3::Bucket') {
+    const pab = props.PublicAccessBlockConfiguration;
+    const safe =
+      isRecord(pab) &&
+      pab.BlockPublicAcls === true &&
+      pab.BlockPublicPolicy === true &&
+      pab.IgnorePublicAcls === true &&
+      pab.RestrictPublicBuckets === true;
+    if (!safe) {
+      out.push(violation('S3_PUBLIC_BLOCK_REQUIRED', stackName, logicalId, 'all S3 public-access-block flags must be true'));
+    }
+  }
+
+  if (type === 'AWS::CloudFront::Distribution') {
+    const config = props.DistributionConfig;
+    if (!isRecord(config) || !['PriceClass_100', 'PriceClass_200'].includes(config.PriceClass)) {
+      out.push(violation('CLOUDFRONT_PRICE_CLASS_BOUNDED', stackName, logicalId, 'dev distribution must use PriceClass_100 or PriceClass_200'));
+    }
+  }
+
+  if (type === 'AWS::Lambda::Url') {
+    const reviewed = APPROVED_FUNCTION_URLS[logicalId];
+    if (!reviewed) {
+      out.push(violation('FUNCTION_URL_NOT_REVIEWED', stackName, logicalId, 'unknown Function URL is a new public ingress'));
+    } else {
+      if (props.AuthType !== reviewed.authType) {
+        out.push(violation('FUNCTION_URL_AUTH_CHANGED', stackName, logicalId, `expected AuthType ${reviewed.authType}`));
+      }
+      if (!resolvesToLogicalId(props.TargetFunctionArn, reviewed.functionLogicalId)) {
+        out.push(violation('FUNCTION_URL_TARGET_CHANGED', stackName, logicalId, `expected target ${reviewed.functionLogicalId}`));
+      }
+    }
+  }
+
+  if (type === 'AWS::Lambda::Permission' && props.Principal === '*') {
+    const expected = APPROVED_PUBLIC_PERMISSIONS[logicalId];
+    if (!expected || !resolvesToLogicalId(props.FunctionName, expected)) {
+      out.push(violation('PUBLIC_LAMBDA_PERMISSION_NOT_REVIEWED', stackName, logicalId, 'Principal:* is not one of the reviewed server Function URL permissions'));
+    }
+  }
+
+  return out;
+}
+
+function safeTemplatePath(assemblyDir, templateFile) {
+  if (typeof templateFile !== 'string' || templateFile.length === 0) return null;
+  const resolved = path.resolve(assemblyDir, templateFile);
+  const root = path.resolve(assemblyDir) + path.sep;
+  if (!resolved.startsWith(root)) return null;
+  return resolved;
+}
+
+export function evaluateAssembly({ assemblyDir, targetAccount }) {
+  const violations = [];
+  const manifestPath = path.join(assemblyDir, 'manifest.json');
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  } catch (error) {
+    return {
+      policyVersion: POLICY_VERSION,
+      result: 'denied',
+      violations: [violation('ASSEMBLY_MANIFEST_INVALID', null, null, String(error))],
+      counts: {},
+    };
+  }
+
+  if (!isRecord(manifest) || !isRecord(manifest.artifacts)) {
+    return {
+      policyVersion: POLICY_VERSION,
+      result: 'denied',
+      violations: [violation('ASSEMBLY_MANIFEST_INVALID', null, null, 'manifest.artifacts must be an object')],
+      counts: {},
+    };
+  }
+
+  const seenStacks = new Set();
+  const counts = {};
+  let totalResources = 0;
+
+  for (const [artifactId, artifact] of Object.entries(manifest.artifacts)) {
+    if (!isRecord(artifact) || artifact.type !== 'aws:cloudformation:stack') continue;
+    const props = isRecord(artifact.properties) ? artifact.properties : {};
+    const stackName = typeof props.stackName === 'string' ? props.stackName : artifactId;
+    const expectedRegion = APPROVED_STACKS[stackName];
+
+    if (!expectedRegion) {
+      violations.push(violation('STACK_NOT_APPROVED', stackName, null, 'stack is outside the ADR 0009 autonomous dev set'));
+      continue;
+    }
+    seenStacks.add(stackName);
+
+    const expectedEnvironment = `aws://${targetAccount}/${expectedRegion}`;
+    if (artifact.environment !== expectedEnvironment) {
+      violations.push(violation('STACK_ENVIRONMENT_MISMATCH', stackName, null, `expected ${expectedEnvironment}, got ${String(artifact.environment)}`));
+    }
+
+    const templatePath = safeTemplatePath(assemblyDir, props.templateFile);
+    if (!templatePath) {
+      violations.push(violation('TEMPLATE_PATH_INVALID', stackName, null, 'templateFile escapes or is missing from cloud assembly'));
+      continue;
+    }
+
+    let template;
+    try {
+      template = JSON.parse(fs.readFileSync(templatePath, 'utf8'));
+    } catch (error) {
+      violations.push(violation('TEMPLATE_INVALID', stackName, null, String(error)));
+      continue;
+    }
+    if (!isRecord(template) || !isRecord(template.Resources)) {
+      violations.push(violation('TEMPLATE_INVALID', stackName, null, 'Resources must be an object'));
+      continue;
+    }
+
+    const entries = Object.entries(template.Resources);
+    if (entries.length > MAX_RESOURCES_PER_STACK) {
+      violations.push(violation('STACK_RESOURCE_COUNT_EXCEEDED', stackName, null, `${entries.length} resources exceeds ${MAX_RESOURCES_PER_STACK}`));
+    }
+
+    for (const [logicalId, resource] of entries) {
+      totalResources += 1;
+      if (isRecord(resource) && typeof resource.Type === 'string') {
+        counts[resource.Type] = (counts[resource.Type] ?? 0) + 1;
+      }
+      violations.push(...evaluateResource(stackName, logicalId, resource, template.Resources));
+    }
+  }
+
+  for (const stackName of Object.keys(APPROVED_STACKS)) {
+    if (!seenStacks.has(stackName)) {
+      violations.push(violation('STACK_MISSING', stackName, null, 'approved promotion assembly must contain all three reviewed stacks'));
+    }
+  }
+
+  if (totalResources > MAX_TOTAL_RESOURCES) {
+    violations.push(violation('ASSEMBLY_RESOURCE_COUNT_EXCEEDED', null, null, `${totalResources} resources exceeds ${MAX_TOTAL_RESOURCES}`));
+  }
+
+  for (const [type, cap] of Object.entries(RESOURCE_COUNT_CAPS)) {
+    const count = counts[type] ?? 0;
+    if (count > cap) {
+      violations.push(violation('RESOURCE_COUNT_EXCEEDED', null, type, `${count} resources exceeds reviewed cap ${cap}`));
+    }
+  }
+
+  return {
+    policyVersion: POLICY_VERSION,
+    result: violations.length === 0 ? 'allowed' : 'denied',
+    violations,
+    counts,
+  };
+}
+
+function parseCli(argv) {
+  let assemblyDir = '';
+  let targetAccount = '';
+  for (let i = 0; i < argv.length; i += 1) {
+    if (argv[i] === '--assembly') assemblyDir = argv[++i] ?? '';
+    else if (argv[i] === '--account') targetAccount = argv[++i] ?? '';
+    else throw new Error(`unknown argument: ${argv[i]}`);
+  }
+  if (!assemblyDir) throw new Error('--assembly is required');
+  if (!/^[0-9]{12}$/.test(targetAccount)) throw new Error('--account must be a 12-digit AWS account id');
+  return { assemblyDir, targetAccount };
+}
+
+async function main() {
+  try {
+    const args = parseCli(process.argv.slice(2));
+    const result = evaluateAssembly(args);
+    process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+    process.exitCode = result.result === 'allowed' ? 0 : 41;
+  } catch (error) {
+    process.stderr.write(String(error instanceof Error ? error.message : error) + '\n');
+    process.exitCode = 2;
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  await main();
+}

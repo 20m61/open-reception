@@ -144,7 +144,8 @@
         "arn:aws:cloudformation:*:822063948773:stack/CDKToolkit/*",
         "arn:aws:cloudformation:*:822063948773:stack/CDKToolkit-staging/*",
         "arn:aws:cloudformation:*:822063948773:stack/OpenReception-*-staging/*",
-        "arn:aws:cloudformation:*:822063948773:stack/OpenReception-*-prod/*"
+        "arn:aws:cloudformation:*:822063948773:stack/OpenReception-*-prod/*",
+        "arn:aws:cloudformation:*:*:stack/OpenReception-DevDeployBroker/*"
       ]
     },
     {
@@ -154,6 +155,7 @@
       "Resource": [
         "arn:aws:dynamodb:*:822063948773:table/nodi-*",
         "arn:aws:dynamodb:*:822063948773:table/salon-loop-*",
+        "arn:aws:dynamodb:*:*:table/OpenReception-DevDeployBroker-*",
         "arn:aws:s3:::nodi-*",
         "arn:aws:s3:::nodi-*/*",
         "arn:aws:s3:::salon-loop-*",

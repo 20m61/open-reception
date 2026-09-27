@@ -45,11 +45,17 @@ qualifier: `orcloud01`。
 **人間が Admin 権限を持つ IAM user（`user/CDK`）で実行する。**
 
 > 🔴 **`claude-boundary.json` は managed policy の 6,144 文字上限に近い。**
-> 2026-09-05 時点で **5,946 文字（空白を除いた実サイズ。残り 198 文字）**。
+> 2026-09-27 時点で **6,074 文字（空白を除いた実サイズ。残り 70 文字）**。
 > 変遷: carve-out で 5,148 → 5,682（+534）、`DenyBoundaryEscape` 分割で 5,876（+194）、
 > `PutRolePermissionsBoundary` の Allow で 5,909（+33）、Secrets Manager の
 > 読み取り許可で 6,240 相当まで膨らんだが、**Deny を削らずに詰めて** 6,037 まで戻した。
 > 2026-09-05 に PassRole をタグ条件から ARN スコープへ替えて 5,978 → 5,946（−32）。
+> 2026-09-27 に sparse deploy ledger（#1153）の table を既存の `DenyForeignProjectData` へ
+> 1 ARN 追加し、`DenyForeignProjectStacks` に broker stack（`OpenReception-DevDeployBroker`）を
+> 追加して 5,946 → 6,074（+128）。新しいステートメントでは上限を超えるため既存の Deny に畳み、
+> account 部を `*` にして短くした（Deny なので覆う範囲が増える＝安全側）。
+> 移行用の `claude-boundary-migration.json` は **6,142 / 6,144（残り 2 文字）**。次に足すときは
+> 移行用ファイルを廃止するか整理が要る。
 >
 > 🔴 **詰め方の正解（2026-08-15）**: 「入らないから Deny を削る」ではなく
 > **(a) 実効的に重複している列挙を外す**（`iam:UpdateAssumeRolePolicy` は
@@ -64,7 +70,7 @@ qualifier: `orcloud01`。
 > ポリシーになるので、`aws-policy-shape.test.ts` の「IAM の許すパスで始まる」テストで
 > 固定してある。2026-08-15 に実際にこれで `create-policy-version` が落ちた。
 >
-> **残りは 198 文字。**
+> **残りは 70 文字。**
 > 次にステートメントを足す人は、まず余白を測ること:
 >
 > ```bash
@@ -77,7 +83,7 @@ qualifier: `orcloud01`。
 > どちらも attach する**（IAM は 1 プリンシパルに boundary を 1 本しか付けられないので、
 > **分割はできない**）—— つまり実質的には**アクションの列挙を整理するしかない**。
 > 「入らないから Deny を削る」は境界の後退なので、必ず人間の承認を取ること。
-> `claude-cfn-exec.json` は 5,109 / 6,144（残り 1,035）で余裕がある。
+> `claude-cfn-exec.json` は 5,237 / 6,144（残り 907）で余裕がある。
 >
 > 🔴 **層 2（cfn-exec）と層 4（boundary）は同じ規則の 2 つの写しである。** 実効権限は
 > `identity ∩ boundary` なので、**片方だけ直しても効かない**。2026-08-15 にこれで 2 度落ちた

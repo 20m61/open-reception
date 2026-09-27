@@ -1,0 +1,502 @@
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import * as path from 'node:path';
+import * as cdk from 'aws-cdk-lib';
+import { Construct } from 'constructs';
+import * as codebuild from 'aws-cdk-lib/aws-codebuild';
+import * as codepipeline from 'aws-cdk-lib/aws-codepipeline';
+import * as actions from 'aws-cdk-lib/aws-codepipeline-actions';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as logs from 'aws-cdk-lib/aws-logs';
+import * as s3assets from 'aws-cdk-lib/aws-s3-assets';
+
+export const DEV_DEPLOY_PROMOTION_BRANCH = 'dev-deploy';
+
+const VALIDATION_PROJECT_NAME = 'OpenReceptionDevDeployValidation';
+const BROKER_PROJECT_NAME = 'OpenReceptionTrustedDevDeployBroker';
+
+/** Source of the trusted cloud-assembly policy that the broker stack publishes as an asset. */
+export const TRUSTED_POLICY_SOURCE_PATH = path.join(__dirname, '../../broker/trusted-policy.mjs');
+
+/** Partition key value of every sparse-ledger item (`infra/broker/sparse-ledger.mjs` PROJECT_KEY). */
+export const SPARSE_LEDGER_PROJECT_KEY = 'PROJECT#open-reception';
+
+/**
+ * The only DynamoDB actions the broker needs for the sparse ledger (#1153): consistent reads,
+ * create-only attempt records, and conditional counter/override updates (TransactWriteItems is
+ * authorized per contained Put/Update). No Delete, Scan, Query, Batch* or table management.
+ */
+/**
+ * Data-plane writes the table's resource policy denies to every principal except the broker role
+ * and the human override-issuer role. The Claude boundary / CFN exec policies also deny
+ * `dynamodb:*` on this stack's tables (`scripts/aws-policies`), so a deployed candidate workload
+ * cannot forge an override or reset a counter even though it lives in the same account.
+ */
+/**
+ * Pattern for the two human role ARN parameters. The negative lookahead (on the role name, after
+ * any path) refuses roles that must never hold ledger authority: Claude's deploy chain / CDK
+ * bootstrap roles (`cdk-orcloud01-*`), every `OpenReception*` role (Claude's entry / deploy
+ * roles, this stack's broker / validation roles, and candidate workload roles such as
+ * `OpenReception-Web-dev-*`), and other projects' workload prefixes in the same account.
+ * CloudFormation AllowedPattern is a Java regex, which supports lookahead.
+ */
+export const HUMAN_ROLE_ARN_PATTERN =
+  '^arn:aws[^:]*:iam::[0-9]{12}:role/(?:[A-Za-z0-9+=,.@_-]+/)*(?!cdk-orcloud01-|OpenReception|nodi-|salon-loop-|Kiaff)[A-Za-z0-9+=,.@_-]+$';
+
+export const SPARSE_LEDGER_PROTECTED_WRITES = [
+  'dynamodb:PutItem',
+  'dynamodb:UpdateItem',
+  'dynamodb:DeleteItem',
+  'dynamodb:BatchWriteItem',
+  'dynamodb:PartiQLInsert',
+  'dynamodb:PartiQLUpdate',
+  'dynamodb:PartiQLDelete',
+] as const;
+
+/**
+ * Control-plane actions that could silently reset or unprotect the ledger: TTL on a counter
+ * attribute deletes items, a resource-policy change removes this protection, UpdateTable can
+ * disable deletion protection, and so on. Denied to every principal except the human override
+ * issuer and the human stack-deploy (CloudFormation execution) role, which needs them to update
+ * this stack.
+ */
+export const SPARSE_LEDGER_PROTECTED_CONTROL = [
+  'dynamodb:UpdateTimeToLive',
+  'dynamodb:PutResourcePolicy',
+  'dynamodb:DeleteResourcePolicy',
+  'dynamodb:UpdateTable',
+  'dynamodb:DeleteTable',
+  'dynamodb:UpdateContinuousBackups',
+  'dynamodb:RestoreTableFromBackup',
+  'dynamodb:RestoreTableToPointInTime',
+  'dynamodb:UpdateKinesisStreamingDestination',
+  'dynamodb:EnableKinesisStreamingDestination',
+  'dynamodb:DisableKinesisStreamingDestination',
+] as const;
+
+export const SPARSE_LEDGER_BROKER_ACTIONS = [
+  'dynamodb:GetItem',
+  'dynamodb:PutItem',
+  'dynamodb:UpdateItem',
+] as const;
+
+/** Broker-local download target of the trusted policy (outside the candidate artifact tree). */
+export const TRUSTED_POLICY_LOCAL_PATH = '/tmp/open-reception-trusted-policy.mjs';
+
+/**
+ * SHA-256 of the trusted policy file content, computed at synth time.
+ *
+ * This is deliberately NOT the CDK asset fingerprint (`Asset.assetHash`), which is a CDK-internal
+ * staging hash and cannot be recomputed from the downloaded object. The broker verifies the
+ * downloaded bytes against this value before executing them.
+ */
+export const trustedPolicySha256 = (file: string = TRUSTED_POLICY_SOURCE_PATH): string =>
+  createHash('sha256').update(readFileSync(file)).digest('hex');
+
+/**
+ * Wrap a dependency-free JS snippet as a POSIX-shell-safe `node -e '<script>' [args...]` command.
+ * Shell single quotes disable every expansion (`$`, backticks, `\`), so the snippet must not
+ * contain a single quote itself; JS string literals inside use double quotes. Positional args
+ * (read via `process.argv[1..]`) are restricted to plain absolute/relative path characters.
+ */
+export const nodeEval = (script: string, ...args: string[]): string => {
+  if (script.includes("'")) {
+    throw new Error('inline broker script must not contain a single quote');
+  }
+  for (const arg of args) {
+    if (!/^[A-Za-z0-9_./-]+$/.test(arg)) {
+      throw new Error(`inline broker script argument must be a plain path: ${arg}`);
+    }
+  }
+  return [`node -e '${script}'`, ...args].join(' ');
+};
+
+/** Validation: record the trusted CodePipeline CommitId (never candidate metadata). */
+export const VALIDATION_EVIDENCE_SCRIPT = [
+  'const fs=require("fs");',
+  'const revision=process.env.OR_TRUSTED_SOURCE_REVISION;',
+  'if(typeof revision!=="string"||!/^[0-9a-f]{40}$/.test(revision)){throw new Error("trusted source revision missing or invalid")}',
+  'const out={schemaVersion:1,sourceRevision:revision,validationBuildArn:process.env.CODEBUILD_BUILD_ARN||"unknown",observedAt:new Date().toISOString(),status:"validation-complete"};',
+  'fs.writeFileSync("broker-evidence.json",JSON.stringify(out,null,2));',
+].join(' ');
+
+/** Trusted revision shape: a full 40-hex commit SHA (short or missing values fail closed). */
+const FULL_SHA_CHECK =
+  'const isFullSha=(v)=>typeof v==="string"&&/^[0-9a-f]{40}$/.test(v);';
+
+/**
+ * Broker: candidate-produced evidence must name exactly the trusted pipeline CommitId.
+ * Both sides must be full 40-hex SHAs; a stale/substituted artifact that declares another
+ * revision, a short SHA, or no revision is rejected before the policy runs.
+ */
+export const BROKER_REVISION_CHECK_SCRIPT = [
+  'const fs=require("fs");',
+  FULL_SHA_CHECK,
+  'const e=JSON.parse(fs.readFileSync("broker-evidence.json","utf8"));',
+  'const trusted=process.env.OR_TRUSTED_SOURCE_REVISION;',
+  'if(!isFullSha(trusted)){throw new Error("trusted source revision missing or invalid")}',
+  'if(e===null||typeof e!=="object"||e.schemaVersion!==1||!isFullSha(e.sourceRevision)||e.sourceRevision!==trusted){throw new Error("validation evidence revision mismatch")}',
+].join(' ');
+
+/**
+ * Broker: verify the downloaded trusted policy before executing it.
+ *
+ * The object lives in the shared CDK bootstrap asset bucket, so read access is not exclusive to
+ * the broker role and any principal with write access to that bucket could replace it. The
+ * content SHA-256 pinned at synth (`OR_TRUSTED_POLICY_SHA256`) is the control: a missing or
+ * malformed pin, a missing file, or any byte difference fails closed before `node` runs it.
+ * The file path is `process.argv[1]`.
+ */
+export const BROKER_POLICY_HASH_CHECK_SCRIPT = [
+  'const fs=require("fs");',
+  'const crypto=require("crypto");',
+  'const expected=process.env.OR_TRUSTED_POLICY_SHA256;',
+  'if(typeof expected!=="string"||!/^[0-9a-f]{64}$/.test(expected)){throw new Error("trusted policy sha256 pin missing or invalid")}',
+  'const file=process.argv[1];',
+  'if(typeof file!=="string"||!file){throw new Error("trusted policy path missing")}',
+  'const actual=crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");',
+  'if(actual!==expected){throw new Error("trusted policy sha256 mismatch")}',
+].join(' ');
+
+/**
+ * Broker: even an allowed static assembly cannot mutate yet.
+ *
+ * Emits the Foundation safe-dev-deploy S11 minimum shape. `source_revision` is the trusted
+ * CodePipeline CommitId; `attempt_id` is the CodeBuild build id (unique per attempt, so two
+ * attempts on one revision differ); `decided_at` is the broker clock; `policy_version` binds the
+ * decision to the stack-owned policy (`POLICY_VERSION` reported by the trusted policy run, plus
+ * the synth-time content SHA-256 of the policy file, verified before the policy ran). Missing inputs fail closed (no result file).
+ */
+export const BROKER_NOT_ARMED_RESULT_SCRIPT = [
+  'const fs=require("fs");',
+  FULL_SHA_CHECK,
+  'const sourceRevision=process.env.OR_TRUSTED_SOURCE_REVISION;',
+  'if(!isFullSha(sourceRevision)){throw new Error("trusted source revision missing or invalid")}',
+  'const attemptId=process.env.CODEBUILD_BUILD_ID;',
+  'if(typeof attemptId!=="string"||!attemptId){throw new Error("attempt id missing")}',
+  'const policySha256=process.env.OR_TRUSTED_POLICY_SHA256;',
+  'if(typeof policySha256!=="string"||!/^[0-9a-f]{64}$/.test(policySha256)){throw new Error("trusted policy sha256 missing or invalid")}',
+  'const policy=JSON.parse(fs.readFileSync("trusted-policy-result.json","utf8"));',
+  'if(policy===null||typeof policy!=="object"||policy.result!=="allowed"||!Number.isInteger(policy.policyVersion)){throw new Error("trusted policy result missing or not allowed")}',
+  'const result={result:"denied",source_revision:sourceRevision,attempt_id:attemptId,decided_at:new Date().toISOString(),policy_version:"trusted-policy@"+policy.policyVersion+"+sha256:"+policySha256,stage:"broker-bootstrap",rule:"BROKER_NOT_ARMED",resource:null,reason:"Static trusted policy passed, but sparse ledger/live ChangeSet/role chain are intentionally not armed",retryable:false,evidence_ref:process.env.CODEBUILD_BUILD_ARN||"unknown"};',
+  'fs.writeFileSync("broker-result.json",JSON.stringify(result,null,2));',
+  'console.log(JSON.stringify(result));',
+].join(' ');
+
+export class DevDeployBrokerStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    const githubConnectionArn = new cdk.CfnParameter(this, 'GitHubConnectionArn', {
+      type: 'String',
+      description:
+        'Human-approved AWS CodeConnections connection ARN for 20m61/open-reception.',
+      allowedPattern:
+        '^arn:aws[^:]*:(codeconnections|codestar-connections):[^:]+:[0-9]{12}:connection/.+$',
+      constraintDescription: 'must be an AWS CodeConnections connection ARN',
+    });
+
+    // Non-secret promotion context. Raw ORIGIN_VERIFY_SECRET is deliberately absent.
+    const appSecretsName = new cdk.CfnParameter(this, 'DevAppSecretsName', {
+      type: 'String',
+      description:
+        'Secrets Manager name used for appSecretsName and originVerifySecretName in dev synth.',
+      allowedPattern: '^[A-Za-z0-9/_+=.@-]+$',
+    });
+    const publicOriginOverride = new cdk.CfnParameter(this, 'DevPublicOriginOverride', {
+      type: 'String',
+      description: 'Current HTTPS public origin used when synthesizing dev QR/public links.',
+      allowedPattern: '^https://[^\\s/]+(?::[0-9]+)?(?:/.*)?$',
+    });
+    const providerSecretBackend = new cdk.CfnParameter(this, 'DevProviderSecretBackend', {
+      type: 'String',
+      default: 'secrets-manager',
+      allowedValues: ['memory', 'secrets-manager'],
+      description: 'Provider secret backend for the dev cloud assembly.',
+    });
+
+    // S5a: the human override channel. The owner names the role at deploy time; it is the only
+    // principal besides the broker that the ledger accepts writes from.
+    const overrideIssuerRoleArn = new cdk.CfnParameter(this, 'SparseLedgerOverrideIssuerRoleArn', {
+      type: 'String',
+      description:
+        'IAM role ARN (this account) that a human uses to initialise the sparse ledger and issue one-shot overrides. Never a Claude/candidate role.',
+      allowedPattern: HUMAN_ROLE_ARN_PATTERN,
+    });
+
+    // The CloudFormation execution role a human uses to deploy/update THIS stack. It is the only
+    // principal besides the issuer allowed to change the ledger's configuration.
+    const stackDeployRoleArn = new cdk.CfnParameter(this, 'SparseLedgerStackDeployRoleArn', {
+      type: 'String',
+      description:
+        'IAM role ARN (this account) CloudFormation uses when a human deploys this stack (e.g. the admin CDK bootstrap cfn-exec role). Never a Claude/candidate role.',
+      allowedPattern: HUMAN_ROLE_ARN_PATTERN,
+    });
+
+    const validationRole = new iam.Role(this, 'ValidationRole', {
+      roleName: 'OpenReceptionDevDeployValidationRole',
+      assumedBy: new iam.ServicePrincipal('codebuild.amazonaws.com'),
+      description:
+        'Unprivileged candidate-code validation; no dev mutation or deploy-role AssumeRole authority.',
+    });
+
+    const brokerRole = new iam.Role(this, 'TrustedBrokerRole', {
+      roleName: 'OpenReceptionTrustedDevDeployBrokerRole',
+      assumedBy: new iam.ServicePrincipal('codebuild.amazonaws.com'),
+      description:
+        'Trusted broker; static policy only. Mutation role chain is intentionally unarmed.',
+    });
+
+    // Published to the shared CDK bootstrap asset bucket when the human-managed broker stack is
+    // deployed. Candidate pipeline artifacts never supply the trusted policy implementation.
+    // Read access to that bucket is not exclusive to the broker, so the broker pins and verifies
+    // the file's content SHA-256 (computed here from the same source file) before executing it.
+    const trustedPolicyAsset = new s3assets.Asset(this, 'TrustedPolicyAsset', {
+      path: TRUSTED_POLICY_SOURCE_PATH,
+    });
+    const trustedPolicyContentSha256 = trustedPolicySha256();
+    trustedPolicyAsset.grantRead(brokerRole);
+
+    // Sparse dev-deploy attempt ledger (#1153, Foundation S6a): state in the trusted account,
+    // writable only by the broker. The Validation role (candidate code) gets no statement on it.
+    // Not armed yet: nothing in the broker buildspec reads or writes it until mutation is armed
+    // (unarmed runs never reach the mutation boundary, so there is no attempt to count).
+    // No fixed physical name (avoids the recreate collision recorded as pre-arming blocker 6).
+    const sparseLedger = new dynamodb.Table(this, 'SparseDeployLedger', {
+      partitionKey: { name: 'PK', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'SK', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+      deletionProtection: true,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      // A table resource policy cannot name its own ARN (circular); '*' here means this table.
+      resourcePolicy: new iam.PolicyDocument({
+        statements: [
+          new iam.PolicyStatement({
+            sid: 'DenyLedgerWritesExceptBrokerAndHumanIssuer',
+            effect: iam.Effect.DENY,
+            principals: [new iam.AnyPrincipal()],
+            actions: [...SPARSE_LEDGER_PROTECTED_WRITES],
+            resources: ['*'],
+            conditions: {
+              ArnNotEquals: {
+                'aws:PrincipalArn': [brokerRole.roleArn, overrideIssuerRoleArn.valueAsString],
+              },
+            },
+          }),
+          new iam.PolicyStatement({
+            sid: 'DenyLedgerControlExceptHumanRoles',
+            effect: iam.Effect.DENY,
+            principals: [new iam.AnyPrincipal()],
+            actions: [...SPARSE_LEDGER_PROTECTED_CONTROL],
+            resources: ['*'],
+            conditions: {
+              ArnNotEquals: {
+                'aws:PrincipalArn': [overrideIssuerRoleArn.valueAsString, stackDeployRoleArn.valueAsString],
+              },
+            },
+          }),
+        ],
+      }),
+    });
+    brokerRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [...SPARSE_LEDGER_BROKER_ACTIONS],
+        resources: [sparseLedger.tableArn],
+        conditions: {
+          'ForAllValues:StringEquals': { 'dynamodb:LeadingKeys': [SPARSE_LEDGER_PROJECT_KEY] },
+        },
+      }),
+    );
+
+    const validationLogs = new logs.LogGroup(this, 'ValidationLogs', {
+      logGroupName: '/aws/codebuild/open-reception-dev-deploy-validation',
+      retention: logs.RetentionDays.ONE_MONTH,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+    const brokerLogs = new logs.LogGroup(this, 'BrokerLogs', {
+      logGroupName: '/aws/codebuild/open-reception-trusted-dev-deploy-broker',
+      retention: logs.RetentionDays.ONE_MONTH,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    const validationProject = new codebuild.PipelineProject(this, 'ValidationProject', {
+      projectName: VALIDATION_PROJECT_NAME,
+      description:
+        'Candidate-controlled validation with no AWS dev mutation authority; emits untrusted evidence/cloud assembly.',
+      role: validationRole,
+      concurrentBuildLimit: 1,
+      timeout: cdk.Duration.minutes(30),
+      queuedTimeout: cdk.Duration.minutes(5),
+      environment: {
+        buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
+        computeType: codebuild.ComputeType.SMALL,
+        privileged: false,
+        environmentVariables: {
+          OR_BROKER_TARGET_ACCOUNT: { value: cdk.Aws.ACCOUNT_ID },
+          OR_BROKER_TARGET_REGION: { value: cdk.Aws.REGION },
+          OR_APP_SECRETS_NAME: { value: appSecretsName.valueAsString },
+          OR_PUBLIC_ORIGIN_OVERRIDE: { value: publicOriginOverride.valueAsString },
+          OR_PROVIDER_SECRET_BACKEND: { value: providerSecretBackend.valueAsString },
+        },
+      },
+      logging: {
+        cloudWatch: { logGroup: validationLogs },
+      },
+      buildSpec: codebuild.BuildSpec.fromObject({
+        version: '0.2',
+        phases: {
+          install: {
+            'runtime-versions': { nodejs: 22 },
+            commands: [
+              // Candidate-controlled lifecycle scripts run below. Scrub standard SDK credential
+              // providers first. The role has no dev mutation authority regardless; this also
+              // preserves the MiniStack/Moto hermeticity contract.
+              'unset AWS_SESSION_TOKEN AWS_PROFILE AWS_CREDENTIAL_EXPIRATION AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE AWS_CONTAINER_CREDENTIALS_RELATIVE_URI AWS_CONTAINER_CREDENTIALS_FULL_URI AWS_CONTAINER_AUTHORIZATION_TOKEN AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
+              'export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_EC2_METADATA_DISABLED=true',
+              'npm ci',
+              'npm --prefix infra ci',
+            ],
+          },
+          build: {
+            commands: [
+              // CodePipeline source archives do not provide a trustworthy local git history.
+              // Promotion is intentionally rare, so run the full suite instead of a diff-optimized
+              // PR gate. The inexpensive inner loop remains local Claude + MiniStack/Moto.
+              'npm run typecheck',
+              'npm run lint',
+              'npm test',
+              'npm run build:open-next',
+              'npm run aws:local:test',
+              'npm --prefix infra run typecheck',
+              'npm --prefix infra test',
+              // Only the three stacks already admitted by ADR 0009 are synthesized.
+              // Context is non-secret; originVerifySecretName reuses the app secret NAME.
+              'cd infra && CDK_DEFAULT_ACCOUNT="$OR_BROKER_TARGET_ACCOUNT" CDK_DEFAULT_REGION="$OR_BROKER_TARGET_REGION" npx cdk synth OpenReception-Web-dev OpenReception-WebMonitoring-dev OpenReception-CfMon-dev --output cdk.out -c env=dev -c claudeBoundary=OpenReceptionClaudeBoundary -c appSecretsName="$OR_APP_SECRETS_NAME" -c originVerifySecretName="$OR_APP_SECRETS_NAME" -c publicOriginOverride="$OR_PUBLIC_ORIGIN_OVERRIDE" -c providerSecretBackend="$OR_PROVIDER_SECRET_BACKEND" && cd ..',
+              nodeEval(VALIDATION_EVIDENCE_SCRIPT),
+            ],
+          },
+        },
+        artifacts: {
+          files: ['broker-evidence.json', 'infra/cdk.out/**/*'],
+        },
+      }),
+    });
+
+    const brokerProject = new codebuild.PipelineProject(this, 'TrustedBrokerProject', {
+      projectName: BROKER_PROJECT_NAME,
+      description:
+        'Trusted broker: independently evaluates candidate cloud assembly; mutation is intentionally unarmed.',
+      role: brokerRole,
+      concurrentBuildLimit: 1,
+      timeout: cdk.Duration.minutes(10),
+      queuedTimeout: cdk.Duration.minutes(5),
+      environment: {
+        buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
+        computeType: codebuild.ComputeType.SMALL,
+        privileged: false,
+        environmentVariables: {
+          OR_BROKER_TARGET_ACCOUNT: { value: cdk.Aws.ACCOUNT_ID },
+          OR_TRUSTED_POLICY_BUCKET: { value: trustedPolicyAsset.s3BucketName },
+          OR_TRUSTED_POLICY_KEY: { value: trustedPolicyAsset.s3ObjectKey },
+          OR_TRUSTED_POLICY_SHA256: { value: trustedPolicyContentSha256 },
+        },
+      },
+      logging: {
+        cloudWatch: { logGroup: brokerLogs },
+      },
+      // Critical: keep this immediate/stack-owned. Do NOT use fromSourceFilename().
+      buildSpec: codebuild.BuildSpec.fromObject({
+        version: '0.2',
+        phases: {
+          build: {
+            commands: [
+              'test -f broker-evidence.json',
+              'test -f infra/cdk.out/manifest.json',
+              nodeEval(BROKER_REVISION_CHECK_SCRIPT),
+              // Download policy by the S3 location injected by this stack, then verify the pinned
+              // content SHA-256 before executing it (fail closed on any mismatch).
+              `aws s3 cp "s3://$OR_TRUSTED_POLICY_BUCKET/$OR_TRUSTED_POLICY_KEY" ${TRUSTED_POLICY_LOCAL_PATH} --only-show-errors`,
+              nodeEval(BROKER_POLICY_HASH_CHECK_SCRIPT, TRUSTED_POLICY_LOCAL_PATH),
+              `node ${TRUSTED_POLICY_LOCAL_PATH} --assembly infra/cdk.out --account "$OR_BROKER_TARGET_ACCOUNT" > trusted-policy-result.json`,
+              // Even an allowed static assembly cannot mutate yet.
+              nodeEval(BROKER_NOT_ARMED_RESULT_SCRIPT),
+              'echo "Trusted broker is intentionally unarmed." >&2',
+              'exit 42',
+            ],
+          },
+        },
+      }),
+    });
+
+    const pipeline = new codepipeline.Pipeline(this, 'Pipeline', {
+      pipelineName: 'OpenReceptionSparseDevDeploy',
+      pipelineType: codepipeline.PipelineType.V1,
+      crossAccountKeys: false,
+      restartExecutionOnUpdate: false,
+    });
+
+    const source = new codepipeline.Artifact('Source');
+    const validated = new codepipeline.Artifact('Validated');
+
+    const sourceAction = new actions.CodeStarConnectionsSourceAction({
+      actionName: 'PromotionBranch',
+      owner: '20m61',
+      repo: 'open-reception',
+      branch: DEV_DEPLOY_PROMOTION_BRANCH,
+      connectionArn: githubConnectionArn.valueAsString,
+      output: source,
+      triggerOnPush: true,
+      variablesNamespace: 'OpenReceptionSource',
+    });
+
+    pipeline.addStage({
+      stageName: 'Source',
+      actions: [sourceAction],
+    });
+
+    pipeline.addStage({
+      stageName: 'Validate',
+      actions: [
+        new actions.CodeBuildAction({
+          actionName: 'UnprivilegedValidation',
+          project: validationProject,
+          input: source,
+          outputs: [validated],
+          environmentVariables: {
+            // Trusted source metadata comes from the CodeConnections action, not candidate files.
+            OR_TRUSTED_SOURCE_REVISION: {
+              type: codebuild.BuildEnvironmentVariableType.PLAINTEXT,
+              value: sourceAction.variables.commitId,
+            },
+          },
+        }),
+      ],
+    });
+
+    pipeline.addStage({
+      stageName: 'BrokerBoundary',
+      actions: [
+        new actions.CodeBuildAction({
+          actionName: 'TrustedBrokerUnarmed',
+          project: brokerProject,
+          input: validated,
+          environmentVariables: {
+            OR_TRUSTED_SOURCE_REVISION: {
+              type: codebuild.BuildEnvironmentVariableType.PLAINTEXT,
+              value: sourceAction.variables.commitId,
+            },
+          },
+        }),
+      ],
+    });
+
+    cdk.Tags.of(this).add('Project', 'open-reception');
+    cdk.Tags.of(this).add('Environment', 'dev');
+    cdk.Tags.of(this).add('Component', 'dev-deploy-broker');
+    cdk.Tags.of(this).add('ManagedBy', 'cdk');
+  }
+}
