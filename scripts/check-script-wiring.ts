@@ -130,7 +130,7 @@ export const MANUAL_ONLY_ALLOWLIST: Readonly<Record<string, string>> = {
   'aws-issue-credentials.sh':
     '人間がローカル Mac の Admin 環境でデプロイ窓を開けるときだけ走る（値をリポジトリに残さない）。',
   'deploy-context-block.ts':
-    '`aws-issue-credentials.sh`（manual-only）が、窓を開けるときにデプロイ context 4 変数を貼り付け用ブロックへ組み立てるのに使う CLI。窓を開ける操作の中でしか意味が無く、秘密の値を扱うので自動では走らせない (#989)。',
+    '`aws-issue-credentials.sh`（manual-only）が、窓を開けるときにデプロイ context 3 変数を貼り付け用ブロックへ組み立てるのに使う CLI。窓を開ける操作の中でしか意味が無く、秘密の値を扱うので自動では走らせない (#989)。',
   'admin-user-provision.sh':
     '管理者 Cognito ユーザーを人が用意する入口そのもの (#1051)。クラウドセッションの資格情報は `claude-deploy-entry.json` の `DenyEverythingElseOutsideTheChain` により Cognito が明示 Deny（停止境界「Cognito・認可の境界変更」の機械強制）なので、Admin 資格情報を持つ人が手元で流すしかない。パスワードを対話で受け取るため自動では走らせない。',
   'admin-user-credentials.ts':
@@ -152,7 +152,7 @@ export const MANUAL_ONLY_ALLOWLIST: Readonly<Record<string, string>> = {
   'aws-command-preflight.ts':
     'deploy wrapper が AWS を呼ぶ前に依存コマンドの有無を確かめる CLI。デプロイ時にしか走らない。',
   'aws-deploy-context.ts':
-    'デプロイに必須の CDK context を解決する CLI。`diff` / `deploy` の実行時にしか意味が無い。',
+    'デプロイに必須の CDK context を解決する CLI。`diff` / `deploy` の実行時にしか意味が無い（`--retired-only` は deploy wrapper の全サブコマンドの先頭で廃止変数だけを見る。#1148）。',
   'aws-stack-selection.ts':
     '`--only` を解決してデプロイ対象を決める CLI。`diff` / `deploy` の実行時にしか意味が無い。',
 };

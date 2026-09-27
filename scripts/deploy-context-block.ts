@@ -1,5 +1,5 @@
 /**
- * 窓を開けるときに貼る「デプロイ context 4 変数」のブロックを stdout へ出す (#989)。
+ * 窓を開けるときに貼る「デプロイ context 3 変数」のブロックを stdout へ出す (#989)。
  *
  * `scripts/aws-issue-credentials.sh`（context の同梱は既定 ON。`--no-context` で外す）から
  * 呼ばれる薄い I/O 層。
@@ -18,13 +18,16 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
+  findRetiredDeployContextVars,
   parseDeployContextFile,
   resolveDeployContextEnvBlock,
+  retiredDeployContextMessage,
 } from '../src/domain/governance/deploy-context';
 
 /**
- * 既定はリポジトリの**外**。`OR_ORIGIN_VERIFY_SECRET` は秘密の値そのものなので、
- * 作業ツリーに置いて `.gitignore` に頼る形にしない（ignore 行が消えた瞬間に commit され得る）。
+ * 既定はリポジトリの**外**。
+ * #1148 で origin-verify の生 secret は deploy context から削除したが、
+ * 運用 context をソース管理へ混ぜない境界はそのまま維持する。
  */
 function contextFilePath(env: NodeJS.ProcessEnv): string {
   const override = env.OR_DEPLOY_CONTEXT_FILE?.trim();
@@ -43,10 +46,31 @@ function readContextFile(path: string): Record<string, string> {
   }
 }
 
+// 引数は「無し」か位置引数 `retired-only` だけ。それ以外（ダッシュ付きの綴り違いなど）で
+// 通常の解決へ落ちると、検査のつもりの呼び出しが context の値を stdout へ出してしまう。
+const cliArgs = process.argv.slice(2);
+if (!(cliArgs.length === 0 || (cliArgs.length === 1 && cliArgs[0] === 'retired-only'))) {
+  process.stderr.write('未知の引数です（使えるのは位置引数 retired-only だけ）\n');
+  process.exit(2);
+}
+const retiredOnly = cliArgs.length === 1;
+
 const path = contextFilePath(process.env);
 const fromFile = readContextFile(path);
 // env を優先する（一時的な上書きを効かせる）。
 const merged: Record<string, string | undefined> = { ...fromFile, ...process.env };
+
+// 廃止変数は --no-context で回避させない（ファイルに残った生 secret を消させる）ため、別の終了コード。
+// 位置引数 `retired-only` はこの検査だけを行う（`aws-issue-credentials.sh` が --no-context でも必ず呼ぶ）。
+const retired = findRetiredDeployContextVars(merged);
+if (retired.length > 0) {
+  process.stderr.write(`${retiredDeployContextMessage(retired)}\n\n`);
+  process.stderr.write(`環境変数と、次のファイルの両方から削除してください: ${path}\n`);
+  process.exit(3);
+}
+if (retiredOnly) {
+  process.exit(0);
+}
 
 const result = resolveDeployContextEnvBlock(merged);
 if (!result.ok) {

@@ -22,7 +22,7 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { makeSharedTempDir } from '../helpers/temp';
+import { makeSharedTempDir, makeTempDir } from '../helpers/temp';
 /**
  * 🔴 **検査前にコメント（と、必要なら文字列リテラル）を落とす。**
  *
@@ -74,6 +74,99 @@ function run(args: ReadonlyArray<string>, env: Record<string, string> = {}) {
  * 実際に壊れているものは 30s あっても落ちる。
  */
 vi.setConfig({ testTimeout: 30_000 });
+
+describe('廃止した生 origin secret は全サブコマンドの先頭で止める (#1148)', () => {
+  const RAW = 'raw-origin-verify-value-must-not-be-echoed';
+  const CLI = resolve(process.cwd(), 'scripts/aws-deploy-context.ts');
+  const withoutRetired = (): NodeJS.ProcessEnv => {
+    const env = { ...process.env };
+    delete env.OR_ORIGIN_VERIFY_SECRET;
+    return env;
+  };
+  const cli = (args: string[], env: Record<string, string>) =>
+    spawnSync('npx', ['tsx', CLI, ...args], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...withoutRetired(), ...env },
+    });
+
+  // 🔴 **`verify` はここでは spawn しない。** verify は AWS に触れず、ローカルで build と品質ゲート
+  // （＝この test 自身を含む `npm test`）を走らせる。先頭の検査が退行すると、素の spawn は
+  // verify を再帰的に起動し続ける（2026-09-27 に変異注入で実際に起きた）。verify は下の
+  // 「再帰しない形で実際に起動」（stub の npm）と「分岐より前に置かれている」で固定する。
+  it.each(['preflight', 'diff', 'deploy', 'smoke'])('%s', (sub) => {
+    const { status, stdout, stderr } = run([sub], { OR_ORIGIN_VERIFY_SECRET: RAW });
+    expect(status).toBe(2);
+    expect(stderr).toContain('OR_ORIGIN_VERIFY_SECRET');
+    expect(stderr).toContain('廃止');
+    // AWS の直前にある VITEST インターロックより前で止まる。
+    expect(stderr).not.toContain('VITEST');
+    expect(`${stdout}${stderr}`).not.toContain(RAW);
+  });
+
+  it('検査はサブコマンドの分岐（verify を含む）より前に、無条件で置かれている', () => {
+    // コメントを除いた本文で見る（コメントに同じ綴りがあっても一致させない）。
+    const src = stripBashComments(readFileSync(WRAPPER, 'utf8'));
+    // 🔴 行頭・無条件の形だけを許す。`[ "${SUB}" != verify ] && ...` のような
+    // サブコマンドごとの除外は、この形に一致しないので落ちる。
+    const unconditional =
+      /^if ! npx --no-install tsx "\$\{ROOT\}\/scripts\/aws-deploy-context\.ts" --retired-only; then\n\s+exit 2\nfi$/m;
+    const match = unconditional.exec(src);
+    expect(match).not.toBeNull();
+    expect(src.match(/--retired-only/g)).toHaveLength(1);
+    const dispatch = src.indexOf('case "${SUB}" in\n  preflight)');
+    expect(dispatch).toBeGreaterThan(0);
+    expect(match!.index).toBeLessThan(dispatch);
+  });
+
+  it('verify も止める（再帰しない形で実際に起動して確かめる）', () => {
+    // verify の最初の処理は `npm run build:open-next`。PATH の先頭に「印を出して 97 で終わる」
+    // npm を置くので、検査が退行しても build / 品質ゲート（＝この test 自身）へは進まない。
+    // さらに spawn に上限時間を付け、万一でも待ち続けない（file の testTimeout 30s に収める。
+    // SIGKILL は bash 本体にしか届かず、孫プロセスは残りうる ―― 再帰の防止は stub が担う）。
+    // The helper collects it after this test (#1136): no try/finally cleanup needed.
+    const stubDir = makeTempDir('aws-cloud-deploy-stub-npm-');
+    const stub = join(stubDir, 'npm');
+    writeFileSync(stub, '#!/bin/sh\necho STUB_NPM_REACHED >&2\nexit 97\n');
+    chmodSync(stub, 0o755);
+    const result = spawnSync('bash', [WRAPPER, 'verify'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, PATH: `${stubDir}:${process.env.PATH ?? ''}`, OR_ORIGIN_VERIFY_SECRET: RAW },
+      timeout: 25_000,
+      killSignal: 'SIGKILL',
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('OR_ORIGIN_VERIFY_SECRET');
+    expect(result.stderr).not.toContain('STUB_NPM_REACHED');
+    expect(`${result.stdout}${result.stderr}`).not.toContain(RAW);
+  });
+
+  it('空文字でも止める（存在そのものが問題）', () => {
+    const { status, stderr } = run(['smoke'], { OR_ORIGIN_VERIFY_SECRET: '' });
+    expect(status).toBe(2);
+    expect(stderr).toContain('OR_ORIGIN_VERIFY_SECRET');
+  });
+
+  it('CLI: --retired-only は無ければ黙って 0、あれば 1。通常モードも止め、stdout に何も出さない', () => {
+    const ok = cli(['--retired-only'], {});
+    expect(ok.status).toBe(0);
+    expect(ok.stdout).toBe('');
+    const retired = cli(['--retired-only'], { OR_ORIGIN_VERIFY_SECRET: RAW });
+    expect(retired.status).toBe(1);
+    expect(`${retired.stdout}${retired.stderr}`).not.toContain(RAW);
+    const full = cli([], {
+      OR_ORIGIN_VERIFY_SECRET: RAW,
+      OR_APP_SECRETS_NAME: 'open-reception/dev/app-v2',
+      OR_PUBLIC_ORIGIN_OVERRIDE: 'https://example.cloudfront.net',
+      OR_PROVIDER_SECRET_BACKEND: 'secrets-manager',
+    });
+    expect(full.status).toBe(1);
+    expect(full.stdout).toBe('');
+    expect(full.stderr).not.toContain(RAW);
+  });
+});
 
 describe('引数の検証', () => {
   it('サブコマンド無しは usage を出して非ゼロ', () => {

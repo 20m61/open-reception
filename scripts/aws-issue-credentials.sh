@@ -7,18 +7,16 @@
 # OpenReceptionClaudeDeploy-dev を assume して短命 STS を発行し、
 # claude.ai/code の環境ダイアログへ貼るための値をクリップボードへ入れる。
 #
-# 🔴 **9 変数まとめて入れる（#989）。** AWS の 5 つに加えて、デプロイに必須の context
-#    4 つ（`OR_APP_SECRETS_NAME` / `OR_ORIGIN_VERIFY_SECRET` / `OR_PUBLIC_ORIGIN_OVERRIDE` /
-#    `OR_PROVIDER_SECRET_BACKEND`）も同じブロックに載せる。以前は AWS の 5 つだけを
-#    コピーしていたため、残り 4 つが「リポジトリに書いてあるから後で」になり、
-#    2026-09-06 の 3 回目のデプロイで **`OR_APP_SECRETS_NAME` だけが未登録**のまま窓を開けて
-#    `diff` が止まった。落ちたのは 4 つのうち唯一「秘密の値ではない」もので、
-#    **秘密 3 つは貼る意識が働くのに非秘密の 1 つだけ抜ける**という形だった。
-#    9 つを 1 回のコピーにすれば「一部だけ貼る」余地そのものが消える。
+# 🔴 **8 変数まとめて入れる（#989 / #1148）。** AWS の 5 つに加えて、デプロイに必須の
+#    context 3 つ（`OR_APP_SECRETS_NAME` / `OR_PUBLIC_ORIGIN_OVERRIDE` /
+#    `OR_PROVIDER_SECRET_BACKEND`）も同じブロックに載せる。
+#
+#    #1148 で `OR_ORIGIN_VERIFY_SECRET` の生値 handoff を廃止した。
+#    `OR_APP_SECRETS_NAME` から CDK の `appSecretsName` と `originVerifySecretName` を
+#    両方生成するので、Claude Cloud / broker validation に origin-verify の値は渡らない。
 #
 #    値は `~/.config/open-reception/deploy-context.env`（`OR_DEPLOY_CONTEXT_FILE` で変更可）
-#    か環境変数から取る。**リポジトリの中には置かない** —— `OR_ORIGIN_VERIFY_SECRET` は
-#    秘密そのもので、`.gitignore` に頼る形にすると ignore 行が消えた瞬間に commit され得る。
+#    か環境変数から取る。運用 context は引き続きリポジトリの中へ置かない。
 #
 #    🔴 解決は **assume-role より前**に置く。欠けていれば資格情報を発行せずに終わる ――
 #    使えない窓を開けない（欠落に `diff` で気づくと、そこまでの往復が丸ごと窓を食う）。
@@ -81,8 +79,21 @@ fi
 #
 # 値は stdout 経由でのみ受け取る（argv に載せない＝ `ps` に秘密が出ない）。
 # 失敗時の stderr はそのまま通す ―― 純関数側が「変数名だけで値を出さない」診断を作る。
+# 🔴 廃止した生 origin-verify secret（#1148）は --no-context でも検査する。
+# 環境変数にも context ファイルにも残さない（残っていれば窓を開けない）。
+RETIRED_STATUS=0
+npx --no-install tsx "${ROOT}/scripts/deploy-context-block.ts" retired-only || RETIRED_STATUS=$?
+if [ "${RETIRED_STATUS}" -eq 3 ]; then
+  echo "廃止された変数が残っているため、窓を開けずに終了します（削除してから再実行してください）" >&2
+  exit 2
+elif [ "${RETIRED_STATUS}" -ne 0 ]; then
+  echo "廃止変数の検査を実行できないため、窓を開けずに終了します（npm install 済みか確認してください）" >&2
+  exit 2
+fi
+
 CONTEXT_BLOCK=""
 if [ "${WITH_CONTEXT}" = true ]; then
+  # 廃止変数（#1148）は上の無条件の検査で先に止まる。ここに来る失敗は context の欠落・不正だけ。
   if ! CONTEXT_BLOCK="$(npx --no-install tsx "${ROOT}/scripts/deploy-context-block.ts")"; then
     echo "デプロイ context を解決できないため、窓を開けずに終了します（--no-context で省略できます）" >&2
     exit 2
@@ -164,7 +175,10 @@ EXPIRY="${EXPIRY%$'\n'}"
 VAR_COUNT=5
 if [ -n "${CONTEXT_BLOCK}" ]; then
   BLOCK="${BLOCK}"$'\n'"${CONTEXT_BLOCK}"
-  VAR_COUNT=9
+  # context は通常 3 行だが、OR_CUSTOM_DOMAIN があれば 4 行になる。
+  # 固定値にすると表示件数だけが実態とずれるため、空でない行を数える。
+  CONTEXT_COUNT="$(printf '%s\n' "${CONTEXT_BLOCK}" | awk 'NF { count += 1 } END { print count + 0 }')"
+  VAR_COUNT=$((5 + CONTEXT_COUNT))
 fi
 
 if [ "${PRINT}" = true ]; then
@@ -188,7 +202,7 @@ fi
 echo "窓が閉じる時刻: ${EXPIRY}（${HOURS} 時間）"
 echo "claude.ai/code の環境ダイアログへ ${VAR_COUNT} つの環境変数を登録してください。"
 if [ "${VAR_COUNT}" -eq 5 ]; then
-  echo "（--no-context のため AWS の 5 つだけです。デプロイ context 4 つは別途登録してください）"
+  echo "（--no-context のため AWS の 5 つだけです。デプロイ context 3 つは別途登録してください）"
 fi
 echo "🔴 貼り終えてから新しいセッションを作ってください（env はコンテナ起動時に焼き込まれます）。"
 echo "窓を閉じるときは、同じダイアログから AWS の 5 つを削除してください。"

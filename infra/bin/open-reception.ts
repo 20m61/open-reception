@@ -73,14 +73,12 @@ const customDomain =
 // `-c appSecretsName=open-reception/prod/app`。未指定なら appEnv 平文注入のまま。
 const appSecretsName = app.node.tryGetContext('appSecretsName') as string | undefined;
 
-// 任意: CloudFront 経由検証用シークレット。指定すると Function URL を NONE + 秘密ヘッダ方式にし、
-// OAC が POST ボディを署名しない制約（GET 可・POST 403）を回避する。`-c originVerifySecret=<高エントロピー値>`。
+// #1148: `originVerifySecret`（生値）は全環境で禁止。古い context を黙って無視せず
+// WebStack で明示エラーにするため、読み取りだけ残す。
 const originVerifySecret = app.node.tryGetContext('originVerifySecret') as string | undefined;
-// **dev 以外はこちら** (issue #612)。Secrets Manager シークレット名を渡すと、CloudFront ヘッダと
-// Lambda 環境変数の両方が CFN 動的参照になる（テンプレートに平文が載らない）。
-// `-c originVerifySecretName=open-reception/prod/app`（JSON キー `ORIGIN_VERIFY_SECRET`）。
-// dev 以外で生値を渡すと WebStack が synth 時点で止める。**空文字・`=` 無しの指定も止める**
-// （`-c originVerifySecret=$UNSET_VAR` を黙って無効化に落とすと全 POST が 403 になるため）。
+// CloudFront / Lambda へは Secrets Manager dynamic reference のみを渡す (issue #612 / #1148)。
+// `-c originVerifySecretName=open-reception/dev/app-v2`（JSON キー `ORIGIN_VERIFY_SECRET`）。
+// 通常の deploy wrapper は OR_APP_SECRETS_NAME と同じ名前からこの context を生成する。
 const originVerifySecretName = app.node.tryGetContext('originVerifySecretName') as
   | string
   | undefined;

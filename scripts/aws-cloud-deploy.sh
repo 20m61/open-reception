@@ -89,6 +89,13 @@ if [ "${1:-}" = "--help" ]; then
   exit 0
 fi
 
+# 🔴 **廃止した生 origin-verify secret が残っていれば、どのサブコマンドでも止める（#1148）。**
+# diff / deploy だけで見ると、verify や smoke しか走らせないセッションでは、環境ダイアログに
+# 残った secret が黙って渡り続ける。AWS に触れる前に、変数名だけを示して止める。
+if ! npx --no-install tsx "${ROOT}/scripts/aws-deploy-context.ts" --retired-only; then
+  exit 2
+fi
+
 # 🔴 **`--only` は許可リストの部分集合に限る（#680 / 2026-08-15）。**
 #
 # 新規の消費側スタック（cross-region の SSM export を読む側）は、生産側がデプロイ
@@ -310,9 +317,11 @@ changeset_name() {
 
 # 🔴 **デプロイに必須の CDK context を解決する（#680 / 2026-08-15 のインシデント）。**
 #
-# `appSecretsName` / `originVerifySecret` / `publicOriginOverride` は **未指定でも
-# synth が通る**。通るが、出来上がるのは別構成のスタックで、Secrets Manager 連携も
-# QR の基底オリジンも落ちる。2026-08-15 にこの wrapper がこれらを渡していなかったため、
+# `appSecretsName` / `originVerifySecretName` / `publicOriginOverride` は **未指定でも
+# dev の素の synth が通りうる**。通るが、deploy 用としては別構成のスタックになる。
+# #1148 以降、`OR_APP_SECRETS_NAME` から appSecretsName と originVerifySecretName を
+# 同時に生成し、origin-verify の生 secret 値はこの wrapper に渡さない。
+# 2026-08-15 にこの wrapper が必要 context を渡していなかったため、
 # dev の ServerFn から `secretsmanager:GetSecretValue` の付与が消え、起動時に secret を
 # 読めず fail-closed で中断して **dev が 500** になった。
 #
@@ -322,9 +331,8 @@ changeset_name() {
 #
 # 判定は `src/domain/governance/deploy-context.ts`（純関数）に持つ。ここは受け取るだけ。
 #
-# ⚠️ `originVerifySecret` は秘密の値そのものであり、`cdk` の argv に載る＝プロセステーブルに
-# 見える。CDK context の仕組み上避けられない（`originVerifySecretName` へ移行するのが
-# 本筋。#612）。**ログには出さない**。
+# #1148: DEPLOY_CONTEXT_ARGS に secret 値を含めない。origin-verify は Secrets Manager 名の
+# dynamic reference だけを使う。候補コードを実行する検証環境にも secret 値は渡さない。
 DEPLOY_CONTEXT_ARGS=()
 resolve_deploy_context() {
   local out

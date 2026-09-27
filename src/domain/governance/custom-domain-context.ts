@@ -6,7 +6,7 @@
  * 独自ドメインの仕組み（`infra/lib/stacks/web-stack.ts` の `CustomDomainConfig`）は #189 で
  * 実装済みだが、**クラウドのデプロイ経路に配線されていなかった**。`aws-cloud-deploy.sh` が
  * `cdk` へ渡すのは `env` / `bootstrapQualifier` / `claudeBoundary` ＋
- * `resolveDeployContext` の必須 4 変数だけで、`customDomain` を渡す口が無い。
+ * `resolveDeployContext` の必須変数（#1148 以降は 3 つ）だけで、`customDomain` を渡す口が無い。
  *
  * ## 何を落とすか（どれも「窓を消費してから気づく」型）
  *
@@ -64,7 +64,7 @@ function fail(...lines: ReadonlyArray<string>): CustomDomainContextResult {
 /**
  * `OR_CUSTOM_DOMAIN` を解決する。
  *
- * **未指定は正常**（CDK 生成ドメインのみ）。必須 4 変数と違い、ここを必須にすると
+ * **未指定は正常**（CDK 生成ドメインのみ）。必須 3 変数と違い、ここを必須にすると
  * 独自ドメインを使わない環境の deploy を全部止めてしまう。
  */
 export function resolveCustomDomainContext(raw: string | undefined): CustomDomainContextResult {
