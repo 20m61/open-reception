@@ -68,10 +68,12 @@ describe('checkAwsRuntimeSafety: エミュレータ実行時に実資格情報�
 
   it.each([
     ['AWS_ROLE_ARN', 'arn:aws:iam::123456789012:role/codebuild'],
+    // temp-ok: 検出器に渡す環境変数の値（文字列）だけ。ファイルは作らない。
     ['AWS_WEB_IDENTITY_TOKEN_FILE', '/tmp/token'],
     ['AWS_CONTAINER_CREDENTIALS_RELATIVE_URI', '/v2/credentials/example'],
     ['AWS_CONTAINER_CREDENTIALS_FULL_URI', 'http://127.0.0.1/credentials'],
     ['AWS_CONTAINER_AUTHORIZATION_TOKEN', 'token'],
+    // temp-ok: 検出器に渡す環境変数の値（文字列）だけ。ファイルは作らない。
     ['AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE', '/tmp/auth-token'],
   ])('🔴 %s を検出する（ambient provider を残さない）', (name, value) => {
     expect(codes({ ...emulated, [name]: value })).toContain('real_credentials');
