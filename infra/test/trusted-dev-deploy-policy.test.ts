@@ -186,6 +186,50 @@ describe('trusted dev-deploy cloud assembly policy (#1146)', () => {
     expect(resultRules).toContain('IAM_UNSCOPED_RESOURCE');
   });
 
+  it.each([
+    ['exact ledger ARN', 'arn:aws:dynamodb:ap-northeast-1:123456789012:table/OpenReception-DevDeployBroker-SparseDeployLedgerABC-XYZ'],
+    ['stack prefix wildcard', 'arn:aws:dynamodb:*:123456789012:table/OpenReception-DevDeployBroker-*'],
+    ['project wildcard', 'arn:aws:dynamodb:ap-northeast-1:123456789012:table/OpenReception-*'],
+    ['any table', 'arn:aws:dynamodb:*:*:table/*'],
+    ['single-char wildcard', 'arn:aws:dynamodb:*:*:table/Open?eception-DevDeployBroker-*'],
+    ['ledger index/stream', 'arn:aws:dynamodb:*:*:table/*/stream/*'],
+    ['intrinsic naming the broker stack', { 'Fn::ImportValue': 'OpenReception-DevDeployBroker-LedgerArn' }],
+  ])('denies candidate IAM that could reach the broker-only sparse ledger: %s (#1153)', (_label, resource) => {
+    const assembly = makeAssembly({
+      'OpenReception-Web-dev': {
+        RuntimePolicy: {
+          Type: 'AWS::IAM::Policy',
+          Properties: {
+            PolicyDocument: {
+              Statement: [{ Effect: 'Allow', Action: ['dynamodb:PutItem'], Resource: [resource] }],
+            },
+          },
+        },
+      },
+    });
+    expect(rules(assembly)).toContain('IAM_REACHES_SPARSE_LEDGER');
+  });
+
+  it.each([
+    ['the app table by name', 'arn:aws:dynamodb:ap-northeast-1:123456789012:table/open-reception-dev'],
+    ['the app table index', 'arn:aws:dynamodb:ap-northeast-1:123456789012:table/open-reception-dev/index/*'],
+    ['a stack-local Ref', { 'Fn::GetAtt': ['AppTable0A1B2C3D', 'Arn'] }],
+  ])('does not flag the product table: %s', (_label, resource) => {
+    const assembly = makeAssembly({
+      'OpenReception-Web-dev': {
+        RuntimePolicy: {
+          Type: 'AWS::IAM::Policy',
+          Properties: {
+            PolicyDocument: {
+              Statement: [{ Effect: 'Allow', Action: ['dynamodb:PutItem'], Resource: [resource] }],
+            },
+          },
+        },
+      },
+    });
+    expect(rules(assembly)).not.toContain('IAM_REACHES_SPARSE_LEDGER');
+  });
+
   it('requires bounded reserved concurrency for the two product Lambdas', () => {
     const assembly = makeAssembly({
       'OpenReception-Web-dev': {

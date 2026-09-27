@@ -6,6 +6,7 @@ import { Construct } from 'constructs';
 import * as codebuild from 'aws-cdk-lib/aws-codebuild';
 import * as codepipeline from 'aws-cdk-lib/aws-codepipeline';
 import * as actions from 'aws-cdk-lib/aws-codepipeline-actions';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3assets from 'aws-cdk-lib/aws-s3-assets';
@@ -17,6 +18,36 @@ const BROKER_PROJECT_NAME = 'OpenReceptionTrustedDevDeployBroker';
 
 /** Source of the trusted cloud-assembly policy that the broker stack publishes as an asset. */
 export const TRUSTED_POLICY_SOURCE_PATH = path.join(__dirname, '../../broker/trusted-policy.mjs');
+
+/** Partition key value of every sparse-ledger item (`infra/broker/sparse-ledger.mjs` PROJECT_KEY). */
+export const SPARSE_LEDGER_PROJECT_KEY = 'PROJECT#open-reception';
+
+/**
+ * The only DynamoDB actions the broker needs for the sparse ledger (#1153): consistent reads,
+ * create-only attempt records, and conditional counter/override updates (TransactWriteItems is
+ * authorized per contained Put/Update). No Delete, Scan, Query, Batch* or table management.
+ */
+/**
+ * Data-plane writes the table's resource policy denies to every principal except the broker role
+ * and the human override-issuer role. The Claude boundary / CFN exec policies also deny
+ * `dynamodb:*` on this stack's tables (`scripts/aws-policies`), so a deployed candidate workload
+ * cannot forge an override or reset a counter even though it lives in the same account.
+ */
+export const SPARSE_LEDGER_PROTECTED_WRITES = [
+  'dynamodb:PutItem',
+  'dynamodb:UpdateItem',
+  'dynamodb:DeleteItem',
+  'dynamodb:BatchWriteItem',
+  'dynamodb:PartiQLInsert',
+  'dynamodb:PartiQLUpdate',
+  'dynamodb:PartiQLDelete',
+] as const;
+
+export const SPARSE_LEDGER_BROKER_ACTIONS = [
+  'dynamodb:GetItem',
+  'dynamodb:PutItem',
+  'dynamodb:UpdateItem',
+] as const;
 
 /** Broker-local download target of the trusted policy (outside the candidate artifact tree). */
 export const TRUSTED_POLICY_LOCAL_PATH = '/tmp/open-reception-trusted-policy.mjs';
@@ -153,6 +184,15 @@ export class DevDeployBrokerStack extends cdk.Stack {
       description: 'Provider secret backend for the dev cloud assembly.',
     });
 
+    // S5a: the human override channel. The owner names the role at deploy time; it is the only
+    // principal besides the broker that the ledger accepts writes from.
+    const overrideIssuerRoleArn = new cdk.CfnParameter(this, 'SparseLedgerOverrideIssuerRoleArn', {
+      type: 'String',
+      description:
+        'IAM role ARN (this account) that a human uses to initialise the sparse ledger and issue one-shot overrides. Never a Claude/candidate role.',
+      allowedPattern: '^arn:aws[^:]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$',
+    });
+
     const validationRole = new iam.Role(this, 'ValidationRole', {
       roleName: 'OpenReceptionDevDeployValidationRole',
       assumedBy: new iam.ServicePrincipal('codebuild.amazonaws.com'),
@@ -176,6 +216,48 @@ export class DevDeployBrokerStack extends cdk.Stack {
     });
     const trustedPolicyContentSha256 = trustedPolicySha256();
     trustedPolicyAsset.grantRead(brokerRole);
+
+    // Sparse dev-deploy attempt ledger (#1153, Foundation S6a): state in the trusted account,
+    // writable only by the broker. The Validation role (candidate code) gets no statement on it.
+    // Not armed yet: nothing in the broker buildspec reads or writes it until mutation is armed
+    // (unarmed runs never reach the mutation boundary, so there is no attempt to count).
+    // No fixed physical name (avoids the recreate collision recorded as pre-arming blocker 6).
+    const sparseLedger = new dynamodb.Table(this, 'SparseDeployLedger', {
+      partitionKey: { name: 'PK', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'SK', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+      deletionProtection: true,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      // A table resource policy cannot name its own ARN (circular); '*' here means this table.
+      resourcePolicy: new iam.PolicyDocument({
+        statements: [
+          new iam.PolicyStatement({
+            sid: 'DenyLedgerWritesExceptBrokerAndHumanIssuer',
+            effect: iam.Effect.DENY,
+            principals: [new iam.AnyPrincipal()],
+            actions: [...SPARSE_LEDGER_PROTECTED_WRITES],
+            resources: ['*'],
+            conditions: {
+              ArnNotEquals: {
+                'aws:PrincipalArn': [brokerRole.roleArn, overrideIssuerRoleArn.valueAsString],
+              },
+            },
+          }),
+        ],
+      }),
+    });
+    brokerRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [...SPARSE_LEDGER_BROKER_ACTIONS],
+        resources: [sparseLedger.tableArn],
+        conditions: {
+          'ForAllValues:StringEquals': { 'dynamodb:LeadingKeys': [SPARSE_LEDGER_PROJECT_KEY] },
+        },
+      }),
+    );
 
     const validationLogs = new logs.LogGroup(this, 'ValidationLogs', {
       logGroupName: '/aws/codebuild/open-reception-dev-deploy-validation',

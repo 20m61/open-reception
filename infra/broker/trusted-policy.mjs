@@ -150,6 +150,28 @@ function resolvesToLogicalId(value, logicalId) {
   return Array.isArray(getAtt) && getAtt[0] === logicalId;
 }
 
+/**
+ * A name the broker stack's CloudFormation-generated ledger table can have. Candidate IAM that
+ * could match it (exact, prefix or wildcard) would let a deployed workload forge overrides or
+ * reset counters (#1153, Foundation S6a), so it is rejected before mutation.
+ */
+const SPARSE_LEDGER_TABLE_SAMPLE = 'OpenReception-DevDeployBroker-SparseDeployLedger0A1B2C3D-0A1B2C3D4E5F';
+
+function globMatches(pattern, value) {
+  const re = new RegExp(`^${pattern.split('*').map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`);
+  return re.test(value);
+}
+
+function reachesSparseLedger(resource) {
+  if (typeof resource !== 'string') {
+    // Intrinsics: reject anything naming the broker stack or its ledger.
+    return /DevDeployBroker|SparseDeployLedger/i.test(JSON.stringify(resource));
+  }
+  if (/DevDeployBroker|SparseDeployLedger/i.test(resource)) return true;
+  const m = /^arn:[^:]*:dynamodb:[^:]*:[^:]*:table\/([^/]*)/.exec(resource);
+  return m !== null && globMatches(m[1].replace(/\?/g, '*'), SPARSE_LEDGER_TABLE_SAMPLE);
+}
+
 function boundaryLooksCorrect(value) {
   return JSON.stringify(value).includes('OpenReceptionClaudeBoundary');
 }
@@ -171,6 +193,9 @@ function policyDocumentViolations(stackName, logicalId, document) {
       if (LOOP_CAPABLE_IAM_ACTIONS.has(action)) {
         out.push(violation('IAM_LOOP_CAPABLE_ACTION', stackName, logicalId, `runtime role may trigger work recursively: ${action}`));
       }
+    }
+    if (resources.some(reachesSparseLedger)) {
+      out.push(violation('IAM_REACHES_SPARSE_LEDGER', stackName, logicalId, 'candidate IAM may reach the broker-only sparse deploy ledger'));
     }
     if (resources.includes('*')) {
       const unsafe = actions.filter((action) => !GLOBAL_RESOURCE_SAFE_ACTIONS.has(action));

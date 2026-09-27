@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import * as cdk from 'aws-cdk-lib';
 import { Template } from 'aws-cdk-lib/assertions';
 import { createHash } from 'node:crypto';
@@ -11,6 +12,8 @@ import {
   BROKER_POLICY_HASH_CHECK_SCRIPT,
   BROKER_REVISION_CHECK_SCRIPT,
   DevDeployBrokerStack,
+  SPARSE_LEDGER_BROKER_ACTIONS,
+  SPARSE_LEDGER_PROJECT_KEY,
   TRUSTED_POLICY_LOCAL_PATH,
   TRUSTED_POLICY_SOURCE_PATH,
   VALIDATION_EVIDENCE_SCRIPT,
@@ -28,6 +31,7 @@ import {
 type Json = Record<string, unknown>;
 type Statement = {
   Effect: string;
+  Condition?: unknown;
   Action?: string | string[];
   NotAction?: unknown;
   Resource?: unknown;
@@ -159,6 +163,21 @@ const allowedActions = (roleName: string): string[] =>
     .flatMap(actionsOf);
 
 const ARTIFACT_BUCKET = byType('AWS::S3::Bucket').map(([id]) => id);
+
+const LEDGER_TABLES = byType('AWS::DynamoDB::Table').map(([id]) => id);
+
+/** Does a statement's Resource reference the sparse ledger table (any form)? */
+const refersToLedger = (s: Statement): boolean =>
+  LEDGER_TABLES.some((id) => JSON.stringify(s.Resource ?? null).includes(`"${id}"`));
+
+/** The single reviewed broker statement on the ledger (exact actions, table, leading key). */
+const isLedgerStatement = (s: Statement): boolean =>
+  s.Effect === 'Allow' &&
+  refersToLedger(s) &&
+  JSON.stringify(actionsOf(s).sort()) ===
+    JSON.stringify(SPARSE_LEDGER_BROKER_ACTIONS.map((a) => a.toLowerCase()).sort()) &&
+  JSON.stringify(s.Condition) ===
+    JSON.stringify({ 'ForAllValues:StringEquals': { 'dynamodb:LeadingKeys': [SPARSE_LEDGER_PROJECT_KEY] } });
 
 const FORBIDDEN_ACTION_PREFIXES = [
   'sts:',
@@ -349,7 +368,11 @@ describe('dev deploy broker invariants: trusted broker (stack-owned buildspec, u
   });
 
   it('holds no sts:AssumeRole or mutation authority; no role in the stack can reach a deploy role', () => {
-    const broker = allowedActions(BROKER_ROLE);
+    // The sparse ledger statement is the one reviewed exception to the dynamodb: ban; its exact
+    // shape is pinned in the "sparse deploy ledger" block below.
+    const broker = statementsFor(roleLogicalId(BROKER_ROLE))
+      .filter((s) => s.Effect === 'Allow' && !isLedgerStatement(s))
+      .flatMap(actionsOf);
     for (const action of broker) {
       for (const prefix of FORBIDDEN_ACTION_PREFIXES) {
         expect(action.startsWith(prefix), `${action} must not be granted to broker`).toBe(false);
@@ -414,6 +437,127 @@ describe('dev deploy broker invariants: trusted broker (stack-owned buildspec, u
     expect(execute).toBe(verify + 1);
     // Exactly one download and one execution of the policy file.
     expect(commands.filter((c) => c.includes(TRUSTED_POLICY_LOCAL_PATH))).toHaveLength(3);
+  });
+});
+
+describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privilege', () => {
+  it('is one PAY_PER_REQUEST table with PK/SK, deletion protection, PITR and no fixed name', () => {
+    expect(LEDGER_TABLES).toHaveLength(1);
+    const table = resources[LEDGER_TABLES[0]!]!;
+    expect(table.Properties.BillingMode).toBe('PAY_PER_REQUEST');
+    expect(table.Properties.KeySchema).toEqual([
+      { AttributeName: 'PK', KeyType: 'HASH' },
+      { AttributeName: 'SK', KeyType: 'RANGE' },
+    ]);
+    expect(table.Properties.DeletionProtectionEnabled).toBe(true);
+    expect(table.Properties.PointInTimeRecoverySpecification).toEqual({ PointInTimeRecoveryEnabled: true });
+    expect(table.Properties.TableName).toBeUndefined();
+    expect((table as unknown as { DeletionPolicy?: string }).DeletionPolicy).toBe('Retain');
+  });
+
+  it('the broker holds exactly one ledger statement: Get/Put/Update on the table, own partition only', () => {
+    const onLedger = statementsFor(roleLogicalId(BROKER_ROLE)).filter(refersToLedger);
+    expect(onLedger).toHaveLength(1);
+    expect(isLedgerStatement(onLedger[0]!)).toBe(true);
+    expect(actionsOf(onLedger[0]!).sort()).toEqual(['dynamodb:getitem', 'dynamodb:putitem', 'dynamodb:updateitem']);
+  });
+
+  it('the broker has no other dynamodb authority (no Delete / Scan / Query / Batch / table management)', () => {
+    const other = statementsFor(roleLogicalId(BROKER_ROLE))
+      .filter((s) => !isLedgerStatement(s))
+      .flatMap(actionsOf)
+      .filter((a) => a.startsWith('dynamodb:'));
+    expect(other).toEqual([]);
+  });
+
+  it('no identity statement outside the broker role touches the ledger or any dynamodb action', () => {
+    const brokerStatements = new Set(statementsFor(roleLogicalId(BROKER_ROLE)));
+    for (const statement of allIdentityStatements()) {
+      if (brokerStatements.has(statement)) continue;
+      expect(refersToLedger(statement), JSON.stringify(statement)).toBe(false);
+      expect(actionsOf(statement).some((a) => a.startsWith('dynamodb:')), JSON.stringify(statement)).toBe(false);
+    }
+    // Candidate code runs as the validation role: explicitly nothing on the ledger.
+    expect(statementsFor(roleLogicalId(VALIDATION_ROLE)).some(refersToLedger)).toBe(false);
+    expect(allowedActions(VALIDATION_ROLE).some((a) => a.startsWith('dynamodb:'))).toBe(false);
+  });
+
+  it('the table resource policy denies every write except from the broker role and the human issuer role', () => {
+    const table = resources[LEDGER_TABLES[0]!]!;
+    const doc = (table.Properties.ResourcePolicy as { PolicyDocument: unknown }).PolicyDocument;
+    const statements = documentStatements(doc);
+    // Only Deny statements: the resource policy must never grant anything by itself.
+    expect(statements.map((st) => st.Effect)).toEqual(['Deny']);
+    const [deny] = statements;
+    expect(deny!.Principal).toEqual({ AWS: '*' });
+    expect(actionsOf(deny!).sort()).toEqual(
+      [
+        'dynamodb:putitem',
+        'dynamodb:updateitem',
+        'dynamodb:deleteitem',
+        'dynamodb:batchwriteitem',
+        'dynamodb:partiqlinsert',
+        'dynamodb:partiqlupdate',
+        'dynamodb:partiqldelete',
+      ].sort(),
+    );
+    // Every action the broker may write with is covered by the deny's exception list.
+    for (const a of SPARSE_LEDGER_BROKER_ACTIONS.filter((x) => x !== 'dynamodb:GetItem')) {
+      expect(actionsOf(deny!)).toContain(a.toLowerCase());
+    }
+    expect(deny!.Condition).toEqual({
+      ArnNotEquals: {
+        'aws:PrincipalArn': [
+          { 'Fn::GetAtt': [roleLogicalId(BROKER_ROLE), 'Arn'] },
+          { Ref: 'SparseLedgerOverrideIssuerRoleArn' },
+        ],
+      },
+    });
+    expect(deny!.NotPrincipal).toBeUndefined();
+  });
+
+  it('the override issuer is a deploy-time IAM role ARN parameter (never a stack-created role)', () => {
+    const param = (template.toJSON().Parameters as Record<string, { Type: string; AllowedPattern?: string }>)
+      .SparseLedgerOverrideIssuerRoleArn;
+    expect(param?.Type).toBe('String');
+    expect(param?.AllowedPattern).toBe('^arn:aws[^:]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$');
+    expect(param).not.toHaveProperty('Default');
+  });
+
+  it('the Claude boundary and CFN exec policies deny dynamodb:* on this stack\'s tables', () => {
+    for (const name of [
+      'claude-boundary.json',
+      'claude-cfn-exec.json',
+      'claude-boundary-migration.json',
+      'claude-cfn-exec-migration.json',
+    ]) {
+      const doc = JSON.parse(readFileSync(resolve(__dirname, '../../scripts/aws-policies', name), 'utf8'));
+      // Folded into the existing foreign-data Deny: the boundary is close to IAM's 6,144-char
+      // limit. IAM `*` also spans `/`, so streams / indexes / backups of the table are covered.
+      const deny = documentStatements(doc).find(
+        (st) => (st as { Sid?: string }).Sid === 'DenyForeignProjectData',
+      );
+      expect(deny, name).toBeDefined();
+      expect(deny!.Effect).toBe('Deny');
+      expect(actionsOf(deny!)).toContain('dynamodb:*');
+      expect(deny!.Resource).toContain('arn:aws:dynamodb:*:822063948773:table/OpenReception-DevDeployBroker-*');
+    }
+    // The deny prefix is `<stackName>-*`, which is how CloudFormation names an unnamed table.
+    const bin = readFileSync(resolve(__dirname, '../bin/dev-deploy-broker.ts'), 'utf8');
+    expect(bin).toContain("stackName: 'OpenReception-DevDeployBroker'");
+  });
+
+  it('the broker buildspec does not run the ledger yet; when wired it must be a sha256-pinned stack asset', () => {
+    // Arming work: the ledger module must be delivered like the trusted policy (stack-published,
+    // content-hash verified before execution), never read from the candidate artifact.
+    expect(allCommands(BROKER_PROJECT).some((c) => c.includes('sparse-ledger'))).toBe(false);
+  });
+
+  it('the stack pins the same partition key the ledger module writes', async () => {
+    const ledger = (await import(
+      pathToFileURL(resolve(__dirname, '../broker/sparse-ledger.mjs')).href
+    )) as { PROJECT_KEY: string };
+    expect(ledger.PROJECT_KEY).toBe(SPARSE_LEDGER_PROJECT_KEY);
   });
 });
 
@@ -759,6 +903,7 @@ describe('architecture view (S8 repo-side drift check)', () => {
       'Trusted Broker CodeBuild',
       'BROKER_NOT_ARMED',
       'Content-addressed trusted policy S3 asset',
+      'Sparse deploy attempt ledger',
     ]) {
       expect(mermaid).toContain(node);
     }

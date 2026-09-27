@@ -31,6 +31,7 @@ flowchart TD
     U[Content-addressed trusted policy S3 asset, sha256-pinned] --> M
     M --> P[Independent static policy over cloud assembly]
     P --> N{Mutation armed?}
+    V[(Sparse deploy attempt ledger, DynamoDB, broker-only)] -. future: reserve attempt before mutation .-> Q
     N -- No --> O[DENY: BROKER_NOT_ARMED]
     N -- Future --> Q[Existing ADR 0009 role chain + live ChangeSet gate]
   end
@@ -214,6 +215,46 @@ Required prerequisites:
 2. #1151 merged/tested: dev Server/Image Lambda concurrency is physically bounded at 5/2.
 3. Trusted static policy tested against a real current cloud assembly; do **not** widen the allowlist merely to turn it green.
 4. Sparse deploy ledger implemented per Foundation safe-dev-deploy S6/S6b and the owner decision on #1153: record every attempt that reaches the mutation boundary and its outcome, count **attempts** against the daily limit (target 1, soft ceiling 2) over one declared IANA timezone (Asia/Tokyo), deny when the ledger is missing or unreadable (S6a), and allow a further attempt only through an S5a override bound to one revision **and one rule**, single-use, expiring and audited.
+   **Status: implemented, not wired** (`infra/broker/sparse-ledger.mjs`, see "Sparse deploy attempt ledger" below). Wiring it into the broker buildspec is part of arming.
+
+## Sparse deploy attempt ledger (#1153)
+
+Semantics (Foundation S5a / S6 / S6a / S6b, owner decision on #1153):
+
+| Item | Rule |
+| --- | --- |
+| What is counted | Every attempt that reaches the mutation boundary, reserved **before** mutation. Success and failure are both recorded; a failure keeps its budget. A denial before the boundary is audited and consumes nothing. |
+| Window | Calendar day in `Asia/Tokyo`, recorded on every item. The caller's timezone is never used. |
+| Ceiling | Attempts 1 and 2 of a day are automatic; attempt 3+ needs an override. |
+| Override | Issued with the human override-issuer role (the stack parameter `SparseLedgerOverrideIssuerRoleArn`, chosen by the owner at deploy; never a Claude or candidate role), bound to one revision, the rule `SPARSE_DAILY_ATTEMPT_CEILING` only, the current Tokyo day, a reason and an approver, expiring within 24 h. **Create-only**: at most one per revision, rule and day, never replaced, so issued / consumed / expired-unused history survives. Consumed in the same transaction as the reservation; the attempt record copies its approver and reason. |
+| Genesis | A human writes `META#genesis` once (create-only) with a ledger id that is also pinned in the broker's configuration. A missing or different genesis item means the table was emptied or replaced, so a missing day counter no longer reads as "fresh day" but as `SPARSE_LEDGER_CORRUPT`. |
+| Fail closed | Unreadable ledger → `SPARSE_LEDGER_UNAVAILABLE`; missing genesis or inconsistent counter (wrong type, other timezone/day, more outcomes than attempts) → `SPARSE_LEDGER_CORRUPT`; refused reservation (race, reused attempt id, override no longer valid) → `SPARSE_LEDGER_CONFLICT`; invalid broker clock → `BROKER_CLOCK_INVALID`. None is retried automatically. Every denial is written as an `ATTEMPT#` audit record (best-effort; a failed audit write never turns a denial into an allow). |
+
+Items (one table, `PK = PROJECT#open-reception`): `META#genesis`, `DAY#<YYYY-MM-DD>` (attempt / success / failure counts), `ATTEMPT#<attempt id>` (audit record), `OVERRIDE#<rule>#<revision>#<day>`.
+
+Every write is conditional and re-checked by DynamoDB, not only by the JS decision: the day counter is compare-and-set on the observed attempt count, attempt / override / genesis records are create-only, and override consumption re-checks revision, rule, day, expiry and "not yet consumed". `infra/test/sparse-dev-deploy-ledger.emulator.test.ts` runs these against a real DynamoDB engine (emulator), including 12 concurrent racers, an empty table without genesis, and engine-only refusal of an expired or consumed override:
+
+```bash
+# in infra/, with any DynamoDB emulator on loopback (e.g. npm run aws:local:start)
+LOCAL_AWS_INTEGRATION=1 AWS_ENDPOINT_URL=http://127.0.0.1:4566 \
+  npx vitest run test/sparse-dev-deploy-ledger.emulator.test.ts
+```
+
+Who can write the ledger. The ledger lives in the same account as the dev workload, so stack-local IAM is not enough. Three layers, each pinned by a test:
+
+1. **Table resource policy** denies every data-plane write (`PutItem`, `UpdateItem`, `DeleteItem`, `BatchWriteItem`, PartiQL writes) to every principal except the broker role and the override-issuer role (`dev-deploy-broker-invariants.test.ts`).
+2. **Claude boundary and CFN exec policies** (`scripts/aws-policies/claude-boundary*.json`, `claude-cfn-exec*.json`) deny `dynamodb:*` on `table/OpenReception-DevDeployBroker-*` (one ARN folded into the existing `DenyForeignProjectData` statement; the boundary is near IAM's 6,144-character limit), so neither Claude's deploy chain nor any workload role created under the boundary can write, reconfigure (`UpdateTable` / deletion protection) or delete it. The table has no fixed name; CloudFormation names it `<stack name>-...`, which the test ties to the stack name in `bin/dev-deploy-broker.ts`. Applying these policy files to the account is a separate human step.
+3. **Trusted static policy** rejects candidate IAM whose resource could match the ledger table (exact, prefix or wildcard ARN, or an intrinsic naming the broker stack): `IAM_REACHES_SPARSE_LEDGER`.
+
+The broker role itself gets only `dynamodb:GetItem` / `PutItem` / `UpdateItem` on the table, for the `PROJECT#open-reception` partition (`dynamodb:LeadingKeys`); no Delete, Scan, Query or table management. The Validation role and every other role in the stack have no statement on it.
+
+Not done yet (arming work, Human Gate):
+
+- Wiring. The broker buildspec does not call the ledger. When wired, the module must be delivered like the trusted policy (stack-published asset, content SHA-256 verified before execution), never from the candidate artifact. `reserveAttempt` must run strictly **after** every other deny-capable gate (static policy, live ChangeSet evaluation) and immediately before mutation, because a reserved attempt has consumed budget and its only outcomes are succeeded / failed.
+- The human commands (genesis, override issuance) and the issuer role itself.
+- CloudTrail data events on the table, so the real principal behind each override is recorded. The `approver` attribute is written by the issuer and is not itself authenticated.
+- S10a: a failed-rollback environment blocks further automated attempts; repeated failures on one revision escalate.
+- IAM cannot restrict the sort key, so the broker role could technically write an `OVERRIDE#` item. The broker is trusted code and never issues overrides.
 5. Live CloudFormation ChangeSet evaluation remains in front of execution, preserving ADR 0009 removal/replacement/unknown-action defenses.
 6. Only then may the Trusted Broker be allowed to assume the existing ADR 0009 entry-role chain, through a separately reviewed human/bootstrap change.
 
@@ -221,4 +262,4 @@ Required prerequisites:
 
 The pipeline uses CodePipeline V1 and two `BUILD_GENERAL1_SMALL` CodeBuild projects, both with concurrency 1. The `dev-deploy` branch is a **promotion branch**, not a normal development branch. Normal pushes do not update it, so they do not start this pipeline.
 
-The portfolio target is one real-AWS dev deploy **attempt** per project per accounting day (Asia/Tokyo), soft ceiling two, counting every attempt that reaches the mutation boundary whether it succeeds or fails (Foundation S6/S6b; owner decision recorded on #1153). A third attempt requires an S5a override bound to that immutable source revision and to the daily-limit rule only. The durable ledger is not implemented yet, so mutation remains unarmed.
+The portfolio target is one real-AWS dev deploy **attempt** per project per accounting day (Asia/Tokyo), soft ceiling two, counting every attempt that reaches the mutation boundary whether it succeeds or fails (Foundation S6/S6b; owner decision recorded on #1153). A third attempt requires an S5a override bound to that immutable source revision and to the daily-limit rule only. The durable ledger is implemented (#1153) but not wired into the broker, so mutation remains unarmed.

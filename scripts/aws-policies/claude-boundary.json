@@ -163,6 +163,7 @@
       "Resource": [
         "arn:aws:dynamodb:*:822063948773:table/nodi-*",
         "arn:aws:dynamodb:*:822063948773:table/salon-loop-*",
+        "arn:aws:dynamodb:*:822063948773:table/OpenReception-DevDeployBroker-*",
         "arn:aws:s3:::nodi-*",
         "arn:aws:s3:::nodi-*/*",
         "arn:aws:s3:::salon-loop-*",
