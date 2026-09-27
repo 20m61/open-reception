@@ -89,6 +89,13 @@ if [ "${1:-}" = "--help" ]; then
   exit 0
 fi
 
+# 🔴 **廃止した生 origin-verify secret が残っていれば、どのサブコマンドでも止める（#1148）。**
+# diff / deploy だけで見ると、verify や smoke しか走らせないセッションでは、環境ダイアログに
+# 残った secret が黙って渡り続ける。AWS に触れる前に、変数名だけを示して止める。
+if ! npx tsx "${ROOT}/scripts/aws-deploy-context.ts" --retired-only; then
+  exit 2
+fi
+
 # 🔴 **`--only` は許可リストの部分集合に限る（#680 / 2026-08-15）。**
 #
 # 新規の消費側スタック（cross-region の SSM export を読む側）は、生産側がデプロイ

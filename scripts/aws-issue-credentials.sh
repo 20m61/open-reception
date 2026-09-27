@@ -81,7 +81,13 @@ fi
 # 失敗時の stderr はそのまま通す ―― 純関数側が「変数名だけで値を出さない」診断を作る。
 CONTEXT_BLOCK=""
 if [ "${WITH_CONTEXT}" = true ]; then
-  if ! CONTEXT_BLOCK="$(npx --no-install tsx "${ROOT}/scripts/deploy-context-block.ts")"; then
+  CONTEXT_STATUS=0
+  CONTEXT_BLOCK="$(npx --no-install tsx "${ROOT}/scripts/deploy-context-block.ts")" || CONTEXT_STATUS=$?
+  if [ "${CONTEXT_STATUS}" -eq 3 ]; then
+    # 廃止した生 secret（#1148）。--no-context では回避させない ―― ファイルに secret が残るため。
+    echo "廃止された変数が残っているため、窓を開けずに終了します（削除してから再実行してください）" >&2
+    exit 2
+  elif [ "${CONTEXT_STATUS}" -ne 0 ]; then
     echo "デプロイ context を解決できないため、窓を開けずに終了します（--no-context で省略できます）" >&2
     exit 2
   fi

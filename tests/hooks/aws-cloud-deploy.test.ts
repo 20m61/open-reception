@@ -75,6 +75,71 @@ function run(args: ReadonlyArray<string>, env: Record<string, string> = {}) {
  */
 vi.setConfig({ testTimeout: 30_000 });
 
+describe('廃止した生 origin secret は全サブコマンドの先頭で止める (#1148)', () => {
+  const RAW = 'raw-origin-verify-value-must-not-be-echoed';
+  const CLI = resolve(process.cwd(), 'scripts/aws-deploy-context.ts');
+  const withoutRetired = (): NodeJS.ProcessEnv => {
+    const env = { ...process.env };
+    delete env.OR_ORIGIN_VERIFY_SECRET;
+    return env;
+  };
+  const cli = (args: string[], env: Record<string, string>) =>
+    spawnSync('npx', ['tsx', CLI, ...args], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...withoutRetired(), ...env },
+    });
+
+  // 🔴 **`verify` は spawn しない。** verify は AWS に触れず、ローカルで build と品質ゲート
+  // （＝この test 自身を含む `npm test`）を走らせる。先頭の検査が退行すると、この test が
+  // verify を再帰的に起動し続ける（2026-09-27 に変異注入で実際に起きた）。verify を含む
+  // 全サブコマンドに効くことは、下の「分岐より前に置かれている」で位置として固定する。
+  it.each(['preflight', 'diff', 'deploy', 'smoke'])('%s', (sub) => {
+    const { status, stdout, stderr } = run([sub], { OR_ORIGIN_VERIFY_SECRET: RAW });
+    expect(status).toBe(2);
+    expect(stderr).toContain('OR_ORIGIN_VERIFY_SECRET');
+    expect(stderr).toContain('廃止');
+    // AWS の直前にある VITEST インターロックより前で止まる。
+    expect(stderr).not.toContain('VITEST');
+    expect(`${stdout}${stderr}`).not.toContain(RAW);
+  });
+
+  it('検査はサブコマンドの分岐（verify を含む）より前に置かれている', () => {
+    const src = readFileSync(WRAPPER, 'utf8');
+    const check = src.indexOf('scripts/aws-deploy-context.ts" --retired-only');
+    const dispatch = src.indexOf('case "${SUB}" in\n  preflight)');
+    expect(check).toBeGreaterThan(0);
+    expect(dispatch).toBeGreaterThan(0);
+    expect(check).toBeLessThan(dispatch);
+    // 失敗時は止まる（`if ! ...; then exit`）。
+    expect(src.slice(check, check + 120)).toMatch(/--retired-only; then\n\s+exit 2/);
+  });
+
+  it('空文字でも止める（存在そのものが問題）', () => {
+    const { status, stderr } = run(['smoke'], { OR_ORIGIN_VERIFY_SECRET: '' });
+    expect(status).toBe(2);
+    expect(stderr).toContain('OR_ORIGIN_VERIFY_SECRET');
+  });
+
+  it('CLI: --retired-only は無ければ黙って 0、あれば 1。通常モードも止め、stdout に何も出さない', () => {
+    const ok = cli(['--retired-only'], {});
+    expect(ok.status).toBe(0);
+    expect(ok.stdout).toBe('');
+    const retired = cli(['--retired-only'], { OR_ORIGIN_VERIFY_SECRET: RAW });
+    expect(retired.status).toBe(1);
+    expect(`${retired.stdout}${retired.stderr}`).not.toContain(RAW);
+    const full = cli([], {
+      OR_ORIGIN_VERIFY_SECRET: RAW,
+      OR_APP_SECRETS_NAME: 'open-reception/dev/app-v2',
+      OR_PUBLIC_ORIGIN_OVERRIDE: 'https://example.cloudfront.net',
+      OR_PROVIDER_SECRET_BACKEND: 'secrets-manager',
+    });
+    expect(full.status).toBe(1);
+    expect(full.stdout).toBe('');
+    expect(full.stderr).not.toContain(RAW);
+  });
+});
+
 describe('引数の検証', () => {
   it('サブコマンド無しは usage を出して非ゼロ', () => {
     const { status, stderr } = run([]);

@@ -114,6 +114,26 @@ export const REQUIRED_DEPLOY_CONTEXT_VARS: ReadonlyArray<string> = REQUIRED.map(
  */
 export const RETIRED_DEPLOY_CONTEXT_VARS: ReadonlyArray<string> = ['OR_ORIGIN_VERIFY_SECRET'];
 
+/** 廃止変数が 1 つでも**存在すれば**（空文字でも）その名前を返す。値は読まない。 */
+export function findRetiredDeployContextVars(
+  env: Readonly<Record<string, string | undefined>>,
+): ReadonlyArray<string> {
+  return RETIRED_DEPLOY_CONTEXT_VARS.filter((envVar) => env[envVar] !== undefined);
+}
+
+/** 廃止変数の診断。**変数名だけ**を載せる。 */
+export function retiredDeployContextMessage(retired: ReadonlyArray<string>): string {
+  return [
+    '廃止された変数が残っています（#1148）:',
+    ...retired.map((envVar) => `  ${envVar}`),
+    '',
+    'origin-verify の生 secret は deploy context から廃止しました。この値を Claude の環境に置くと、',
+    '以後のセッションすべてに secret が渡ります。環境ダイアログと context ファイルの両方から削除し、',
+    '値はすでに露出したものとして Secrets Manager 側で新しい値へ入れ替えてください（Human Gate）。',
+    '手順は docs/runbook-cloud-aws-deploy.md を参照してください。',
+  ].join('\n');
+}
+
 export type DeployContextResult =
   | { readonly ok: true; readonly args: ReadonlyArray<string> }
   | {
@@ -137,22 +157,9 @@ export type DeployContextResult =
 export function resolveDeployContext(
   env: Readonly<Record<string, string | undefined>>,
 ): DeployContextResult {
-  const retired = RETIRED_DEPLOY_CONTEXT_VARS.filter((envVar) => env[envVar] !== undefined);
+  const retired = findRetiredDeployContextVars(env);
   if (retired.length > 0) {
-    return {
-      ok: false,
-      missing: [],
-      invalid: retired,
-      message: [
-        '廃止された変数が残っています（#1148）:',
-        ...retired.map((envVar) => `  ${envVar}`),
-        '',
-        'origin-verify の生 secret は deploy context から廃止しました。この値を Claude の環境に置くと、',
-        '以後のセッションすべてに secret が渡ります。環境ダイアログと context ファイルの両方から削除し、',
-        '値はすでに露出したものとして Secrets Manager 側で新しい値へ入れ替えてください（Human Gate）。',
-        '手順は docs/runbook-cloud-aws-deploy.md を参照してください。',
-      ].join('\n'),
-    };
+    return { ok: false, missing: [], invalid: retired, message: retiredDeployContextMessage(retired) };
   }
 
   const missing: string[] = [];
@@ -281,7 +288,7 @@ export function resolveDeployContextEnvBlock(
   // `resolveDeployContext` が ok を返した時点で全キーが揃い、語彙も検証済み。
   // 値の正規化（trim）もそちらに揃えたいので、env から読み直さずに同じ手順を踏む。
   const lines = REQUIRED.map(([envVar]) => `${envVar}=${(env[envVar] ?? '').trim()}`);
-  // args が空＝「使わない」。その場合はブロックへ足さず、既存の 4 行のままにする。
+  // args が空＝「使わない」。その場合はブロックへ足さず、既存の 3 行のままにする（#1148 以降）。
   if (customDomain.args.length > 0) {
     lines.push(`OR_CUSTOM_DOMAIN=${(env.OR_CUSTOM_DOMAIN ?? '').trim()}`);
   }

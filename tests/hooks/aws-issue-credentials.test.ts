@@ -5,9 +5,10 @@
  * そこを機械で固定する。AWS へは接続しない（引数検証と本文の性質だけ見る）。
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { makeSharedTempDir } from '../helpers/temp';
 /**
  * 🔴 **R5（#680 残件）: このファイルにはコメント除去が 1 つも無かった。**
  * `--print` は usage コメント（5 行目）と 2 本の `echo` 文言にも現れ、
@@ -223,6 +224,27 @@ describe('デプロイ context もクリップボードへ載せる (#989)', () 
     expect(stderr).toContain('廃止');
     // 値は反射しない。
     if (value !== '') expect(stderr).not.toContain(value);
+  });
+
+  it('🔴 context ファイルに残った廃止変数は --no-context を勧めずに止める (#1148)', () => {
+    const dir = makeSharedTempDir('aws-issue-credentials-retired-');
+    const file = join(dir, 'deploy-context.env');
+    const raw = 'raw-origin-verify-value-in-file';
+    writeFileSync(
+      file,
+      [
+        'OR_APP_SECRETS_NAME=open-reception/dev/app-v2',
+        'OR_PUBLIC_ORIGIN_OVERRIDE=https://example.cloudfront.net',
+        'OR_PROVIDER_SECRET_BACKEND=secrets-manager',
+        `OR_ORIGIN_VERIFY_SECRET=${raw}`,
+      ].join('\n'),
+    );
+    const { status, stderr } = run(['--hours', '1'], { OR_DEPLOY_CONTEXT_FILE: file });
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('OR_ORIGIN_VERIFY_SECRET');
+    expect(stderr).not.toContain('--no-context');
+    expect(stderr).not.toContain('VITEST');
+    expect(stderr).not.toContain(raw);
   });
 
   it('--no-context なら 3 変数が無くても context では止まらない', () => {

@@ -18,8 +18,10 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
+  findRetiredDeployContextVars,
   parseDeployContextFile,
   resolveDeployContextEnvBlock,
+  retiredDeployContextMessage,
 } from '../src/domain/governance/deploy-context';
 
 /**
@@ -48,6 +50,14 @@ const path = contextFilePath(process.env);
 const fromFile = readContextFile(path);
 // env を優先する（一時的な上書きを効かせる）。
 const merged: Record<string, string | undefined> = { ...fromFile, ...process.env };
+
+// 廃止変数は --no-context で回避させない（ファイルに残った生 secret を消させる）ため、別の終了コード。
+const retired = findRetiredDeployContextVars(merged);
+if (retired.length > 0) {
+  process.stderr.write(`${retiredDeployContextMessage(retired)}\n\n`);
+  process.stderr.write(`環境変数と、次のファイルの両方から削除してください: ${path}\n`);
+  process.exit(3);
+}
 
 const result = resolveDeployContextEnvBlock(merged);
 if (!result.ok) {

@@ -15,7 +15,7 @@ function argsOf(raw: string | undefined): readonly string[] {
 }
 
 describe('resolveCustomDomainContext — 任意であること', () => {
-  // 🔴 下界。必須 4 変数と違い、これは**未指定が正常**（CDK 生成ドメインのみ）。
+  // 🔴 下界。必須 3 変数と違い、これは**未指定が正常**（CDK 生成ドメインのみ）。
   //    ここを必須として扱うと、独自ドメインを使わない環境の deploy を全部止めてしまう。
   it('未指定・空・空白のみは「使わない」として通り、args を足さない', () => {
     for (const raw of [undefined, '', '   ', '\n']) {
