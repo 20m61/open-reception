@@ -72,6 +72,8 @@ export interface GateEvidence {
   readonly plan: ReadonlyMap<string, string>;
   /** 自己テスト用の seam の値。**空でなければ本物のゲートではない。** */
   readonly selftest: string;
+  /** 測る対象を差し替える環境変数のうち、設定されていたものの名前（`override.<NAME>=set`）。 */
+  readonly overrides: ReadonlyArray<string>;
   readonly steps: ReadonlyArray<GateStep>;
   readonly notes: ReadonlyArray<string>;
 }
@@ -101,6 +103,7 @@ export function parseGateEvidence(text: string): GateEvidence {
   const scalar = new Map<string, string>();
   const environment: Array<readonly [string, string]> = [];
   const plan = new Map<string, string>();
+  const overrides: string[] = [];
   const steps: GateStep[] = [];
   const notes: string[] = [];
 
@@ -122,6 +125,10 @@ export function parseGateEvidence(text: string): GateEvidence {
     }
     if (key.startsWith('env.')) {
       environment.push([key.slice(4), value]);
+      continue;
+    }
+    if (key.startsWith('override.')) {
+      overrides.push(key.slice(9));
       continue;
     }
     if (key.startsWith('plan.')) {
@@ -148,6 +155,7 @@ export function parseGateEvidence(text: string): GateEvidence {
     environment,
     plan,
     selftest: scalar.get('selftest') ?? '',
+    overrides,
     steps,
     notes,
   };
@@ -213,6 +221,9 @@ export function assessGateEvidence(
   }
   if (evidence.selftest !== '') {
     reasons.push(`自己テスト用の seam（${evidence.selftest}）で起動した実行で、ステップを走らせていない`);
+  }
+  for (const name of evidence.overrides) {
+    reasons.push(`測る対象を差し替える ${name} が設定された実行`);
   }
   const offPlan = FULL_PLAN_STEPS.filter((step) => evidence.plan.get(step) !== '1');
   if (offPlan.length > 0) {

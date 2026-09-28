@@ -87,8 +87,10 @@ function verifyPosted(response: unknown, body: string): PostedComment {
 }
 
 /**
- * marker 付きのコメントを 1 件だけ保つ。**自分（この資格情報の主体）が書いたもの**だけを
- * 更新対象にする ―― 他人が marker を貼ったコメントを書き換えない（独立レビュー MINOR 1）。
+ * marker 付きのコメントを 1 件だけ保つ。**この資格情報の主体（GET /user の login）が書いたもの**
+ * だけを更新対象にする ―― 別の主体が marker を貼ったコメントを書き換えない（独立レビュー MINOR 1）。
+ * 🔴 Cloud では proxy が owner の資格情報を注入するので、主体は **owner のアカウント**になる
+ * （2026-09-28 実測: `login=20m61`）。「Claude の書いたもの」という意味ではない。
  */
 function upsertComment(repo: GitHubRepo, pullNumber: number, body: string): PostedComment {
   const me = callGitHubJson<{ login?: unknown }>(userReadRequest()).login;
@@ -186,7 +188,14 @@ function main(): number {
       // 🔴 **投稿の後で head を引き直す。** head を読んでから書くまでの間に push が入ると、
       // 古い head に対する PASS が「現在の証拠」として残る。変わっていたら、新しい head で
       // 判定し直した本文（＝証拠が古い）で同じコメントを上書きする。
-      const after = readHeadSha(repo, pullNumber);
+      let after: string | null;
+      try {
+        after = readHeadSha(repo, pullNumber);
+      } catch (e) {
+        // 引き直せなければ「現在のものか確かめられない」として上書きする（PASS を残さない）。
+        after = null;
+        console.error(`⚠️  投稿後に PR の head を読めません: ${e instanceof Error ? e.message : String(e)}`);
+      }
       if (after !== headSha) {
         headSha = after;
         assessment = assessGateEvidence(evidence, headSha);

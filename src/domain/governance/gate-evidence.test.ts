@@ -124,6 +124,8 @@ describe('assessGateEvidence (#1195)', () => {
     ['スタンプを書いていない', { stamped: '0' }, SHA, /スタンプ/],
     ['版が違う', { version: '2' }, SHA, /版が 2/],
     ['seam で起動した', { selftest: 'pass' }, SHA, /seam（pass）/],
+    ['検出器を差し替えた', { 'override.QUALITY_GATE_DETECTOR_CMD': 'set' }, SHA, /QUALITY_GATE_DETECTOR_CMD/],
+    ['e2e の向け先を差し替えた', { 'override.PLAYWRIGHT_BASE_URL': 'set' }, SHA, /PLAYWRIGHT_BASE_URL/],
     ['--no-build で build を落とした', { 'plan.build': '0' }, SHA, /実行計画に入っていない: build/],
     ['計画に infra が無い', { 'plan.infra': null }, SHA, /実行計画に入っていない: infra/],
     ['計画の値が不正', { 'plan.vrm': 'yes' }, SHA, /実行計画に入っていない: vrm/],

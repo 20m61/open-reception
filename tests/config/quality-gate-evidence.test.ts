@@ -160,6 +160,21 @@ describe('quality-gate: --full の証拠ファイル (#1195)', () => {
     expect(assessGateEvidence(evidence, head).reasons.join('\n')).toMatch(/完走していない/);
   });
 
+  it('🔴 測る対象を差し替える環境変数は、値を書かずに在否だけを書く', () => {
+    const { dir, head } = makeRepo();
+    expect(
+      runGate(dir, 'pass', [], {
+        PLAYWRIGHT_BASE_URL: 'http://TEST-elsewhere.invalid',
+        QUALITY_GATE_DETECTOR_CMD: 'exit 0',
+      }),
+    ).toBe(0);
+    const text = readFileSync(evidencePath(dir), 'utf8');
+    expect(text).not.toContain('TEST-elsewhere');
+    const evidence = parseGateEvidence(text);
+    expect([...evidence.overrides].sort()).toEqual(['PLAYWRIGHT_BASE_URL', 'QUALITY_GATE_DETECTOR_CMD']);
+    expect(assessGateEvidence(evidence, head).passed).toBe(false);
+  });
+
   it('--no-build を付けた --full は、計画から build が落ちたことを書く', () => {
     const { dir, head } = makeRepo();
     expect(runGate(dir, 'pass', ['--no-build'])).toBe(0);

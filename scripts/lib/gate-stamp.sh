@@ -269,6 +269,12 @@ gate_evidence_finish() {
     # seam（QUALITY_GATE_SELFTEST）で起動した実行も記録する ―― ステップを 1 つも走らせていない。
     for line in ${GATE_EVIDENCE_PLAN:-}; do _gate_evidence_line "plan.${line%%=*}" "${line#*=}"; done
     _gate_evidence_line selftest "${QUALITY_GATE_SELFTEST:-}"
+    # 測る対象を差し替える環境変数。**値は書かない**（在否だけ）。在れば判定側が PASS を拒む
+    # ―― 検出器の差し替え（change-risk を素通しにできる）と、e2e の向け先の差し替え
+    # （HEAD 以外のサーバを測る）。独立レビュー 2 周目 MINOR 3 / 4。
+    for line in QUALITY_GATE_DETECTOR_CMD PLAYWRIGHT_BASE_URL; do
+      if [ -n "${!line:-}" ]; then _gate_evidence_line "override.${line}" set; fi
+    done
     for line in "$@"; do _gate_evidence_line summary "${line}"; done
   } > "${file}.tmp" && mv "${file}.tmp" "${file}"
 }

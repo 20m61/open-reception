@@ -383,7 +383,8 @@ finish() {
     exit 1
   fi
 
-  # スタンプを書けたかを証拠へそのまま運ぶ（書けなかったのに stamped=1 と書かない）。
+  # スタンプ書き込みの終了コードを証拠へ運ぶ（git 外などで黙って書かない場合は 0 を返すので、
+  # これは「書こうとして失敗しなかった」の記録である。HEAD と clean は別に見ている）。
   local stamped=0
   gate_write_stamp "${TIER}" "${GATE_FINGERPRINT}" "${GATE_SCOPE_RECORD:-${GATE_SCOPE:-code}}" && stamped=1
   gate_evidence_finish "${TIER}" 0 "${stamped}" ${SUMMARY[@]+"${SUMMARY[@]}"} || true
