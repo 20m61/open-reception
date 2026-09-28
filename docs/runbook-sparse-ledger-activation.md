@@ -93,7 +93,7 @@ IAM・CloudFormation・DynamoDB・SNS・CloudTrail に一切書き込まない�
 
 ## 3. boundary / cfn-exec policy の新しい版を適用する
 
-🔴 **arming 前ブロッカー 8 の PR（broker の log group・警報・SNS topic・bucket・role を Claude の chain から Deny する変更）が
+🔴 **arming 前ブロッカー 8 の PR（#1192。broker の log group・警報・SNS topic・bucket・role を Claude の chain から Deny する変更）が
 merge されてから行う。** それまでの版は、Claude の deploy chain とその下の workload role に次を許したままにしている。
 - `logs:*` / `cloudwatch:*` / `sns:*` / `s3:*` on `*`
 - broker の log（監査の証拠）を消す
