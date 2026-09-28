@@ -11,7 +11,9 @@ Issue を消化するループで開発する。**手順は `docs/loop-workflow.
 （#424 / #426。未構築の部分も明記してある）。
 1 周 = ブランチ → 実装(TDD) → 品質ゲート（`--pr`/`--full` はクラウド）→ PR → セルフ/コードレビュー →
 **ゲート green + レビュー blocking なしなら自動で squash + `--delete-branch`** → Issue
-クローズ → 次へ。**重大変更時のみユーザー確認**（破壊的変更・スキーマ/公開API・本番デプロイ・
+クローズ → 次へ。🔴 **ただし Claude は自分の PR を merge しない**（#1195）。Cloud で `--full` を
+green にして証拠を PR に載せ（`npm run gate:evidence`）、merge は owner が証拠を見て行う。
+関連する修正は少数の PR にまとめ、長い積み上げ PR を作らない（`docs/loop-workflow.md` 手順 6 / 8）。**重大変更時のみユーザー確認**（破壊的変更・スキーマ/公開API・本番デプロイ・
 外部送信・依存/ライセンス追加(#105)・secret/PII 取り扱い変更）。詳細は `docs/loop-workflow.md` 手順 8。
 
 **並列オーケストレーション**: 依存のない Issue は git worktree（または

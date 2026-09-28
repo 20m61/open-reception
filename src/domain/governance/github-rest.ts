@@ -47,8 +47,13 @@
  */
 import type { GitHubRepo } from './git-base';
 
-/** 使う HTTP メソッドはこの 3 つだけ。**増やすときは pr-gate-guard の判定も見直すこと。** */
-export type HttpMethod = 'GET' | 'POST' | 'PUT';
+/**
+ * 使う HTTP メソッド。**増やすときは pr-gate-guard の判定も見直すこと。**
+ *
+ * PATCH は #1195 で足した。使うのは証拠コメントの更新（`issues/comments/<id>`）だけで、
+ * PR 作成・マージの面ではない（pr-gate-guard はスクリプト名と `pulls/<n>/merge` で判定する）。
+ */
+export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH';
 
 /**
  * 1 回分の REST 要求。`path` は**ホストを含まない**（`repos/o/r/pulls`）。
@@ -383,4 +388,69 @@ export function pullReadRequest(repo: GitHubRepo, pullNumber: number): GitHubReq
 /** リポジトリ 1 件を引く要求（publish 経路の到達性と push 権限の確認に使う）。 */
 export function repoReadRequest(repo: GitHubRepo): GitHubRequest {
   return { method: 'GET', path: repoPath(repo) };
+}
+
+/** コメント ID として通してよい値だけを通す。 */
+function assertCommentId(commentId: number): void {
+  if (!Number.isInteger(commentId) || commentId <= 0) {
+    throw new Error(`コメント ID が正の整数ではありません: ${commentId}`);
+  }
+}
+
+/** 1 ページに引くコメント数。GitHub の上限。 */
+export const ISSUE_COMMENTS_PER_PAGE = 100;
+
+/**
+ * PR（issue として）のコメント一覧を 1 ページ引く要求 (#1195)。
+ *
+ * 証拠コメントを**更新するために探す**のに使う。見つけ損ねると 2 件目を新設してしまい、
+ * 古い方が「現在の証拠」として読まれうるので、呼び出し側はページを最後まで辿る。
+ */
+export function issueCommentsListRequest(
+  repo: GitHubRepo,
+  pullNumber: number,
+  page: number,
+): GitHubRequest {
+  assertPullNumber(pullNumber);
+  if (!Number.isInteger(page) || page <= 0) throw new Error(`ページ番号が正の整数ではありません: ${page}`);
+  return {
+    method: 'GET',
+    path: `${repoPath(repo)}/issues/${pullNumber}/comments?per_page=${ISSUE_COMMENTS_PER_PAGE}&page=${page}`,
+  };
+}
+
+/** PR にコメントを 1 件足す要求 (#1195)。 */
+export function issueCommentCreateRequest(
+  repo: GitHubRepo,
+  pullNumber: number,
+  body: string,
+): GitHubRequest {
+  assertPullNumber(pullNumber);
+  if (body.trim() === '') throw new Error('コメント本文が空です');
+  return {
+    method: 'POST',
+    path: `${repoPath(repo)}/issues/${pullNumber}/comments`,
+    body: JSON.stringify({ body }),
+  };
+}
+
+/**
+ * 既存のコメントを書き換える要求 (#1195)。
+ *
+ * **マージには使えない面**（`issues/comments/<id>`）だけを PATCH する。`HttpMethod` に
+ * PATCH を足したのはこのためで、`pr-gate-guard.sh` が見ている PR 作成・マージの判定には
+ * 影響しない（あちらは URL の形 `pulls/<n>/merge` とスクリプト名で判定している）。
+ */
+export function issueCommentUpdateRequest(
+  repo: GitHubRepo,
+  commentId: number,
+  body: string,
+): GitHubRequest {
+  assertCommentId(commentId);
+  if (body.trim() === '') throw new Error('コメント本文が空です');
+  return {
+    method: 'PATCH',
+    path: `${repoPath(repo)}/issues/comments/${commentId}`,
+    body: JSON.stringify({ body }),
+  };
 }

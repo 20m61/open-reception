@@ -232,6 +232,9 @@ echo "================================================================"
 # shellcheck source=lib/gate-stamp.sh
 . "${ROOT}/scripts/lib/gate-stamp.sh"
 GATE_FINGERPRINT="$(gate_tree_fingerprint || true)"
+# 証拠ファイルを開始時の記録で上書きする (#1195)。完走しなければ `exit` を持たないまま残り、
+# `scripts/publish-gate-evidence.ts` は「完走していない」として PASS と書かない。
+gate_evidence_begin "${TIER}" || true
 # 開始時の空きを控える (#721 レビュー m3)。終了時は掃除の**後**なので、
 # 周回中に沈んだピークが見えない。2 点あれば落ち込みに気づける。
 GATE_DISK_START="$(df -Pk "${TMPDIR:-/tmp}" 2>/dev/null | awk 'NR==2 {printf "%.1fG", $4/1048576}')"
@@ -353,6 +356,7 @@ finish() {
   echo "================================================================"
 
   if [[ "$FAILED" -eq 1 ]]; then
+    gate_evidence_finish "${TIER}" 1 0 ${SUMMARY[@]+"${SUMMARY[@]}"} || true
     echo "❌ quality-gate FAILED"
     exit 1
   fi
@@ -367,11 +371,16 @@ finish() {
     echo "    検査できなかったステップ: ${UNVERIFIED[*]}"
     echo "    落ちてはいませんが「通った」根拠がありません。前提を整えて再実行してください。"
     echo "    よくある原因: .open-next/ が src/ より古い → npm run build:open-next"
+    gate_evidence_finish "${TIER}" 1 0 ${SUMMARY[@]+"${SUMMARY[@]}"} || true
     exit 1
   fi
 
   gate_write_stamp "${TIER}" "${GATE_FINGERPRINT}" "${GATE_SCOPE_RECORD:-${GATE_SCOPE:-code}}"
+  gate_evidence_finish "${TIER}" 0 1 ${SUMMARY[@]+"${SUMMARY[@]}"} || true
   echo "✅ quality-gate PASSED  (tier=${TIER} を green として記録しました)"
+  if [[ "${TIER}" == "full" ]]; then
+    echo "   PR へ証拠を載せる: npm run gate:evidence -- --number <PR 番号>（#1195）"
+  fi
   # **finish は必ず終端する。** 呼び出し口が複数あるので、戻ると呼び出し元の続きが
   # 走ってしまう（seam から呼んだときに全ステップが実行された）。
   exit 0

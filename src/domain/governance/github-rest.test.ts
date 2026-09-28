@@ -3,6 +3,9 @@ import {
   REQUIRED_REST_COMMANDS,
   authConfigInput,
   formatMissingRestCommands,
+  issueCommentCreateRequest,
+  issueCommentUpdateRequest,
+  issueCommentsListRequest,
   isSuccess,
   curlArgs,
   describeHttpFailure,
@@ -420,5 +423,47 @@ describe('レビュー指摘の修正が縛られていること (#1117 review m
     expect(args).toContain('--max-time');
     expect(Number(args[args.indexOf('--max-time') + 1])).toBeGreaterThan(0);
     expect(Number(args[args.indexOf('--connect-timeout') + 1])).toBeGreaterThan(0);
+  });
+});
+
+describe('証拠コメントの要求 (#1195)', () => {
+  it('一覧は 1 ページ 100 件で、ページを指定して引く', () => {
+    expect(issueCommentsListRequest(REPO, 12, 3)).toEqual({
+      method: 'GET',
+      path: 'repos/20m61/open-reception/issues/12/comments?per_page=100&page=3',
+    });
+  });
+
+  it('作成は POST、本文は JSON でそのまま往復する', () => {
+    const body = '<!-- m -->\n| a | b |\n"quote" & = #';
+    const r = issueCommentCreateRequest(REPO, 12, body);
+    expect(r.method).toBe('POST');
+    expect(r.path).toBe('repos/20m61/open-reception/issues/12/comments');
+    expect(JSON.parse(r.body!)).toEqual({ body });
+  });
+
+  it('更新は PATCH で、コメントの面（issues/comments/<id>）だけを叩く', () => {
+    const r = issueCommentUpdateRequest(REPO, 987, 'x');
+    expect(r).toMatchObject({ method: 'PATCH', path: 'repos/20m61/open-reception/issues/comments/987' });
+    // 🔴 マージの面へ曲がらないこと（pr-gate-guard が見る形を作らない）。
+    expect(r.path).not.toMatch(/pulls/);
+  });
+
+  it.each([0, -1, 1.5, Number.NaN])('PR 番号・コメント ID・ページが正の整数でなければ組み立てない（%s）', (n) => {
+    expect(() => issueCommentsListRequest(REPO, n, 1)).toThrow();
+    expect(() => issueCommentsListRequest(REPO, 1, n)).toThrow();
+    expect(() => issueCommentCreateRequest(REPO, n, 'x')).toThrow();
+    expect(() => issueCommentUpdateRequest(REPO, n, 'x')).toThrow();
+  });
+
+  it('空の本文では組み立てない', () => {
+    expect(() => issueCommentCreateRequest(REPO, 1, '  ')).toThrow(/空/);
+    expect(() => issueCommentUpdateRequest(REPO, 1, '')).toThrow(/空/);
+  });
+
+  it('PATCH の要求も curl の引数へそのまま載る', () => {
+    const args = curlArgs(issueCommentUpdateRequest(REPO, 5, 'x'));
+    expect(args[args.indexOf('-X') + 1]).toBe('PATCH');
+    expect(args).toContain('--data-binary');
   });
 });
