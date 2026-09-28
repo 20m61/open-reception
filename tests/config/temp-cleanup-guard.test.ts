@@ -43,6 +43,36 @@ import { SWEEP_AGE_MS, sweepStaleRoots } from '../setup/temp-isolation';
 const ROOT = process.cwd();
 
 /**
+ * 子 vitest（isolation probe）の出力を**親のログへ流さない** (#1195)。
+ *
+ * `execFileSync` は `stdio` を指定しないと子の stderr を親の stderr へそのまま流す。
+ * 下の probe は**わざと落ちる**ので、`FAIL  tests/config/isolation-escape-probe.spec.ts` と
+ * 「os.tmpdir() が /root を指しています」がゲートのログに出る ―― 親のテストは PASS なのに。
+ * 2026-09-28 の Cloud 診断（#1195）はこれを「unit の失敗 2 件」の 1 件と数えていた。
+ * 出力は捕まえて、アサーションが要る箇所で読む（失敗時は例外の message に stderr が載る）。
+ */
+const CHILD_STDIO: ['ignore', 'pipe', 'pipe'] = ['ignore', 'pipe', 'pipe'];
+
+/**
+ * 通るはずの probe を起動し、stdout を返す。
+ *
+ * 落ちたときは**子の stdout も**失敗文面へ載せる。`execFileSync` の例外 message は stderr しか
+ * 含まず、どのテストが落ちたか・集計（vitest は stdout に出す）が消えるため。
+ */
+function runPassingProbe(): string {
+  try {
+    return execFileSync(
+      join(ROOT, 'node_modules', '.bin', 'vitest'),
+      ['run', join('tests', 'config', 'isolation-escape-probe.spec.ts')],
+      { cwd: ROOT, encoding: 'utf8', stdio: CHILD_STDIO, env: { ...process.env }, timeout: 120_000 },
+    );
+  } catch (e) {
+    const err = e as { message?: string; stdout?: string };
+    throw new Error(`${err.message ?? String(e)}\n--- 子 vitest の stdout ---\n${err.stdout ?? ''}`);
+  }
+}
+
+/**
  * 検査対象。
  *
  * 🔴 **`infra/test/**` は射程外**（別 vitest プロジェクトで、この helper を解決できない）。
@@ -227,6 +257,7 @@ describe('一時領域の後始末 (#1136)', () => {
           {
             cwd: ROOT,
             encoding: 'utf8',
+            stdio: CHILD_STDIO,
             env: { ...process.env, ISOLATION_ESCAPE_PROBE: '1' },
             timeout: 120_000,
           },
@@ -248,11 +279,7 @@ describe('一時領域の後始末 (#1136)', () => {
   it(
     '🔴 同じ probe は、書き換えなければ通る（負の対照）',
     () => {
-      const out = execFileSync(
-        join(ROOT, 'node_modules', '.bin', 'vitest'),
-        ['run', join('tests', 'config', 'isolation-escape-probe.spec.ts')],
-        { cwd: ROOT, encoding: 'utf8', env: { ...process.env }, timeout: 120_000 },
-      );
+      const out = runPassingProbe();
       expect(out).toContain('1 passed');
     },
     60_000,
@@ -275,11 +302,7 @@ describe('一時領域の後始末 (#1136)', () => {
       const old = (Date.now() - 7 * 60 * 60 * 1000) / 1000;
       utimesSync(stale, old, old);
 
-      execFileSync(
-        join(ROOT, 'node_modules', '.bin', 'vitest'),
-        ['run', join('tests', 'config', 'isolation-escape-probe.spec.ts')],
-        { cwd: ROOT, encoding: 'utf8', env: { ...process.env }, timeout: 120_000 },
-      );
+      runPassingProbe();
 
       expect(existsSync(stale), '古い root が残っている。setup が掃き出しを呼んでいない').toBe(
         false,
