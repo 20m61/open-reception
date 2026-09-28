@@ -1372,6 +1372,18 @@ describe.each([
     ['s3:CreateAccessPoint', 'arn:aws:s3:ap-northeast-1:822063948773:accesspoint/x'],
     ['s3:CreateAccessPointForObjectLambda', 'arn:aws:s3-object-lambda:ap-northeast-1:822063948773:accesspoint/x'],
     ['s3:CreateMultiRegionAccessPoint', 'arn:aws:s3::822063948773:accesspoint/x.mrap'],
+    // vended logs / resource policy で broker の log group へ書かせる経路
+    ['logs:PutResourcePolicy', '*'],
+    ['logs:CreateDelivery', '*'],
+    ['logs:PutDeliveryDestination', '*'],
+    ['logs:PutDeliverySource', '*'],
+    ['logs:CreateLogDelivery', '*'],
+    // broker 専用 bootstrap の stack と version parameter（壊す・先取りする）
+    ['cloudformation:UpdateStack', 'arn:aws:cloudformation:ap-northeast-1:822063948773:stack/CDKToolkit-orbrkr01/abc'],
+    ['cloudformation:CreateStack', 'arn:aws:cloudformation:ap-northeast-1:822063948773:stack/CDKToolkit-orbrkr01/abc'],
+    ['cloudformation:DeleteStack', 'arn:aws:cloudformation:ap-northeast-1:822063948773:stack/CDKToolkit/abc'],
+    ['ssm:PutParameter', 'arn:aws:ssm:ap-northeast-1:822063948773:parameter/cdk-bootstrap/orbrkr01/version'],
+    ['ssm:DeleteParameter', 'arn:aws:ssm:ap-northeast-1:822063948773:parameter/cdk-bootstrap/orbrkr01/version'],
   ])('%s on %s を Deny する', (action, arn) => {
     expect(denies(action, arn)).toBe(true);
   });
@@ -1388,6 +1400,10 @@ describe.each([
       ['sts:AssumeRole', 'arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1'],
       ['s3:PutObject', 'arn:aws:s3:::cdk-orcloud01-assets-822063948773-ap-northeast-1/abc.zip'],
       ['logs:DescribeAccountPolicies', '*'],
+      // dev stack の SSM parameter と Claude 自身の bootstrap の version は触れる
+      ['ssm:PutParameter', 'arn:aws:ssm:ap-northeast-1:822063948773:parameter/open-reception/dev/x'],
+      ['ssm:GetParameter', 'arn:aws:ssm:ap-northeast-1:822063948773:parameter/cdk-bootstrap/orcloud01/version'],
+      ['cloudformation:UpdateStack', 'arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/abc'],
     ];
     for (const [action, arn] of own) {
       expect(denies(action, arn), arn).toBe(false);

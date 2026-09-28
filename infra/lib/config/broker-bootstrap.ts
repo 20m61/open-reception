@@ -16,3 +16,10 @@
  * The qualifier must be ≤ 10 lowercase alphanumerics, and must differ from Claude's `orcloud01`.
  */
 export const BROKER_BOOTSTRAP_QUALIFIER = 'orbrkr01';
+
+/**
+ * `SparseLedgerStackDeployRoleArn` must be exactly this bootstrap's cfn-exec role (the role the
+ * synthesizer hands CloudFormation), so the Deny exemptions cannot be given to another role, such as a
+ * shared bootstrap's cfn-exec role. CDK names it `cdk-<qualifier>-cfn-exec-role-<account>-<region>`.
+ */
+export const BROKER_STACK_DEPLOY_ROLE_ARN_PATTERN = `^arn:aws:iam::[0-9]{12}:role/cdk-${BROKER_BOOTSTRAP_QUALIFIER}-cfn-exec-role-[0-9]{12}-[a-z]{2}(-[a-z]+)+-[0-9]$`;

@@ -219,8 +219,14 @@ tested before the broker may assume any deploy role:
    The broker's IAM roles carry `Project=open-reception`, so the tag-based role-write Deny did not
    protect them either: the chain could delete a role, or its inline policy (including an explicit
    Deny such as the artifact-history one).
-   **Status: closed in the policy files and the broker app; applying the policies and bootstrapping are
-   Human Gates.** Owner decisions, 2026-09-28 (#1146).
+   **Status: closed in the policy files and the broker app.** Owner decisions, 2026-09-28 (#1146).
+
+   Still Human Gates:
+   - applying the policy versions;
+   - the broker-only bootstrap with owner-only trust. That trust comes from a custom bootstrap template
+     (runbook #1181, step 4), not from code. A plain `cdk bootstrap --qualifier orbrkr01` would create
+     an account-trusted deploy role and an `AdministratorAccess` cfn-exec role; the Claude chain would
+     still be denied them.
    - `DenyForeignProjectData` (both layers) denies `logs:*` / `cloudwatch:*` / `sns:*` / `s3:*`
      (next to the existing `dynamodb:*`) on the following. The broker entries were folded into the
      existing Deny for lack of room; a Deny × Deny cross product only adds denies.
@@ -231,6 +237,8 @@ tested before the broker may assume any deploy role:
      and the generated pipeline roles whose stack part is cut to `OpenReception-DevDeployBr`.
    - Account-wide paths to the same log groups / buckets are denied on `*`:
      - `logs:*AccountPolicy` (transformer / subscription / data-protection account policies);
+     - `logs:PutResourcePolicy` and `logs:*Deliver*` (vended-log delivery, e.g. an API Gateway or
+       CloudFront log pointed at a broker log group, which would write lines Claude largely controls);
      - `s3:Create*AccessPoint*` (access points on a broker bucket).
 
      They are folded into `DenyPrincipalCreationAndOrgChanges` (boundary) / `DenyDnsAndPrincipals`
@@ -242,9 +250,17 @@ tested before the broker may assume any deploy role:
      - Its deploy / publishing roles trust only the owner, through a custom bootstrap template
        (runbook `docs/runbook-sparse-ledger-activation.md`, step 4).
      - Its assets bucket holds the stack template and the trusted modules.
-     - The Claude chain may not assume or pass `role/cdk-orbrkr01-*` (`DenySharedBootstrapRoles`)
-       and may not touch `s3:::cdk-orbrkr01-*`. Otherwise it could swap the template between
-       publish and deploy.
+     - The Claude chain may not assume or pass `role/cdk-orbrkr01-*`: `DenySharedBootstrapRoles` in the
+       boundary and cfn-exec, and the same Deny in the deploy role and the entry role.
+     - It may not touch `s3:::cdk-orbrkr01-*`. Otherwise it could swap the template between publish
+       and deploy.
+     - It may not act on the bootstrap stack or its version parameter. `stack/CDKToolkit*/*` also
+       covers Claude's own `CDKToolkit-orcloud01` for boundaried principals, and only the
+       non-boundaried deploy role reads that one. `ssm:*` is denied on
+       `parameter/cdk-bootstrap/orbrkr01/*`.
+     - `SparseLedgerStackDeployRoleArn` only accepts `cdk-orbrkr01-cfn-exec-role-<account>-<region>`,
+       the role the synthesizer hands CloudFormation. A test ties the pattern to the synthesized
+       manifest.
    - The #680 migration policies (`claude-*-migration.json`) were retired to make room; the migration
      is complete.
    - Coverage is fixed by `src/domain/governance/aws-policy-shape.test.ts` and
@@ -253,6 +269,7 @@ tested before the broker may assume any deploy role:
      not from hand-written ARNs.
    - Other room was made under the 6,144-character limit. Deny `Resource` accounts became `*`
      (broader, so safe). The S3 `…/*` duplicates of bucket globs were dropped (`*` crosses `/`).
+     `CDKToolkit` and `CDKToolkit-staging` were folded into `CDKToolkit*`.
    - Needs live verification after the owner applies the policy versions and deploys the stack.
      Take the **real** physical names from `describe-stack-resources`, then run
      `simulate-principal-policy` with each of the following. Each must return `explicitDeny`.
@@ -262,7 +279,12 @@ tested before the broker may assume any deploy role:
      - `s3:DeleteObjectVersion` (artifact bucket)
      - `iam:DeleteRolePolicy` (broker role)
      - `sts:AssumeRole` (`cdk-orbrkr01-deploy-role-*`)
-     - `logs:PutAccountPolicy`
+     - `iam:PassRole` (`cdk-orbrkr01-cfn-exec-role-*`)
+     - `s3:PutObject` (`cdk-orbrkr01-assets-*`)
+     - `cloudformation:UpdateStack` (`CDKToolkit-orbrkr01`)
+     - `ssm:PutParameter` (`/cdk-bootstrap/orbrkr01/version`)
+     - `logs:PutAccountPolicy`, `logs:PutResourcePolicy`
+     - `s3:CreateAccessPoint`
 
    A side effect, accepted by the owner: the Claude chain can no longer read the broker's logs and
    artifacts either.

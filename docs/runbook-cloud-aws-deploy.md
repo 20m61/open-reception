@@ -45,7 +45,7 @@ qualifier: `orcloud01`。
 **人間が Admin 権限を持つ IAM user（`user/CDK`）で実行する。**
 
 > 🔴 **`claude-boundary.json` は managed policy の 6,144 文字上限に近い。**
-> 2026-09-28 時点で **6,108 文字（空白を除いた実サイズ。残り 36 文字）**。
+> 2026-09-28 時点で **6,123 文字（空白を除いた実サイズ。残り 21 文字）**。
 > 変遷: carve-out で 5,148 → 5,682（+534）、`DenyBoundaryEscape` 分割で 5,876（+194）、
 > `PutRolePermissionsBoundary` の Allow で 5,909（+33）、Secrets Manager の
 > 読み取り許可で 6,240 相当まで膨らんだが、**Deny を削らずに詰めて** 6,037 まで戻した。
@@ -62,15 +62,21 @@ qualifier: `orcloud01`。
 > - `DenyIamWriteOnForeignPrincipals`: `role/*DevDeploy*`（broker の role）
 > - `DenySharedBootstrapRoles`: broker 専用 bootstrap の `role/cdk-orbrkr01-*`
 > - `DenyPrincipalCreationAndOrgChanges`（cfn-exec は `DenyDnsAndPrincipals`）:
->   `logs:*AccountPolicy`・`s3:Create*AccessPoint*`（account 単位の経路）
+>   `logs:*AccountPolicy`・`s3:Create*AccessPoint*`・`logs:PutResourcePolicy`・`logs:*Deliver*`
+>   （account 単位で broker の log group / bucket に届く経路。vended logs の配送先を broker の log group に向けるなど）
+> - `DenyForeignProjectData`: `ssm:*` on `parameter/cdk-bootstrap/orbrkr01/*`（broker 専用 bootstrap の version）
+> - `DenyForeignProjectStacks`: `CDKToolkit` / `CDKToolkit-staging` の 2 本を `stack/CDKToolkit*/*` に畳んだ
+>   （broker 専用の `CDKToolkit-orbrkr01` も覆う。Claude 自身の `CDKToolkit-orcloud01` も boundary 下では Deny になるが、
+>   それを読むのは boundary の無い deploy role だけ）
+> - 層 1（deploy role）と entry の共有 bootstrap の Deny にも `role/cdk-orbrkr01-*` を足した
 >
 > 余白を作るために、次の 2 つを行った。
 > - (a) すべての Deny の `Resource` の account 部を `*` にした（覆う範囲が増える＝安全側）。
 >   `NotResource` と Condition の値は、広げると緩む側なので変えていない。
-> - (b) `DenyForeignProjectData` から `nodi-*/*`・`salon-loop-*/*`・`cdk-staging-*/*` を外した
+> - (b) `DenyForeignProjectData` から `nodi-*/*`・`salon-loop-*/*`・`cdk-staging-*/*`・`cdk-hnb659fds-*/*` を外した
 >   （`*` は `/` を越えるので、bucket のパターンがオブジェクトも覆う。被覆はテストで固定）。
 >
-> その結果、boundary は 6,074 → 6,108（+34）。
+> その結果、boundary は 6,074 → 6,123（+49）。
 > 移行用の `claude-*-migration.json` は、移行が完了したので 2026-09-28 に廃止した（ステップ 9d）。
 >
 > 🔴 **詰め方の正解（2026-08-15）**: 「入らないから Deny を削る」ではなく
@@ -86,7 +92,7 @@ qualifier: `orcloud01`。
 > ポリシーになるので、`aws-policy-shape.test.ts` の「IAM の許すパスで始まる」テストで
 > 固定してある。2026-08-15 に実際にこれで `create-policy-version` が落ちた。
 >
-> **残りは 36 文字。**
+> **残りは 21 文字。**
 > 次にステートメントを足す人は、まず余白を測ること:
 >
 > ```bash
@@ -99,7 +105,7 @@ qualifier: `orcloud01`。
 > どちらも attach する**（IAM は 1 プリンシパルに boundary を 1 本しか付けられないので、
 > **分割はできない**）—— つまり実質的には**アクションの列挙を整理するしかない**。
 > 「入らないから Deny を削る」は境界の後退なので、必ず人間の承認を取ること。
-> `claude-cfn-exec.json` は 5,249 / 6,144（残り 895）で余裕がある。
+> `claude-cfn-exec.json` は 5,264 / 6,144（残り 880）で余裕がある。
 >
 > 🔴 **層 2（cfn-exec）と層 4（boundary）は同じ規則の 2 つの写しである。** 実効権限は
 > `identity ∩ boundary` なので、**片方だけ直しても効かない**。2026-08-15 にこれで 2 度落ちた
@@ -1624,6 +1630,11 @@ Your access has been denied by S3 ... permission to GetObject for cdk-hnb659fds-
 - 廃止前の版をそのまま適用しない。それ以降に通常ポリシーへ足した Deny が落ちる。
 - 窓の開閉（2 本とも差し替える、`simulate` で確かめる、成功したら即座に閉じる、古い version を掃除する）は、
   廃止前の本節の手順（git の履歴）に従う。
+
+**live 側の確認（owner、次に policy を適用するとき）**: repo からは実 IAM の状態が見えない。
+`OpenReceptionClaudeBoundary` / `OpenReceptionClaudeCfnExec-dev` の default version が通常のファイルと同じであること
+（`get-policy-version` の文書を `claude-boundary.json` / `claude-cfn-exec.json` と比べる）を確かめる。
+移行用の版が残っていれば、`delete-policy-version` で消す。
 
 ---
 

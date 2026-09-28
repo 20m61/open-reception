@@ -10,6 +10,7 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3assets from 'aws-cdk-lib/aws-s3-assets';
+import { BROKER_STACK_DEPLOY_ROLE_ARN_PATTERN } from '../config/broker-bootstrap';
 
 export const DEV_DEPLOY_PROMOTION_BRANCH = 'dev-deploy';
 
@@ -230,8 +231,8 @@ export class DevDeployBrokerStack extends cdk.Stack {
     const stackDeployRoleArn = new cdk.CfnParameter(this, 'SparseLedgerStackDeployRoleArn', {
       type: 'String',
       description:
-        'IAM role ARN (this account) CloudFormation uses when a human deploys this stack: the cfn-exec role of the broker-only bootstrap (qualifier in lib/config/broker-bootstrap.ts), used for no other stack. Never a shared bootstrap or Claude/candidate role.',
-      allowedPattern: HUMAN_ROLE_ARN_PATTERN,
+        'IAM role ARN (this account) CloudFormation uses when a human deploys this stack: the cfn-exec role of the broker-only bootstrap (qualifier in lib/config/broker-bootstrap.ts), used for no other stack.',
+      allowedPattern: BROKER_STACK_DEPLOY_ROLE_ARN_PATTERN,
     });
 
     const validationRole = new iam.Role(this, 'ValidationRole', {

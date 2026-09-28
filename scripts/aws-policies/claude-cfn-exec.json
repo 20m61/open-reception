@@ -148,17 +148,23 @@
         "arn:aws:cloudformation:*:*:stack/nodi-*/*",
         "arn:aws:cloudformation:*:*:stack/salon-loop-*/*",
         "arn:aws:cloudformation:*:*:stack/Kiaff*/*",
-        "arn:aws:cloudformation:*:*:stack/CDKToolkit/*",
-        "arn:aws:cloudformation:*:*:stack/CDKToolkit-staging/*",
         "arn:aws:cloudformation:*:*:stack/OpenReception-*-staging/*",
         "arn:aws:cloudformation:*:*:stack/OpenReception-*-prod/*",
-        "arn:aws:cloudformation:*:*:stack/OpenReception-DevDeployBroker/*"
+        "arn:aws:cloudformation:*:*:stack/OpenReception-DevDeployBroker/*",
+        "arn:aws:cloudformation:*:*:stack/CDKToolkit*/*"
       ]
     },
     {
       "Sid": "DenyForeignProjectData",
       "Effect": "Deny",
-      "Action": ["dynamodb:*", "s3:*", "logs:*", "cloudwatch:*", "sns:*"],
+      "Action": [
+        "dynamodb:*",
+        "s3:*",
+        "logs:*",
+        "cloudwatch:*",
+        "sns:*",
+        "ssm:*"
+      ],
       "Resource": [
         "arn:aws:dynamodb:*:*:table/nodi-*",
         "arn:aws:dynamodb:*:*:table/salon-loop-*",
@@ -166,13 +172,13 @@
         "arn:aws:s3:::nodi-*",
         "arn:aws:s3:::salon-loop-*",
         "arn:aws:s3:::cdk-hnb659fds-*",
-        "arn:aws:s3:::cdk-hnb659fds-*/*",
         "arn:aws:s3:::cdk-staging-*",
         "arn:aws:logs:*:*:log-group:OpenReception-DevDeployBroker-*",
         "arn:aws:cloudwatch:*:*:alarm:OpenReception-DevDeployBroker-*",
         "arn:aws:sns:*:*:OpenReception-DevDeployBroker-*",
         "arn:aws:s3:::openreception-devdeploy*",
-        "arn:aws:s3:::cdk-orbrkr01-*"
+        "arn:aws:s3:::cdk-orbrkr01-*",
+        "arn:aws:ssm:*:*:parameter/cdk-bootstrap/orbrkr01/*"
       ]
     },
     {
@@ -207,7 +213,9 @@
         "organizations:*",
         "account:*",
         "logs:*AccountPolicy",
-        "s3:Create*AccessPoint*"
+        "s3:Create*AccessPoint*",
+        "logs:PutResourcePolicy",
+        "logs:*Deliver*"
       ],
       "Resource": "*"
     },

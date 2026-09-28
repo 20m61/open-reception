@@ -546,7 +546,7 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
     expect(deny!.NotPrincipal).toBeUndefined();
   });
 
-  it.each(['SparseLedgerOverrideIssuerRoleArn', 'SparseLedgerStackDeployRoleArn'])(
+  it.each(['SparseLedgerOverrideIssuerRoleArn'])(
     '%s is a deploy-time IAM role ARN parameter without a default (never a stack-created role)',
     (name) => {
       const param = (template.toJSON().Parameters as Record<string, { Type: string; AllowedPattern?: string }>)[name];
@@ -579,6 +579,45 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
       }
     },
   );
+
+  it('SparseLedgerStackDeployRoleArn only accepts the broker-only bootstrap\'s cfn-exec role (#1146 blocker 8)', () => {
+    const param = (template.toJSON().Parameters as Record<string, { Type: string; AllowedPattern?: string }>)
+      .SparseLedgerStackDeployRoleArn;
+    expect(param?.Type).toBe('String');
+    expect(param).not.toHaveProperty('Default');
+    const re = new RegExp(param!.AllowedPattern!);
+    for (const ok of [
+      'arn:aws:iam::822063948773:role/cdk-orbrkr01-cfn-exec-role-822063948773-ap-northeast-1',
+      'arn:aws:iam::822063948773:role/cdk-orbrkr01-cfn-exec-role-822063948773-us-east-1',
+    ]) {
+      expect(re.test(ok), ok).toBe(true);
+    }
+    for (const bad of [
+      'arn:aws:iam::822063948773:role/cdk-hnb659fds-cfn-exec-role-822063948773-ap-northeast-1',
+      'arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1',
+      'arn:aws:iam::822063948773:role/cdk-orbrkr01-deploy-role-822063948773-ap-northeast-1',
+      'arn:aws:iam::822063948773:role/cdk-orbrkr01-cfn-exec-role-822063948773-ap-northeast-1-x/y',
+      'arn:aws:iam::822063948773:role/path/cdk-orbrkr01-cfn-exec-role-822063948773-ap-northeast-1',
+      'arn:aws:iam::822063948773:role/ledger-stack-deploy-human',
+      'arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev',
+    ]) {
+      expect(re.test(bad), bad).toBe(false);
+    }
+    // It is the role the synthesizer actually hands CloudFormation.
+    const app = new cdk.App();
+    new DevDeployBrokerStack(app, 'QualifiedBrokerExec', {
+      stackName: 'OpenReception-DevDeployBroker',
+      env: { account: '822063948773', region: 'ap-northeast-1' },
+      synthesizer: new cdk.DefaultStackSynthesizer({ qualifier: BROKER_BOOTSTRAP_QUALIFIER }),
+    });
+    const artifact = app.synth().getStackArtifact('QualifiedBrokerExec');
+    const resolve1 = (v?: string) => (v ?? '').replace('${AWS::Partition}', 'aws');
+    expect(re.test(resolve1(artifact.cloudFormationExecutionRoleArn)), artifact.cloudFormationExecutionRoleArn).toBe(true);
+    for (const arn of [artifact.assumeRoleArn, artifact.cloudFormationExecutionRoleArn, artifact.lookupRole?.arn]) {
+      expect(arn).toContain(`cdk-${BROKER_BOOTSTRAP_QUALIFIER}-`);
+    }
+    expect(artifact.stackTemplateAssetObjectUrl).toContain(`cdk-${BROKER_BOOTSTRAP_QUALIFIER}-assets-`);
+  });
 
   it('the Claude boundary and CFN exec policies deny dynamodb:* on this stack\'s tables', () => {
     for (const name of [
@@ -620,6 +659,20 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
       const sids = (sid: string) => documentStatements(doc).find((st) => (st as { Sid?: string }).Sid === sid)!;
       expect(sids('DenySharedBootstrapRoles').Resource, name).toContain(`arn:aws:iam::*:role/cdk-${BROKER_BOOTSTRAP_QUALIFIER}-*`);
       expect(sids('DenyForeignProjectData').Resource, name).toContain(`arn:aws:s3:::cdk-${BROKER_BOOTSTRAP_QUALIFIER}-*`);
+      expect(sids('DenyForeignProjectData').Resource, name).toContain(
+        `arn:aws:ssm:*:*:parameter/cdk-bootstrap/${BROKER_BOOTSTRAP_QUALIFIER}/*`,
+      );
+      expect(sids('DenyForeignProjectStacks').Resource, name).toContain('arn:aws:cloudformation:*:*:stack/CDKToolkit*/*');
+    }
+    // The chain's other two layers (the deploy role and the entry role) refuse those roles too.
+    for (const [name, sid] of [
+      ['claude-deploy-role-restriction.json', 'DenyPassingSharedExecRoles'],
+      ['claude-deploy-entry.json', 'DenySharedBootstrapRoles'],
+    ] as const) {
+      const doc = JSON.parse(readFileSync(resolve(__dirname, '../../scripts/aws-policies', name), 'utf8'));
+      const st = documentStatements(doc).find((s) => (s as { Sid?: string }).Sid === sid)!;
+      expect(st.Effect, name).toBe('Deny');
+      expect(st.Resource, name).toContain(`arn:aws:iam::822063948773:role/cdk-${BROKER_BOOTSTRAP_QUALIFIER}-*`);
     }
     // The synthesized template asks for that bootstrap (version parameter and deploy / exec roles).
     const app = new cdk.App();
