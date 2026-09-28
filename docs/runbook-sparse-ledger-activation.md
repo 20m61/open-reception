@@ -52,10 +52,11 @@ IAM・CloudFormation・DynamoDB・SNS・CloudTrail に一切書き込まない�
 | `SparseLedgerOverrideIssuerRoleArn` | 人間が genesis・override を書き、stuck attempt を閉じるための role | owner の人間 principal だけ |
 | `SparseLedgerStackDeployRoleArn` | broker 専用 bootstrap の cfn-exec role（`cdk-orbrkr01-cfn-exec-role-822063948773-ap-northeast-1`。CDK の命名規則で決まる） | `cloudformation.amazonaws.com` だけ（owner が deploy するとき） |
 
-どちらも stack の `HUMAN_ROLE_ARN_PATTERN` で、role 名（path の後ろ）が次で**始まるものは拒否される**:
+issuer role は stack の `HUMAN_ROLE_ARN_PATTERN` で、role 名（path の後ろ）が次で**始まるものは拒否される**:
 `cdk-orcloud01-`、`OpenReception`、`nodi-`、`salon-loop-`、`Kiaff`。
 issuer role の**名前はこれらの外にする**（例: `ledger-override-issuer-human`）。
-stack deploy role は、手順 4 で作る broker 専用 bootstrap の cfn-exec role である（`cdk-orbrkr01-` はこの pattern で拒否されない）。
+stack deploy role は、手順 4 で作る broker 専用 bootstrap の cfn-exec role である。parameter の pattern は
+`cdk-orbrkr01-cfn-exec-role-<account>-<region>` だけを受け付ける（#1192）。
 共有の bootstrap（`hnb659fds`）や Claude の bootstrap（`orcloud01`）の cfn-exec role は使わない（手順 4 の理由）。
 
 🔴 誤った role を渡すと、table の resource policy が stack 自身の create / update（PITR の有効化など）を
@@ -139,7 +140,7 @@ policy の版を 2 回に分けて適用しないよう、この手順はブロ�
 （`cloudformation:*` on `OpenReception-DevDeployBroker`）を足した。**締める方向の変更**で、
 Claude の deploy chain とその下の workload role が ledger を書いたり消したりできなくなる。
 
-事前確認（文字数の上限 6,144。`claude-boundary.json` は 6,108、残り 36 文字。移行用の `*-migration.json` は #1192 で廃止した）:
+事前確認（文字数の上限 6,144。`claude-boundary.json` は 6,123、残り 21 文字。移行用の `*-migration.json` は #1192 で廃止した）:
 
 ```bash
 for f in claude-boundary claude-cfn-exec; do
@@ -150,7 +151,8 @@ aws iam list-policy-versions --policy-arn arn:aws:iam::822063948773:policy/OpenR
 # 5 なら、default でない最古の版を delete-policy-version で消してから進む
 ```
 
-適用（**2 本とも**）:
+適用（**2 本とも**。#1192 は層 1 の `claude-deploy-role-restriction.json` と entry の `claude-deploy-entry.json` にも
+`role/cdk-orbrkr01-*` の Deny を足しているので、それらの policy / role も同じ版へ更新する）:
 
 ```bash
 aws iam create-policy-version \
@@ -183,6 +185,9 @@ for pair in \
   "sts:AssumeRole arn:aws:iam::822063948773:role/cdk-orbrkr01-deploy-role-822063948773-ap-northeast-1" \
   "s3:PutObject arn:aws:s3:::cdk-orbrkr01-assets-822063948773-ap-northeast-1/x" \
   "logs:PutAccountPolicy *" \
+  "logs:PutResourcePolicy *" \
+  "cloudformation:UpdateStack arn:aws:cloudformation:ap-northeast-1:822063948773:stack/CDKToolkit-orbrkr01/x" \
+  "ssm:PutParameter arn:aws:ssm:ap-northeast-1:822063948773:parameter/cdk-bootstrap/orbrkr01/version" \
   "s3:CreateAccessPoint arn:aws:s3:ap-northeast-1:822063948773:accesspoint/x"; do
   set -- $pair
   aws iam simulate-principal-policy --policy-source-arn "$EXEC" --action-names "$1" --resource-arns "$2" \
