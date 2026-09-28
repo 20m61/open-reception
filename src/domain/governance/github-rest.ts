@@ -454,3 +454,8 @@ export function issueCommentUpdateRequest(
     body: JSON.stringify({ body }),
   };
 }
+
+/** 資格情報の主体（login）を引く要求。証拠コメントを「自分が書いたもの」に限って更新するのに使う。 */
+export function userReadRequest(): GitHubRequest {
+  return { method: 'GET', path: 'user' };
+}

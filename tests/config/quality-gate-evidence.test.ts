@@ -75,10 +75,17 @@ describe('quality-gate: --full の証拠ファイル (#1195)', () => {
     });
     expect(evidence.steps).toContainEqual({ status: 'PASS', label: 'selftest step', detail: '' });
     expect(evidence.environment.map(([k]) => k)).toEqual(
-      expect.arrayContaining(['runner', 'os', 'node']),
+      expect.arrayContaining(['runner', 'os', 'node', 'gitleaks', 'semgrep']),
     );
-    // 🔴 下界: 配線が生きていれば、この証拠は PR の head と一致するとき PASS になる。
-    expect(assessGateEvidence(evidence, head)).toEqual({ passed: true, reasons: [] });
+    expect(evidence.plan.get('e2e')).toBe('1');
+    expect(evidence.selftest).toBe('pass');
+    // 🔴 seam で起動した実行は PASS にならない（ステップを走らせていない）。
+    // 下界として、**それ以外の理由が 1 つも無い**ことを見る ―― 配線（head・dirty・exit・
+    // スタンプ・計画）が生きていれば、本物の実行ではこの証拠が PASS になる。
+    expect(assessGateEvidence(evidence, head)).toEqual({
+      passed: false,
+      reasons: ['自己テスト用の seam（pass）で起動した実行で、ステップを走らせていない'],
+    });
   });
 
   it('検査できなかったステップがあれば exit 1・スタンプ無しとして書く', () => {
@@ -143,7 +150,7 @@ describe('quality-gate: --full の証拠ファイル (#1195)', () => {
   it('🔴 終了処理に届かなかった実行は、前回の PASS の証拠を残さない', () => {
     const { dir, head } = makeRepo();
     expect(runGate(dir, 'pass')).toBe(0);
-    expect(assessGateEvidence(parseGateEvidence(readFileSync(evidencePath(dir), 'utf8')), head).passed).toBe(true);
+    expect(parseGateEvidence(readFileSync(evidencePath(dir), 'utf8')).exitCode).toBe(0);
 
     // 知らない seam 値は finish() を通らずに exit 2 で終わる（= 途中で死んだ実行の代わり）。
     expect(runGate(dir, 'no-such-selftest')).toBe(2);
@@ -151,6 +158,14 @@ describe('quality-gate: --full の証拠ファイル (#1195)', () => {
     const evidence = parseGateEvidence(readFileSync(evidencePath(dir), 'utf8'));
     expect(evidence.exitCode).toBeNull();
     expect(assessGateEvidence(evidence, head).reasons.join('\n')).toMatch(/完走していない/);
+  });
+
+  it('--no-build を付けた --full は、計画から build が落ちたことを書く', () => {
+    const { dir, head } = makeRepo();
+    expect(runGate(dir, 'pass', ['--no-build'])).toBe(0);
+    const evidence = parseGateEvidence(readFileSync(evidencePath(dir), 'utf8'));
+    expect(evidence.plan.get('build')).toBe('0');
+    expect(assessGateEvidence(evidence, head).reasons.join('\n')).toMatch(/実行計画に入っていない: build/);
   });
 
   it('--full の証拠は後から回した --fast に上書きされない（tier ごとに別ファイル）', () => {

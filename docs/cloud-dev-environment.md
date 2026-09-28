@@ -124,6 +124,14 @@ npm run gate:evidence -- --number <PR>   # 4. 証拠をコメントとして載�
 2. 「検証したコミット」が **PR の現在の head と一致**していることを見る（投稿後に push があれば無効）
 3. merge する（GitHub の UI でも `gh pr merge --squash --delete-branch` でもよい）
 
+**限界（証拠が見ていないもの）**: dirty の判定は `git status`（未追跡を含む・ignore を除く）で、
+`.env.local` のような **ignore 済みのファイル**や `skip-worktree` の変更は見えない。
+結果を左右しうる ignore 済みファイルを置いたまま回さないこと。
+
+owner が Claude Code の中から `gh pr merge` を打つと、`pr-gate-guard.sh` は**その端末の**
+`--full` スタンプを要求して止める（フックは変えていない）。証拠を見て merge するなら
+GitHub の UI か、Claude Code の外の端末から行う。
+
 **これは記録であって強制ではない。** PR コメントは merge を機械的には止めない
 （この repo は GitHub Actions を使わず、commit status も書かない）。強制は、owner が
 この証拠を読むことが担う。`pr-gate-guard.sh`（スタンプによるローカルの merge ガード）は

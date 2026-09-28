@@ -259,8 +259,16 @@ gate_evidence_finish() {
     _gate_evidence_line env.runner "${runner}"
     _gate_evidence_line env.os "$(uname -srm 2>/dev/null || echo unknown)"
     _gate_evidence_line env.node "$(node -v 2>/dev/null || echo missing)"
-    _gate_evidence_line env.gitleaks "$(gitleaks version 2>/dev/null || echo missing)"
-    _gate_evidence_line env.semgrep "$(SEMGREP_ENABLE_VERSION_CHECK=0 semgrep --version 2>/dev/null || echo missing)"
+    # 🔴 **道具は起動しない（在否だけを見る）。** 証拠のために `semgrep --version` を叩くと、
+    # 「ルールセットが無いときは semgrep を起動しない」を縛る sast のテストが落ちる（実測）。
+    # 版まで要るなら、各ステップのログを見る。
+    _gate_evidence_line env.gitleaks "$(command -v gitleaks >/dev/null 2>&1 && echo present || echo missing)"
+    _gate_evidence_line env.semgrep "$(command -v semgrep >/dev/null 2>&1 && echo present || echo missing)"
+    # 実行計画（tier と個別トグルが解決した結果）。`--full --no-build` のように tier を
+    # 名乗りながらステップを落とした実行を、判定側が見分けるため。
+    # seam（QUALITY_GATE_SELFTEST）で起動した実行も記録する ―― ステップを 1 つも走らせていない。
+    for line in ${GATE_EVIDENCE_PLAN:-}; do _gate_evidence_line "plan.${line%%=*}" "${line#*=}"; done
+    _gate_evidence_line selftest "${QUALITY_GATE_SELFTEST:-}"
     for line in "$@"; do _gate_evidence_line summary "${line}"; done
   } > "${file}.tmp" && mv "${file}.tmp" "${file}"
 }

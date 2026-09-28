@@ -6,6 +6,7 @@ import {
   issueCommentCreateRequest,
   issueCommentUpdateRequest,
   issueCommentsListRequest,
+  userReadRequest,
   isSuccess,
   curlArgs,
   describeHttpFailure,
@@ -454,6 +455,10 @@ describe('証拠コメントの要求 (#1195)', () => {
     expect(() => issueCommentsListRequest(REPO, 1, n)).toThrow();
     expect(() => issueCommentCreateRequest(REPO, n, 'x')).toThrow();
     expect(() => issueCommentUpdateRequest(REPO, n, 'x')).toThrow();
+  });
+
+  it('資格情報の主体は GET /user で引く', () => {
+    expect(userReadRequest()).toEqual({ method: 'GET', path: 'user' });
   });
 
   it('空の本文では組み立てない', () => {

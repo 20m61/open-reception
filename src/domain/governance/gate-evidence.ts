@@ -8,7 +8,8 @@
  * Claude が Cloud で `--full` を回しても、**owner からはそれが見えない** ―― 結果として
  * owner が手元の Mac で 1 本ずつ `--full` を回し直していた（2026-09-28、#1181〜#1192 の 12 本）。
  *
- * そこで、ゲートが書き出す証拠ファイル（`quality-gate.sh` の `gate_write_evidence`）を
+ * そこで、ゲートが書き出す証拠ファイル（`scripts/lib/gate-stamp.sh` の `gate_evidence_begin` /
+ * `gate_evidence_finish`）を
  * PR のコメントへ載せる。owner は**再実行せずに**、どのコミットを・どこで・どのステップを
  * 通したのかを読んで merge を判断する。参考は 20m61/Nodi の `scripts/ci/publish-verification.mjs`。
  *
@@ -22,6 +23,7 @@
  * 次のどれか 1 つでも当たれば PASS と書かない。**判定できなかったものは通さない**:
  *
  * - tier が `full` ではない / ゲートが完走していない（exit が 0 でない・スタンプを書いていない）
+ * - 実行計画に `--full` のステップが揃っていない（`--full --no-build` 等）/ 自己テスト用の seam で起動した
  * - 作業ツリーが dirty（開始時・終了時のどちらか。**測れなかった**ときも dirty 扱い）
  * - 実行中に HEAD が動いた
  * - 証拠の SHA が PR の head と違う / PR の head を読めなかった
@@ -37,7 +39,7 @@
 /** PR コメントを探すための印。**同じ PR には 1 件だけ**置き、以後は更新する。 */
 export const GATE_EVIDENCE_MARKER = '<!-- open-reception:gate-evidence -->';
 
-/** 証拠ファイルの書式の版。`quality-gate.sh` の `gate_write_evidence` と揃える。 */
+/** 証拠ファイルの書式の版。`scripts/lib/gate-stamp.sh` の `GATE_EVIDENCE_VERSION` と揃える。 */
 export const GATE_EVIDENCE_VERSION = 1;
 
 /** summary 行の状態。`NOTE` は情報で、判定に数えない。 */
@@ -66,6 +68,10 @@ export interface GateEvidence {
   readonly finishedAt: string;
   /** 実行環境（`env.<key>=<value>` の行）。表示専用で判定には使わない。 */
   readonly environment: ReadonlyArray<readonly [string, string]>;
+  /** 実行計画（`plan.<step>=0|1`）。tier とトグルが解決した結果。 */
+  readonly plan: ReadonlyMap<string, string>;
+  /** 自己テスト用の seam の値。**空でなければ本物のゲートではない。** */
+  readonly selftest: string;
   readonly steps: ReadonlyArray<GateStep>;
   readonly notes: ReadonlyArray<string>;
 }
@@ -94,6 +100,7 @@ function parseExit(value: string | undefined): number | null {
 export function parseGateEvidence(text: string): GateEvidence {
   const scalar = new Map<string, string>();
   const environment: Array<readonly [string, string]> = [];
+  const plan = new Map<string, string>();
   const steps: GateStep[] = [];
   const notes: string[] = [];
 
@@ -117,6 +124,11 @@ export function parseGateEvidence(text: string): GateEvidence {
       environment.push([key.slice(4), value]);
       continue;
     }
+    if (key.startsWith('plan.')) {
+      if (plan.has(key.slice(5))) throw new Error(`証拠ファイルに ${key} が 2 度あります`);
+      plan.set(key.slice(5), value);
+      continue;
+    }
     if (scalar.has(key)) throw new Error(`証拠ファイルに ${key} が 2 度あります`);
     scalar.set(key, value);
   }
@@ -134,6 +146,8 @@ export function parseGateEvidence(text: string): GateEvidence {
     startedAt: scalar.get('started_at') ?? '',
     finishedAt: scalar.get('finished_at') ?? '',
     environment,
+    plan,
+    selftest: scalar.get('selftest') ?? '',
     steps,
     notes,
   };
@@ -145,6 +159,27 @@ export interface GateEvidenceAssessment {
 }
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
+
+/**
+ * `--full` が走らせるステップ（`quality-gate.sh` の `--full` の分岐と同じ集合）。
+ *
+ * 🔴 **「PASS の行しか無い」だけでは足りない。** `--full --no-build --no-infra` は tier を
+ * `full` と名乗ったまま build と infra を落とし、SKIP の行すら残さない。seam で起動すれば
+ * PASS 1 行だけの証拠になる。実行計画そのものを見る（独立レビュー MAJOR 1）。
+ */
+export const FULL_PLAN_STEPS: ReadonlyArray<string> = [
+  'typecheck',
+  'lint',
+  'unit',
+  'build',
+  'infra',
+  'e2e',
+  'secrets',
+  'sast',
+  'audit',
+  'lighthouse',
+  'vrm',
+];
 
 function short(sha: string): string {
   return sha === '' ? '(記録なし)' : sha.slice(0, 12);
@@ -175,6 +210,13 @@ export function assessGateEvidence(
   }
   if (!evidence.stamped) {
     reasons.push('ゲートが green として記録（スタンプ）していない');
+  }
+  if (evidence.selftest !== '') {
+    reasons.push(`自己テスト用の seam（${evidence.selftest}）で起動した実行で、ステップを走らせていない`);
+  }
+  const offPlan = FULL_PLAN_STEPS.filter((step) => evidence.plan.get(step) !== '1');
+  if (offPlan.length > 0) {
+    reasons.push(`--full のステップが実行計画に入っていない: ${offPlan.join(', ')}`);
   }
 
   if (!FULL_SHA.test(evidence.headAtStart)) {

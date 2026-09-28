@@ -1,5 +1,7 @@
+import { execFileSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import {
+  FULL_PLAN_STEPS,
   GATE_EVIDENCE_MARKER,
   assessGateEvidence,
   parseGateEvidence,
@@ -25,6 +27,8 @@ function greenText(overrides: Record<string, string | null> = {}, extra: string[
     finished_at: '2026-09-28T19:25:00Z',
     'env.runner': 'claude-code-remote',
     'env.os': 'Linux 6.18 x86_64',
+    selftest: '',
+    ...Object.fromEntries(FULL_PLAN_STEPS.map((step) => [`plan.${step}`, '1'])),
   };
   const lines: string[] = [];
   for (const [k, v] of Object.entries({ ...base, ...overrides })) {
@@ -70,6 +74,20 @@ describe('parseGateEvidence (#1195)', () => {
 
   it('🔴 同じキーが 2 度あれば throw する（追記 1 行で判定を裏返させない）', () => {
     expect(() => parseGateEvidence(`${greenText()}exit=0\n`)).toThrow(/exit が 2 度/);
+    expect(() => parseGateEvidence(`${greenText()}plan.build=1\n`)).toThrow(/plan.build が 2 度/);
+  });
+
+  it('🔴 FULL_PLAN_STEPS は --full が走らせるステップの集合と一致する', () => {
+    // quality-gate.sh の --dry-run が解決した計画と突き合わせる（書き写しのずれを止める）。
+    const out = execFileSync('bash', ['scripts/quality-gate.sh', '--full'], {
+      encoding: 'utf8',
+      env: { ...process.env, QUALITY_GATE_DRY_RUN: '1' },
+    });
+    const on = out
+      .split('\n')
+      .filter((l) => l.endsWith('=1') && !l.startsWith('tier='))
+      .map((l) => l.slice(0, -2));
+    expect([...on].sort()).toEqual([...FULL_PLAN_STEPS].sort());
   });
 
   it('key=value でない行・読めない summary 行は throw する', () => {
@@ -105,6 +123,10 @@ describe('assessGateEvidence (#1195)', () => {
     ['exit が 0 でない', { exit: '1' }, SHA, /exit 1/],
     ['スタンプを書いていない', { stamped: '0' }, SHA, /スタンプ/],
     ['版が違う', { version: '2' }, SHA, /版が 2/],
+    ['seam で起動した', { selftest: 'pass' }, SHA, /seam（pass）/],
+    ['--no-build で build を落とした', { 'plan.build': '0' }, SHA, /実行計画に入っていない: build/],
+    ['計画に infra が無い', { 'plan.infra': null }, SHA, /実行計画に入っていない: infra/],
+    ['計画の値が不正', { 'plan.vrm': 'yes' }, SHA, /実行計画に入っていない: vrm/],
   ])('%s → PASS と書かない', (_name, overrides, head, reason) => {
     const a = assessGateEvidence(green(overrides), head);
     expect(a.passed).toBe(false);

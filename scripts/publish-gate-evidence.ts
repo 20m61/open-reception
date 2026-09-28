@@ -31,11 +31,14 @@ import {
   parseGateEvidence,
   renderGateEvidenceComment,
 } from '../src/domain/governance/gate-evidence';
+import type { GitHubRepo } from '../src/domain/governance/git-base';
 import {
+  ISSUE_COMMENTS_PER_PAGE,
   issueCommentCreateRequest,
   issueCommentUpdateRequest,
   issueCommentsListRequest,
   pullReadRequest,
+  userReadRequest,
 } from '../src/domain/governance/github-rest';
 
 const KNOWN_OPTIONS = ['number', 'evidence', 'dry-run'] as const;
@@ -65,6 +68,55 @@ function rejectUnknownOptions(): void {
 function defaultEvidencePath(): string {
   const gitDir = execFileSync('git', ['rev-parse', '--absolute-git-dir'], { encoding: 'utf8' }).trim();
   return join(gitDir, 'open-reception-gate-evidence-full');
+}
+
+type PostedComment = { id: number; html_url?: string };
+
+function readHeadSha(repo: GitHubRepo, pullNumber: number): string | null {
+  const pr = callGitHubJson<{ head?: { sha?: unknown } }>(pullReadRequest(repo, pullNumber));
+  return typeof pr.head?.sha === 'string' ? pr.head.sha : null;
+}
+
+/** 🔴 **書けたという申告を信じない。** 返ってきた本文が送った本文と一致しなければ失敗にする。 */
+function verifyPosted(response: unknown, body: string): PostedComment {
+  const r = response as { id?: unknown; body?: unknown; html_url?: string };
+  if (typeof r.id !== 'number' || r.body !== body) {
+    throw new Error('投稿した本文を応答から確認できませんでした');
+  }
+  return { id: r.id, html_url: r.html_url };
+}
+
+/**
+ * marker 付きのコメントを 1 件だけ保つ。**自分（この資格情報の主体）が書いたもの**だけを
+ * 更新対象にする ―― 他人が marker を貼ったコメントを書き換えない（独立レビュー MINOR 1）。
+ */
+function upsertComment(repo: GitHubRepo, pullNumber: number, body: string): PostedComment {
+  const me = callGitHubJson<{ login?: unknown }>(userReadRequest()).login;
+  if (typeof me !== 'string' || me === '') throw new Error('投稿する主体（GET /user の login）を読めません');
+
+  let existingId: number | undefined;
+  for (let page = 1; page <= MAX_COMMENT_PAGES && existingId === undefined; page++) {
+    const comments = callGitHubArray(issueCommentsListRequest(repo, pullNumber, page));
+    for (const c of comments) {
+      const x = c as { id?: unknown; body?: unknown; user?: { login?: unknown } };
+      if (
+        typeof x.id === 'number' &&
+        typeof x.body === 'string' &&
+        x.body.startsWith(GATE_EVIDENCE_MARKER) &&
+        x.user?.login === me
+      ) {
+        existingId = x.id;
+        break;
+      }
+    }
+    if (comments.length < ISSUE_COMMENTS_PER_PAGE) break;
+  }
+  const response = callGitHubJson(
+    existingId === undefined
+      ? issueCommentCreateRequest(repo, pullNumber, body)
+      : issueCommentUpdateRequest(repo, existingId, body),
+  );
+  return verifyPosted(response, body);
 }
 
 function main(): number {
@@ -104,7 +156,7 @@ function main(): number {
     return 2;
   }
 
-  let repo;
+  let repo: GitHubRepo;
   try {
     repo = resolveRepoFromOrigin();
   } catch (e) {
@@ -114,8 +166,7 @@ function main(): number {
 
   let headSha: string | null = null;
   try {
-    const pr = callGitHubJson<{ head?: { sha?: unknown } }>(pullReadRequest(repo, pullNumber));
-    headSha = typeof pr.head?.sha === 'string' ? pr.head.sha : null;
+    headSha = readHeadSha(repo, pullNumber);
   } catch (e) {
     if (!dryRun) {
       console.error(`❌ PR #${pullNumber} を読めません: ${e instanceof Error ? e.message : String(e)}`);
@@ -124,35 +175,26 @@ function main(): number {
     // dry-run は PR を読めなくても本文を見せる（head 不明 = PASS にはならない）。
   }
 
-  const assessment = assessGateEvidence(evidence, headSha);
-  const body = renderGateEvidenceComment(evidence, assessment, headSha);
+  let assessment = assessGateEvidence(evidence, headSha);
+  let body = renderGateEvidenceComment(evidence, assessment, headSha);
 
   if (dryRun) {
     process.stdout.write(`${body}\n`);
   } else {
     try {
-      let existingId: number | undefined;
-      for (let page = 1; page <= MAX_COMMENT_PAGES && existingId === undefined; page++) {
-        const comments = callGitHubArray(issueCommentsListRequest(repo, pullNumber, page));
-        const hit = comments.find(
-          (c): c is { id: number; body: string } =>
-            typeof (c as { id?: unknown }).id === 'number' &&
-            typeof (c as { body?: unknown }).body === 'string' &&
-            (c as { body: string }).body.includes(GATE_EVIDENCE_MARKER),
-        );
-        if (hit) existingId = hit.id;
-        if (comments.length < 100) break;
+      const posted = upsertComment(repo, pullNumber, body);
+      // 🔴 **投稿の後で head を引き直す。** head を読んでから書くまでの間に push が入ると、
+      // 古い head に対する PASS が「現在の証拠」として残る。変わっていたら、新しい head で
+      // 判定し直した本文（＝証拠が古い）で同じコメントを上書きする。
+      const after = readHeadSha(repo, pullNumber);
+      if (after !== headSha) {
+        headSha = after;
+        assessment = assessGateEvidence(evidence, headSha);
+        body = renderGateEvidenceComment(evidence, assessment, headSha);
+        verifyPosted(callGitHubJson(issueCommentUpdateRequest(repo, posted.id, body)), body);
+        console.error('⚠️  投稿中に PR の head が動いたため、判定し直して上書きしました');
       }
-      const posted = callGitHubJson<{ html_url?: string; body?: string }>(
-        existingId === undefined
-          ? issueCommentCreateRequest(repo, pullNumber, body)
-          : issueCommentUpdateRequest(repo, existingId, body),
-      );
-      // 🔴 **書けたという申告を信じない。** 返ってきた本文に marker が無ければ失敗として扱う。
-      if (typeof posted.body !== 'string' || !posted.body.includes(GATE_EVIDENCE_MARKER)) {
-        throw new Error('投稿した本文を応答から確認できませんでした');
-      }
-      console.error(`${existingId === undefined ? '📝 投稿' : '♻️  更新'}: ${posted.html_url ?? '(URL 不明)'}`);
+      console.error(`📝 ${posted.html_url ?? '(URL 不明)'}`);
     } catch (e) {
       console.error(`❌ コメントを書けませんでした: ${e instanceof Error ? e.message : String(e)}`);
       return 4;

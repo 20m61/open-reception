@@ -95,6 +95,14 @@ if [[ "${QUALITY_GATE_DRY_RUN:-0}" == "1" ]]; then
   exit 0
 fi
 
+# 証拠ファイルへ載せる実行計画 (#1195)。上の --dry-run と同じ一覧から作る。
+GATE_EVIDENCE_PLAN=""
+for pair in "typecheck:$RUN_TYPECHECK" "lint:$RUN_LINT" "unit:$RUN_UNIT" "build:$RUN_BUILD" \
+            "infra:$RUN_INFRA" "e2e:$RUN_E2E" "secrets:$RUN_SECRETS" "sast:$RUN_SAST" \
+            "audit:$RUN_AUDIT" "lighthouse:$RUN_LH" "vrm:$RUN_VRM"; do
+  GATE_EVIDENCE_PLAN+="${pair%%:*}=${pair##*:} "
+done
+
 # ---- 実行ヘルパ -----------------------------------------------------------
 declare -a SUMMARY
 declare -a UNVERIFIED
@@ -375,8 +383,10 @@ finish() {
     exit 1
   fi
 
-  gate_write_stamp "${TIER}" "${GATE_FINGERPRINT}" "${GATE_SCOPE_RECORD:-${GATE_SCOPE:-code}}"
-  gate_evidence_finish "${TIER}" 0 1 ${SUMMARY[@]+"${SUMMARY[@]}"} || true
+  # スタンプを書けたかを証拠へそのまま運ぶ（書けなかったのに stamped=1 と書かない）。
+  local stamped=0
+  gate_write_stamp "${TIER}" "${GATE_FINGERPRINT}" "${GATE_SCOPE_RECORD:-${GATE_SCOPE:-code}}" && stamped=1
+  gate_evidence_finish "${TIER}" 0 "${stamped}" ${SUMMARY[@]+"${SUMMARY[@]}"} || true
   echo "✅ quality-gate PASSED  (tier=${TIER} を green として記録しました)"
   if [[ "${TIER}" == "full" ]]; then
     echo "   PR へ証拠を載せる: npm run gate:evidence -- --number <PR 番号>（#1195）"
