@@ -7,6 +7,11 @@ import * as codebuild from 'aws-cdk-lib/aws-codebuild';
 import * as codepipeline from 'aws-cdk-lib/aws-codepipeline';
 import * as actions from 'aws-cdk-lib/aws-codepipeline-actions';
 import * as cloudtrail from 'aws-cdk-lib/aws-cloudtrail';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as cwActions from 'aws-cdk-lib/aws-cloudwatch-actions';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as eventTargets from 'aws-cdk-lib/aws-events-targets';
+import * as sns from 'aws-cdk-lib/aws-sns';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
@@ -157,6 +162,32 @@ export const PIPELINE_NAME = 'OpenReceptionSparseDevDeploy';
  * `approver` attribute is written by the issuer and is not itself authenticated.
  */
 export const LEDGER_AUDIT_TRAIL_NAME = 'OpenReceptionSparseLedgerAudit';
+
+/**
+ * Runner events after which a reserved attempt may stay `in_progress` (holding budget) or a
+ * denial went unaudited (#1153 "alert on in_progress attempts"). Each is alerted when it happens,
+ * instead of scanning the ledger later:
+ * - `ledger.reserve_ambiguous`: the reservation may have committed but this build cannot use it;
+ * - `ledger.outcome_failed`: a reserved attempt's outcome could not be recorded;
+ * - `ledger.runner_error`: the runner itself failed;
+ * - `ledger.denial_audit_failed`, or any event with `audited: false`: a denial is only in the log;
+ * - `ledger.usage_error`: a malformed runner call (e.g. an `outcome` that never recorded).
+ */
+export const LEDGER_ATTENTION_EVENTS = [
+  'ledger.reserve_ambiguous',
+  'ledger.outcome_failed',
+  'ledger.runner_error',
+  'ledger.denial_audit_failed',
+  'ledger.usage_error',
+] as const;
+
+/**
+ * Broker build endings without its own `finally` / outcome bookkeeping. CodeBuild documents
+ * `build-status` of "Build State Change" events as IN_PROGRESS / SUCCEEDED / FAILED / STOPPED, and
+ * a timeout or fault as the `completed-phase-status` of a "Build Phase Change" event, so both are
+ * matched (a stop may notify twice). Needs live verification.
+ */
+export const BROKER_ABORT_STATES = ['TIMED_OUT', 'STOPPED', 'FAULT'] as const;
 export const LEDGER_AUDIT_RETENTION_DAYS = 400;
 /** Stage/Action names the provenance check binds to (Source, Validate, BrokerBoundary). */
 export const PIPELINE_STAGES = Object.freeze({
@@ -798,6 +829,46 @@ export class DevDeployBrokerStack extends cdk.Stack {
       }),
     });
 
+    // Alerts (no subscription here: the owner subscribes a human endpoint after deploy).
+    const brokerAlerts = new sns.Topic(this, 'BrokerAlerts', {
+      displayName: 'open-reception dev deploy broker alerts',
+      enforceSSL: true,
+    });
+    const ledgerAttention = new logs.MetricFilter(this, 'LedgerAttentionFilter', {
+      logGroup: brokerLogs,
+      metricNamespace: 'OpenReception/DevDeployBroker',
+      metricName: 'LedgerAttention',
+      metricValue: '1',
+      filterPattern: logs.FilterPattern.any(
+        ...LEDGER_ATTENTION_EVENTS.map((e) => logs.FilterPattern.stringValue('$.event', '=', e)),
+        logs.FilterPattern.booleanValue('$.audited', false),
+      ),
+    });
+    const ledgerAttentionAlarm = new cloudwatch.Alarm(this, 'LedgerAttentionAlarm', {
+      metric: ledgerAttention.metric({ statistic: 'Sum', period: cdk.Duration.minutes(5) }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmDescription:
+        'A sparse-ledger attempt may be left in_progress (ambiguous reservation / unrecorded outcome / runner error) or a denial went unaudited. See docs/architecture/aws-dev-deploy-broker.md.',
+    });
+    ledgerAttentionAlarm.addAlarmAction(new cwActions.SnsAction(brokerAlerts));
+    // The topic's resource policy (created for EventBridge / TLS) replaces the default one, so
+    // CloudWatch is named explicitly, bound to this alarm.
+    brokerAlerts.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: 'AllowBrokerAlarmPublish',
+        principals: [new iam.ServicePrincipal('cloudwatch.amazonaws.com')],
+        actions: ['sns:Publish'],
+        resources: [brokerAlerts.topicArn],
+        conditions: {
+          ArnEquals: { 'aws:SourceArn': ledgerAttentionAlarm.alarmArn },
+          StringEquals: { 'aws:SourceAccount': cdk.Aws.ACCOUNT_ID },
+        },
+      }),
+    );
+
     const pipeline = new codepipeline.Pipeline(this, 'Pipeline', {
       pipelineName: PIPELINE_NAME,
       pipelineType: codepipeline.PipelineType.V1,
@@ -864,6 +935,32 @@ export class DevDeployBrokerStack extends cdk.Stack {
           },
         }),
       ],
+    });
+
+    // A broker build that times out, is stopped or faults never reaches its own bookkeeping.
+    new events.Rule(this, 'BrokerBuildAbortedRule', {
+      description: 'Broker build ended without finishing (a reserved attempt may stay in_progress).',
+      eventPattern: {
+        source: ['aws.codebuild'],
+        detailType: ['CodeBuild Build State Change'],
+        detail: {
+          'project-name': [BROKER_PROJECT_NAME],
+          'build-status': [...BROKER_ABORT_STATES],
+        },
+      },
+      targets: [new eventTargets.SnsTopic(brokerAlerts)],
+    });
+    new events.Rule(this, 'BrokerPhaseAbortedRule', {
+      description: 'A broker build phase timed out, was stopped or faulted (its bookkeeping may not have run).',
+      eventPattern: {
+        source: ['aws.codebuild'],
+        detailType: ['CodeBuild Build Phase Change'],
+        detail: {
+          'project-name': [BROKER_PROJECT_NAME],
+          'completed-phase-status': [...BROKER_ABORT_STATES],
+        },
+      },
+      targets: [new eventTargets.SnsTopic(brokerAlerts)],
     });
 
     brokerRole.addToPolicy(
