@@ -93,7 +93,7 @@ IAM・CloudFormation・DynamoDB・SNS・CloudTrail に一切書き込まない�
 
 ## 3. boundary / cfn-exec policy の新しい版を適用する
 
-🔴 **arming 前ブロッカー 8 の PR（broker の log group・警報・SNS topic・bucket を Claude の chain から Deny する変更）が
+🔴 **arming 前ブロッカー 8 の PR（broker の log group・警報・SNS topic・bucket・role を Claude の chain から Deny する変更）が
 merge されてから行う。** それまでの版は、Claude の deploy chain とその下の workload role に次を許したままにしている。
 - `logs:*` / `cloudwatch:*` / `sns:*` / `s3:*` on `*`
 - broker の log（監査の証拠）を消す
@@ -141,6 +141,17 @@ aws iam simulate-principal-policy --policy-source-arn "$EXEC" \
   --action-names cloudformation:UpdateStack \
   --resource-arns "arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-DevDeployBroker/x" \
   --query 'EvaluationResults[0].EvalDecision' --output text     # explicitDeny
+# ブロッカー 8: broker の log・警報・通知・bucket
+for pair in \
+  "logs:DeleteLogGroup arn:aws:logs:ap-northeast-1:822063948773:log-group:OpenReception-DevDeployBroker-BrokerLogsX-x" \
+  "cloudwatch:DisableAlarmActions arn:aws:cloudwatch:ap-northeast-1:822063948773:alarm:OpenReception-DevDeployBroker-LedgerAttentionAlarmX-x" \
+  "sns:SetTopicAttributes arn:aws:sns:ap-northeast-1:822063948773:OpenReception-DevDeployBroker-BrokerAlertsX-x" \
+  "s3:DeleteObjectVersion arn:aws:s3:::openreception-devdeployb-pipelineartifactsx-x/k" \
+  "iam:DeleteRolePolicy arn:aws:iam::822063948773:role/OpenReceptionTrustedDevDeployBrokerRole"; do
+  set -- $pair
+  aws iam simulate-principal-policy --policy-source-arn "$EXEC" --action-names "$1" --resource-arns "$2" \
+    --query 'EvaluationResults[0].EvalDecision' --output text   # すべて explicitDeny
+done
 ```
 
 加えて、通常の dev deploy の経路が壊れていないことを確かめる（`scripts/aws-cloud-deploy.sh preflight`
@@ -184,7 +195,8 @@ aws iam set-default-policy-version --policy-arn <ARN> --version-id <直前の版
   次の点を守り、`aws iam simulate-custom-policy` か最初の change set 作成で確かめる。
 
   - IAM は、この stack が作る role（`OpenReceptionDevDeployValidationRole`・`OpenReceptionTrustedDevDeployBrokerRole`・
-    `OpenReception-DevDeployBroker-*`）に限る。
+    生成名の `OpenReception-DevDeployBr*`）に限る。role 名は 64 文字で stack 名ごと切られ、
+    `OpenReception-DevDeployBr-...` になる。
   - `iam:PassRole` は、pipeline role を CodePipeline に、2 つの build role を CodeBuild に渡す分だけ
     （`iam:PassedToService` で絞る）。EventBridge の rule は SNS へ直接送り、role を使わない。
   - 名前で絞る:
@@ -192,8 +204,9 @@ aws iam set-default-policy-version --policy-arn <ARN> --version-id <直前の版
     - pipeline: `OpenReceptionSparseDevDeploy`
     - trail: `OpenReceptionSparseLedgerAudit`
   - CloudFormation が付ける物理名は、接頭辞で絞る:
-    - DynamoDB・log group・alarm・SNS・Events rule: `OpenReception-DevDeployBroker-*`
-    - S3 bucket: **小文字**の `openreception-devdeploybroker-*`
+    - DynamoDB・log group・alarm・SNS: `OpenReception-DevDeployBroker-*`
+    - Events rule（上限 64 文字）: `OpenReception-DevDeployBr*`
+    - S3 bucket（上限 63 文字・小文字。stack 名ごと切られる）: `openreception-devdeploy*`
   - pipeline の作成には、GitHub 接続（`GitHubConnectionArn`）への `codestar-connections:PassConnection`
     （または `codeconnections:PassConnection`）が要る。
   - `Resource: "*"` が要る read 系（`Describe*` 等）以外で、他の stack の resource に届かないこと。
