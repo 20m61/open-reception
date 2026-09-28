@@ -55,6 +55,7 @@ type LedgerClient = {
 };
 type Ledger = {
   DAILY_CEILING_RULE: string;
+  GENESIS_KEY: string;
   evaluatePreflight(input: Record<string, unknown>): Decision;
   buildReserveTransaction(input: { table: string; decision: Decision; now: Date }): unknown;
   ledgerDay(now: Date): string;
@@ -74,6 +75,7 @@ type Ledger = {
     day: string;
     outcome: string;
     now: Date;
+    revision: string;
   }): Promise<unknown>;
   buildIssueOverridePut(input: Record<string, unknown>): Record<string, unknown>;
   buildDenialPut(input: Record<string, unknown>): Record<string, unknown>;
@@ -91,8 +93,9 @@ let ddb: DynamoDBClient;
 let client: LedgerClient;
 
 const LEDGER_ID = `ledger-${RUN}`;
-const REV = 'c'.repeat(40);
 const REV_B = 'd'.repeat(40);
+const REV_F = 'e'.repeat(40);
+const REV_S10A = '9'.repeat(40);
 const epoch = (d: Date) => Math.floor(d.getTime() / 1000);
 let seq = 0;
 const attemptId = () => `OpenReceptionTrustedDevDeployBroker:${RUN}-${(seq += 1)}`;
@@ -133,7 +136,14 @@ const issueOverride = (revision: string, now: Date, over: Record<string, unknown
     ),
   );
 
-const reserve = (now: Date, revision = REV, id = attemptId()) =>
+/**
+ * A fresh revision per reservation unless a scenario names one: S10a counts unsettled attempts per
+ * revision across days, so scenarios about the daily ceiling must not share a revision.
+ */
+let revSeq = 0;
+const freshRev = () => (revSeq += 1).toString(16).padStart(40, 'd');
+
+const reserve = (now: Date, revision = freshRev(), id = attemptId()) =>
   L.reserveAttempt({ client, table: TABLE, ledgerId: LEDGER_ID, revision, attemptId: id, now });
 
 describe.skipIf(!ENABLED)('sparse deploy ledger × real DynamoDB engine (emulator)', () => {
@@ -178,13 +188,14 @@ describe.skipIf(!ENABLED)('sparse deploy ledger × real DynamoDB engine (emulato
   it('allows two attempts per Tokyo day, then denies; failures consume budget', async () => {
     const now = freshNow();
     const day = L.ledgerDay(now);
-    const a1 = await reserve(now);
+    // Its own revision: two recorded failures also block that revision (S10a, tested below).
+    const a1 = await reserve(now, REV_F);
     expect(a1).toMatchObject({ result: 'allowed', mode: 'normal', attemptNumber: 1 });
-    await L.recordOutcome({ client, table: TABLE, attemptId: a1.attemptId as string, day, outcome: 'failed', now });
-    const a2 = await reserve(now);
+    await L.recordOutcome({ client, table: TABLE, attemptId: a1.attemptId as string, day, outcome: 'failed', now, revision: REV_F });
+    const a2 = await reserve(now, REV_F);
     expect(a2).toMatchObject({ result: 'allowed', attemptNumber: 2 });
-    await L.recordOutcome({ client, table: TABLE, attemptId: a2.attemptId as string, day, outcome: 'failed', now });
-    const a3 = await reserve(now);
+    await L.recordOutcome({ client, table: TABLE, attemptId: a2.attemptId as string, day, outcome: 'failed', now, revision: REV_F });
+    const a3 = await reserve(now, REV_F);
     expect(a3).toMatchObject({ result: 'denied', rule: 'SPARSE_DAILY_ATTEMPT_CEILING', retryable: false });
     expect(await counts(day)).toEqual({ attempts: 2, successes: 0, failures: 2 });
 
@@ -224,48 +235,52 @@ describe.skipIf(!ENABLED)('sparse deploy ledger × real DynamoDB engine (emulato
   });
 
   it.runIf(TX_ISOLATION)('an override allows exactly one more attempt, only for its revision, once', async () => {
+    const rev = freshRev();
     const now = freshNow();
     const day = L.ledgerDay(now);
+    // The day's first two attempts are other revisions (an override cannot lift S10a).
     await reserve(now);
     await reserve(now);
-    await issueOverride(REV, now);
+    await issueOverride(rev, now);
 
     // Another revision cannot use it.
     expect((await reserve(now, REV_B)).rule).toBe('SPARSE_DAILY_ATTEMPT_CEILING');
 
     // Many racers on the right revision: exactly one consumes it.
-    const results = await Promise.all(Array.from({ length: 10 }, () => reserve(now)));
+    const results = await Promise.all(Array.from({ length: 10 }, () => reserve(now, rev)));
     const winners = results.filter((r) => r.result === 'allowed');
     expect(winners).toHaveLength(1);
     expect(winners[0]).toMatchObject({ mode: 'override', attemptNumber: 3 });
 
-    const consumed = await getItem(`OVERRIDE#${L.DAILY_CEILING_RULE}#${REV}#${L.ledgerDay(now)}`);
+    const consumed = await getItem(`OVERRIDE#${L.DAILY_CEILING_RULE}#${rev}#${L.ledgerDay(now)}`);
     expect(consumed?.consumedBy?.S).toBe(winners[0]!.attemptId);
     const audit = await getItem(`ATTEMPT#${winners[0]!.attemptId as string}`);
     expect(audit?.overrideApprover?.S).toBe('owner');
     expect(audit?.mode?.S).toBe('override');
 
     // Replay after consumption denies.
-    expect((await reserve(now)).rule).toBe('SPARSE_DAILY_ATTEMPT_CEILING');
+    expect((await reserve(now, rev)).rule).toBe('SPARSE_DAILY_ATTEMPT_CEILING');
     expect((await counts(day)).attempts).toBe(3);
   });
 
   it('overrides are create-only: never replaced, so issue / consume history survives', async () => {
+    const rev = freshRev();
     const now = freshNow();
-    await issueOverride(REV, now);
-    await expect(issueOverride(REV, now, { reason: 'replacement' })).rejects.toMatchObject({
+    await issueOverride(rev, now);
+    await expect(issueOverride(rev, now, { reason: 'replacement' })).rejects.toMatchObject({
       name: 'ConditionalCheckFailedException',
     });
     const later = new Date(now.getTime() + 3601_000);
     expect(L.ledgerDay(later)).toBe(L.ledgerDay(now));
-    await expect(issueOverride(REV, later, { reason: 'after expiry' })).rejects.toMatchObject({
+    await expect(issueOverride(rev, later, { reason: 'after expiry' })).rejects.toMatchObject({
       name: 'ConditionalCheckFailedException',
     });
-    const kept = await getItem(`OVERRIDE#${L.DAILY_CEILING_RULE}#${REV}#${L.ledgerDay(now)}`);
+    const kept = await getItem(`OVERRIDE#${L.DAILY_CEILING_RULE}#${rev}#${L.ledgerDay(now)}`);
     expect(kept?.reason?.S).toBe('emulator: third attempt proof');
   });
 
   it('an empty or replaced table (no genesis) denies instead of reading as a fresh day', async () => {
+    const rev = freshRev();
     const other = `sparse-ledger-empty-${RUN}`;
     await ddb.send(
       new CreateTableCommand({
@@ -281,7 +296,7 @@ describe.skipIf(!ENABLED)('sparse deploy ledger × real DynamoDB engine (emulato
         ],
       }),
     );
-    const d = await L.reserveAttempt({ client, table: other, ledgerId: LEDGER_ID, revision: REV, attemptId: attemptId(), now: freshNow() });
+    const d = await L.reserveAttempt({ client, table: other, ledgerId: LEDGER_ID, revision: rev, attemptId: attemptId(), now: freshNow() });
     expect(d).toMatchObject({ result: 'denied', rule: 'SPARSE_LEDGER_CORRUPT' });
   });
 
@@ -322,10 +337,11 @@ describe.skipIf(!ENABLED)('sparse deploy ledger × real DynamoDB engine (emulato
   });
 
   it('a reservation built on a stale cumulative total is refused by the engine', async () => {
+    const rev = freshRev();
     const now = freshNow();
-    await reserve(now);
+    await reserve(now, rev);
     const decision = L.evaluatePreflight({
-      revision: REV,
+      revision: rev,
       attemptId: attemptId(),
       now,
       ledgerId: LEDGER_ID,
@@ -340,11 +356,12 @@ describe.skipIf(!ENABLED)('sparse deploy ledger × real DynamoDB engine (emulato
   });
 
   it('a ceiling denial is audited without consuming budget', async () => {
+    const rev = freshRev();
     const now = freshNow();
-    await reserve(now);
-    await reserve(now);
+    await reserve(now, rev);
+    await reserve(now, rev);
     const id = attemptId();
-    const d = await reserve(now, REV, id);
+    const d = await reserve(now, rev, id);
     expect(d).toMatchObject({ result: 'denied', rule: 'SPARSE_DAILY_ATTEMPT_CEILING', audited: true });
     const audit = await getItem(`ATTEMPT#${id}`);
     expect(audit?.status?.S).toBe('denied_before_mutation');
@@ -353,23 +370,25 @@ describe.skipIf(!ENABLED)('sparse deploy ledger × real DynamoDB engine (emulato
   });
 
   it('an expired override is refused by the engine even if the JS check were skipped', async () => {
+    const rev = freshRev();
     const now = freshNow();
+    // The day's first two attempts are other revisions (an override cannot lift S10a).
     await reserve(now);
     await reserve(now);
-    await issueOverride(REV, now, { expiresAt: epoch(now) + 60 });
+    await issueOverride(rev, now, { expiresAt: epoch(now) + 60 });
     const afterExpiry = new Date(now.getTime() + 61_000);
-    expect((await reserve(afterExpiry)).rule).toBe('SPARSE_DAILY_ATTEMPT_CEILING');
+    expect((await reserve(afterExpiry, rev)).rule).toBe('SPARSE_DAILY_ATTEMPT_CEILING');
 
     // Bypass the JS check: a transaction decided while the override was live, executed after
     // expiry, must still be refused by the engine's own condition.
     const decision = L.evaluatePreflight({
-      revision: REV,
+      revision: rev,
       attemptId: attemptId(),
       now,
       ledgerId: LEDGER_ID,
       genesisItem: await getItem('META#genesis'),
       dayItem: await getItem(`DAY#${L.ledgerDay(now)}`),
-      overrideItem: await getItem(`OVERRIDE#${L.DAILY_CEILING_RULE}#${REV}#${L.ledgerDay(now)}`),
+      overrideItem: await getItem(`OVERRIDE#${L.DAILY_CEILING_RULE}#${rev}#${L.ledgerDay(now)}`),
     });
     expect(decision.mode).toBe('override');
     await expect(
@@ -379,20 +398,22 @@ describe.skipIf(!ENABLED)('sparse deploy ledger × real DynamoDB engine (emulato
   });
 
   it('a consumed override is refused by the engine even if the JS check were skipped', async () => {
+    const rev = freshRev();
     const now = freshNow();
+    // The day's first two attempts are other revisions (an override cannot lift S10a).
     await reserve(now);
     await reserve(now);
-    await issueOverride(REV, now);
+    await issueOverride(rev, now);
     const stale = L.evaluatePreflight({
-      revision: REV,
+      revision: rev,
       attemptId: attemptId(),
       now,
       ledgerId: LEDGER_ID,
       genesisItem: await getItem('META#genesis'),
       dayItem: await getItem(`DAY#${L.ledgerDay(now)}`),
-      overrideItem: await getItem(`OVERRIDE#${L.DAILY_CEILING_RULE}#${REV}#${L.ledgerDay(now)}`),
+      overrideItem: await getItem(`OVERRIDE#${L.DAILY_CEILING_RULE}#${rev}#${L.ledgerDay(now)}`),
     });
-    expect((await reserve(now)).mode).toBe('override');
+    expect((await reserve(now, rev)).mode).toBe('override');
     // Replay the stale decision with the count it would now observe, so only the override
     // condition can refuse it.
     const replay = { ...stale, observedAttemptCount: 3 };
@@ -402,34 +423,83 @@ describe.skipIf(!ENABLED)('sparse deploy ledger × real DynamoDB engine (emulato
     expect((await counts(L.ledgerDay(now))).attempts).toBe(3);
   });
 
+  it('S10a: the second unsettled attempt of a revision blocks it, on any day, even against a racing reservation', async () => {
+    const d1 = freshNow();
+    const a = await reserve(d1, REV_S10A);
+    await L.recordOutcome({ client, table: TABLE, attemptId: a.attemptId as string, day: L.ledgerDay(d1), outcome: 'failed', now: d1, revision: REV_S10A });
+    // A reservation decided now (one failure: allowed) ...
+    const d2 = freshNow();
+    const staleSnapshot = await client.transactGetItems({ TransactItems: [L.GENESIS_KEY, `DAY#${L.ledgerDay(d2)}`, `OVERRIDE#SPARSE_DAILY_ATTEMPT_CEILING#${REV_S10A}#${L.ledgerDay(d2)}`, `REV#${REV_S10A}`].map((sk: string) => ({ Get: { TableName: TABLE, Key: { PK: { S: 'PROJECT#open-reception' }, SK: { S: sk } } } })) });
+    const [genesisItem, dayItem, overrideItem, revisionItem] = (staleSnapshot.Responses ?? []).map((r) => r?.Item);
+    const stale = L.evaluatePreflight({ revision: REV_S10A, attemptId: `${RUN}-s10a-stale`, now: d2, ledgerId: LEDGER_ID, genesisItem, dayItem, overrideItem, revisionItem });
+    expect(stale.result).toBe('allowed');
+    // ... loses to the one transient retry that is allowed, and is refused by the engine: the
+    // retry, still running, already holds the revision's second slot.
+    const b = await reserve(d1, REV_S10A);
+    expect(b).toMatchObject({ result: 'allowed' });
+    await expect(ddb.send(new TransactWriteItemsCommand(L.buildReserveTransaction({ table: TABLE, decision: stale, now: d2 }) as never))).rejects.toMatchObject({ name: 'TransactionCanceledException' });
+    await L.recordOutcome({ client, table: TABLE, attemptId: b.attemptId as string, day: L.ledgerDay(d1), outcome: 'failed', now: d1, revision: REV_S10A });
+    // On a fresh day the revision is still blocked; another revision is not.
+    const d3 = freshNow();
+    expect(await reserve(d3, REV_S10A)).toMatchObject({ result: 'denied', rule: 'SPARSE_REVISION_REPEATED_FAILURE', revisionFailureCount: 2 });
+    expect((await reserve(d3, REV_B)).result).toBe('allowed');
+  });
+
+  it('S10a: attempts that never record an outcome count; a recorded success releases only its own slot', async () => {
+    // Two attempts that hang (no outcome ever) block the revision without any recorded failure.
+    const hang = 'b'.repeat(8) + '1'.repeat(32);
+    expect((await reserve(freshNow(), hang)).result).toBe('allowed');
+    expect((await reserve(freshNow(), hang)).result).toBe('allowed');
+    expect(await reserve(freshNow(), hang)).toMatchObject({ result: 'denied', rule: 'SPARSE_REVISION_REPEATED_FAILURE', revisionUnsettledCount: 2, revisionFailureCount: 0 });
+
+    // succeed, fail, succeed, fail -> blocked: successes do not erase earlier failures.
+    const rev = 'c'.repeat(8) + '2'.repeat(32);
+    const run = async (outcome: 'succeeded' | 'failed') => {
+      const now = freshNow();
+      const r = await reserve(now, rev);
+      expect(r.result).toBe('allowed');
+      await L.recordOutcome({ client, table: TABLE, attemptId: r.attemptId as string, day: L.ledgerDay(now), outcome, now, revision: rev });
+    };
+    await run('succeeded');
+    await run('failed');
+    await run('succeeded');
+    await run('failed');
+    expect(await reserve(freshNow(), rev)).toMatchObject({ result: 'denied', rule: 'SPARSE_REVISION_REPEATED_FAILURE', revisionUnsettledCount: 2, revisionFailureCount: 2 });
+    const item = await getItem(`REV#${rev}`);
+    expect(item).toMatchObject({ unsettledCount: { N: '2' }, failureCount: { N: '2' } });
+  });
+
   it('an outcome is recorded once; a second or unknown outcome is refused', async () => {
+    const rev = freshRev();
     const now = freshNow();
     const day = L.ledgerDay(now);
-    const a = await reserve(now);
-    await L.recordOutcome({ client, table: TABLE, attemptId: a.attemptId as string, day, outcome: 'succeeded', now });
+    const a = await reserve(now, rev);
+    await L.recordOutcome({ client, table: TABLE, attemptId: a.attemptId as string, day, outcome: 'succeeded', now, revision: rev });
     await expect(
-      L.recordOutcome({ client, table: TABLE, attemptId: a.attemptId as string, day, outcome: 'failed', now }),
+      L.recordOutcome({ client, table: TABLE, attemptId: a.attemptId as string, day, outcome: 'failed', now, revision: rev }),
     ).rejects.toMatchObject({ name: 'TransactionCanceledException' });
     await expect(
-      L.recordOutcome({ client, table: TABLE, attemptId: `${RUN}-never-reserved`, day, outcome: 'succeeded', now }),
+      L.recordOutcome({ client, table: TABLE, attemptId: `${RUN}-never-reserved`, day, outcome: 'succeeded', now, revision: rev }),
     ).rejects.toMatchObject({ name: 'TransactionCanceledException' });
     expect(await counts(day)).toEqual({ attempts: 1, successes: 1, failures: 0 });
   });
 
   it('an attempt id is used once', async () => {
+    const rev = freshRev();
     const now = freshNow();
     const id = attemptId();
-    expect((await reserve(now, REV, id)).result).toBe('allowed');
-    expect((await reserve(now, REV, id)).rule).toBe('SPARSE_LEDGER_CONFLICT');
+    expect((await reserve(now, rev, id)).result).toBe('allowed');
+    expect((await reserve(now, rev, id)).rule).toBe('SPARSE_LEDGER_CONFLICT');
     expect((await counts(L.ledgerDay(now))).attempts).toBe(1);
   });
 
   it('a pre-boundary denial is audited without consuming budget', async () => {
+    const rev = freshRev();
     const now = freshNow();
     const id = attemptId();
     await ddb.send(
       new PutItemCommand(
-        L.buildDenialPut({ table: TABLE, attemptId: id, revision: REV, rule: 'TRUSTED_POLICY_DENY', now }) as never,
+        L.buildDenialPut({ table: TABLE, attemptId: id, revision: rev, rule: 'TRUSTED_POLICY_DENY', now }) as never,
       ),
     );
     expect((await getItem(`ATTEMPT#${id}`))?.status?.S).toBe('denied_before_mutation');
@@ -437,6 +507,7 @@ describe.skipIf(!ENABLED)('sparse deploy ledger × real DynamoDB engine (emulato
   });
 
   it('an unreachable ledger denies (S6a)', async () => {
+    const rev = freshRev();
     const dead = new sdk.DynamoDBClient({
       endpoint: 'http://127.0.0.1:9',
       region: 'ap-northeast-1',
@@ -448,7 +519,7 @@ describe.skipIf(!ENABLED)('sparse deploy ledger × real DynamoDB engine (emulato
       putItem: (input) => dead.send(new PutItemCommand(input as never)),
       transactWriteItems: (input) => dead.send(new TransactWriteItemsCommand(input as never)),
     };
-    const d = await L.reserveAttempt({ client: deadClient, table: TABLE, ledgerId: LEDGER_ID, revision: REV, attemptId: attemptId(), now: freshNow() });
+    const d = await L.reserveAttempt({ client: deadClient, table: TABLE, ledgerId: LEDGER_ID, revision: rev, attemptId: attemptId(), now: freshNow() });
     expect(d).toMatchObject({ result: 'denied', rule: 'SPARSE_LEDGER_UNAVAILABLE', audited: false });
     dead.destroy();
   });

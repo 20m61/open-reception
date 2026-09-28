@@ -22,6 +22,8 @@ type Ledger = {
   DAILY_CEILING_RULE: string;
   MAX_OVERRIDE_TTL_SECONDS: number;
   RULES: Record<string, string>;
+  OVERRIDABLE_RULES: readonly string[];
+  MAX_FAILURES_PER_REVISION: number;
   ledgerDay(now: Date): string;
   dayKey(day: string): string;
   overrideKey(rule: string, revision: string, day: string): string;
@@ -34,6 +36,7 @@ type Ledger = {
     genesisItem?: Item;
     dayItem?: Item;
     overrideItem?: Item;
+    revisionItem?: Item;
     readError?: boolean;
   }): Decision;
   buildReserveTransaction(input: { table: string; decision: Decision; now: Date }): {
@@ -45,6 +48,7 @@ type Ledger = {
     day: string;
     outcome: string;
     now: Date;
+    revision: string;
   }): { TransactItems: Array<Record<string, Record<string, unknown>>> };
   buildDenialPut(input: {
     table: string;
@@ -366,7 +370,13 @@ describe('reservation transaction shape', () => {
 
   it('first attempt of the day creates the counter only if absent and writes a create-only attempt record', () => {
     const tx = L.buildReserveTransaction({ table, decision: preflight(), now: NOW });
-    expect(tx.TransactItems).toHaveLength(3);
+    expect(tx.TransactItems).toHaveLength(4);
+    // S10a: the revision counter is created / guarded in the same transaction.
+    const rev = tx.TransactItems[3]!.Update!;
+    expect(rev.Key).toEqual({ PK: { S: 'PROJECT#open-reception' }, SK: { S: `REV#${REV}` } });
+    expect(rev.ConditionExpression).toBe('(attribute_not_exists(#PK) OR (#revision = :rev AND #unsettledCount < :maxFailures))');
+    expect(rev.UpdateExpression).toContain('#unsettledCount = if_not_exists(#unsettledCount, :zero) + :one');
+    expect((rev.ExpressionAttributeValues as Item)[':maxFailures']).toEqual({ N: '2' });
     const upd = tx.TransactItems[1]!.Update!;
     expect(upd.Key).toEqual({ PK: { S: 'PROJECT#open-reception' }, SK: { S: `DAY#${DAY}` } });
     expect(upd.ConditionExpression).toBe('attribute_not_exists(#PK)');
@@ -386,7 +396,7 @@ describe('reservation transaction shape', () => {
   it('an override reservation consumes the override in the same transaction and copies it into the audit record', () => {
     const decision = preflight({ dayItem: dayItem(2), overrideItem: overrideItem() });
     const tx = L.buildReserveTransaction({ table, decision, now: NOW });
-    expect(tx.TransactItems).toHaveLength(4);
+    expect(tx.TransactItems).toHaveLength(5);
     const consume = tx.TransactItems[2]!.Update!;
     expect(consume.Key).toEqual({
       PK: { S: 'PROJECT#open-reception' },
@@ -421,7 +431,7 @@ describe('reservation transaction shape', () => {
         preflight({ genesisItem: genesisItem({ lastDay: { S: DAY }, lastDayAttempts: { N: '1' } }), dayItem: dayItem(1) }),
       ]
         .flatMap((decision) => L.buildReserveTransaction({ table, decision, now: NOW }).TransactItems),
-      ...L.buildOutcomeTransaction({ table, attemptId: ATTEMPT, day: DAY, outcome: 'succeeded', now: NOW }).TransactItems,
+      ...L.buildOutcomeTransaction({ table, attemptId: ATTEMPT, day: DAY, outcome: 'succeeded', now: NOW, revision: REV }).TransactItems,
     ].map((entry) => Object.values(entry)[0]!);
     ops.push(L.buildDenialPut({ table, attemptId: ATTEMPT, revision: REV, rule: 'R', now: NOW }));
     ops.push(
@@ -451,7 +461,7 @@ describe('reservation transaction shape', () => {
     ];
     const txs = [
       ...decisions.map((decision) => L.buildReserveTransaction({ table, decision, now: NOW })),
-      L.buildOutcomeTransaction({ table, attemptId: ATTEMPT, day: DAY, outcome: 'failed', now: NOW }),
+      L.buildOutcomeTransaction({ table, attemptId: ATTEMPT, day: DAY, outcome: 'failed', now: NOW, revision: REV }),
     ];
     for (const tx of txs) {
       for (const entry of tx.TransactItems) {
@@ -476,13 +486,23 @@ describe('outcome, denial and override issuance shapes', () => {
       ['succeeded', 'successCount'],
       ['failed', 'failureCount'],
     ] as const) {
-      const tx = L.buildOutcomeTransaction({ table, attemptId: ATTEMPT, day: DAY, outcome, now: NOW });
+      const tx = L.buildOutcomeTransaction({ table, attemptId: ATTEMPT, day: DAY, outcome, now: NOW, revision: REV });
+      expect(tx.TransactItems[0]!.Update!.ConditionExpression).toContain('#revision = :rev');
+      // S10a: a success releases its revision slot; a failure keeps it and is counted.
+      expect(tx.TransactItems).toHaveLength(3);
+      const revUpdate = tx.TransactItems[2]!.Update!;
+      expect(revUpdate.Key).toEqual({ PK: { S: 'PROJECT#open-reception' }, SK: { S: `REV#${REV}` } });
+      expect(revUpdate.UpdateExpression).toContain(outcome === 'succeeded' ? '#unsettledCount = #unsettledCount - :one' : '#failureCount = #failureCount + :one');
+      expect(revUpdate.UpdateExpression).not.toContain(outcome === 'succeeded' ? 'failureCount' : 'unsettledCount');
+      expect(revUpdate.ConditionExpression).toContain('#revision = :rev');
+      if (outcome === 'succeeded') expect(revUpdate.ConditionExpression).toContain('#unsettledCount > :zero');
       expect(tx.TransactItems[0]!.Update!.ConditionExpression).toContain('#status = :inProgress');
       const dayUpdate = tx.TransactItems[1]!.Update!.UpdateExpression as string;
       expect(dayUpdate).toContain(`#${counter} = #${counter} + :one`);
       expect(dayUpdate).not.toContain('attemptCount');
     }
-    expect(() => L.buildOutcomeTransaction({ table, attemptId: ATTEMPT, day: DAY, outcome: 'denied', now: NOW })).toThrow();
+    expect(() => L.buildOutcomeTransaction({ table, attemptId: ATTEMPT, day: DAY, outcome: 'denied', now: NOW, revision: REV })).toThrow();
+    expect(() => L.buildOutcomeTransaction({ table, attemptId: ATTEMPT, day: DAY, outcome: 'failed', now: NOW, revision: 'short' })).toThrow();
   });
 
   it('a pre-boundary denial is audit-only and touches no counter', () => {
@@ -526,5 +546,73 @@ describe('outcome, denial and override issuance shapes', () => {
     ['blank approver', { approver: '' }],
   ])('refuses to issue: %s', (_l, over) => {
     expect(() => issue(over as never)).toThrow();
+  });
+});
+
+describe('S10a: repeated failures of one revision escalate to a human', () => {
+  const revItem = (unsettled: number, failures = unsettled, over: Partial<Item> = {}): Item => ({
+    PK: { S: 'PROJECT#open-reception' },
+    SK: { S: `REV#${REV}` },
+    revision: { S: REV },
+    unsettledCount: { N: String(unsettled) },
+    failureCount: { N: String(failures) },
+    ...over,
+  });
+
+  it('one failure may be retried; the second denies with a non-overridable rule', () => {
+    expect(preflight({ revisionItem: revItem(1) }).result).toBe('allowed');
+    const d = preflight({ revisionItem: revItem(2) });
+    expect(d).toMatchObject({ result: 'denied', rule: 'SPARSE_REVISION_REPEATED_FAILURE', retryable: false, revisionUnsettledCount: 2, revisionFailureCount: 2 });
+    expect(L.OVERRIDABLE_RULES).not.toContain('SPARSE_REVISION_REPEATED_FAILURE');
+    expect(L.MAX_FAILURES_PER_REVISION).toBe(2);
+  });
+
+  it('attempts that never recorded an outcome (or are still running) count like failures', () => {
+    expect(preflight({ revisionItem: revItem(2, 0) })).toMatchObject({ result: 'denied', rule: 'SPARSE_REVISION_REPEATED_FAILURE', revisionFailureCount: 0 });
+    expect(preflight({ revisionItem: revItem(1, 0) }).result).toBe('allowed');
+  });
+
+  it('a valid override for the daily ceiling does not lift it; the ceiling is still reported first without one', () => {
+    expect(preflight({ dayItem: dayItem(2), overrideItem: overrideItem(), revisionItem: revItem(2) }).rule).toBe('SPARSE_REVISION_REPEATED_FAILURE');
+    expect(preflight({ dayItem: dayItem(2), revisionItem: revItem(2) }).rule).toBe('SPARSE_DAILY_ATTEMPT_CEILING');
+  });
+
+  it('a malformed or foreign revision counter is corruption, not zero', () => {
+    for (const bad of [
+      revItem(1, 1, { failureCount: { S: '1' } }),
+      revItem(1, 1, { unsettledCount: { S: '1' } }),
+      { ...revItem(1), unsettledCount: undefined } as unknown as Item,
+      revItem(1, 2),
+      revItem(1, 1, { revision: { S: 'f'.repeat(40) } }),
+      revItem(1, 1, { SK: { S: 'REV#other' } }),
+      { junk: true } as unknown as Item,
+    ]) {
+      expect(preflight({ revisionItem: bad }).rule, JSON.stringify(bad)).toBe('SPARSE_LEDGER_CORRUPT');
+    }
+  });
+
+  it('a reservation the ledger refuses reports the rule the ledger now shows (not a bare conflict)', async () => {
+    const snapshots = [
+      [genesisItem(), dayItem(1), undefined, revItem(1)],
+      [genesisItem({ totalAttempts: { N: '41' } }), dayItem(2), undefined, revItem(2, 1)],
+    ];
+    const writes: unknown[] = [];
+    const client = {
+      transactGetItems: async () => ({ Responses: snapshots.shift()!.map((Item) => (Item ? { Item } : {})) }),
+      transactWriteItems: async (req: unknown) => {
+        writes.push(req);
+        throw Object.assign(new Error('refused'), { name: 'TransactionCanceledException' });
+      },
+      putItem: async () => ({}),
+    };
+    const genesisOk = genesisItem({ lastDay: { S: DAY }, lastDayAttempts: { N: '1' } });
+    snapshots[0]![0] = genesisOk;
+    // Between preflight and commit the revision's other attempt took the second slot.
+    snapshots[1] = [genesisOk, dayItem(1), undefined, revItem(2, 1)];
+    const d = await (L as unknown as { reserveAttempt: (i: unknown) => Promise<Decision> }).reserveAttempt({ client, table: 'T', ledgerId: LEDGER_ID, revision: REV, attemptId: ATTEMPT, now: NOW });
+    expect(writes).toHaveLength(1);
+    expect(d).toMatchObject({ result: 'denied', audited: true });
+    expect(d.rule).toBe('SPARSE_REVISION_REPEATED_FAILURE');
+    expect(String(d.reason)).toContain('reservation refused by the ledger');
   });
 });

@@ -130,7 +130,8 @@ describe('DevDeployBrokerStack (#1146 Phase 1)', () => {
   it('keeps the trusted broker unarmed in Phase 1', () => {
     const docs = policyDocumentsForRole(template, 'OpenReceptionTrustedDevDeployBrokerRole');
     expect(JSON.stringify(docs)).not.toContain('sts:AssumeRole');
-    expect(JSON.stringify(docs)).not.toContain('cloudformation:');
+    // The only CloudFormation action is the S10a stability read (no ChangeSet, no mutation).
+    expect([...new Set(JSON.stringify(docs).match(/"cloudformation:[A-Za-z*]+"/g) ?? [])]).toEqual(['"cloudformation:DescribeStacks"']);
   });
 
   it('keeps source-provider credentials in the pipeline plane, not CodeBuild roles', () => {
@@ -176,6 +177,6 @@ describe('DevDeployBrokerStack (#1146 Phase 1)', () => {
     expect(serialized).toContain('s3:GetObject');
     expect(serialized).not.toContain('s3:PutObject');
     expect(serialized).not.toContain('sts:AssumeRole');
-    expect(serialized).not.toContain('cloudformation:');
+    expect([...new Set(serialized.match(/"cloudformation:[A-Za-z*]+"/g) ?? [])]).toEqual(['"cloudformation:DescribeStacks"']);
   });
 });
