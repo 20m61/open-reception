@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -8,15 +8,57 @@ import * as cdk from 'aws-cdk-lib';
 import { Template } from 'aws-cdk-lib/assertions';
 import { createHash } from 'node:crypto';
 import {
+  BROKER_ACCOUNT_PIN_CHECK_SCRIPT,
   BROKER_NOT_ARMED_RESULT_SCRIPT,
   BROKER_POLICY_HASH_CHECK_SCRIPT,
   BROKER_REVISION_CHECK_SCRIPT,
+  DEV_DEPLOY_TARGET_ACCOUNT,
   DevDeployBrokerStack,
+  PIPELINE_ARTIFACT_RETENTION_DAYS,
+  ARTIFACT_HISTORY_WRITES,
+  BROKER_MODULE_HASH_CHECK_SCRIPT,
+  PIPELINE_NAME,
+  PIPELINE_STAGES,
+  BROKER_ASSEMBLY_DIR,
+  BROKER_EVIDENCE_PATH,
+  BROKER_OUT_DIR,
+  BROKER_RESULT_PATH,
+  BROKER_VALIDATED_DIR,
+  BROKER_WORK_DIR,
+  POLICY_RESULT_PATH,
+  PROVENANCE_DECISION_PATH,
+  PROVENANCE_RESULT_CHECK_SCRIPT,
+  BROKER_ABORT_STATES,
+  LEDGER_ATTENTION_EVENTS,
+  LEDGER_AUDIT_PROTECTED_ACTIONS,
+  LEDGER_AUDIT_RETENTION_DAYS,
+  LEDGER_AUDIT_TRAIL_NAME,
+  LEDGER_DENY_COMMAND,
+  LEDGER_LOCAL_DIR,
+  LEDGER_MODULE_LOCAL_PATH,
+  LEDGER_MODULE_SOURCE_PATH,
+  LEDGER_RUNNER_LOCAL_PATH,
+  LEDGER_RUNNER_SOURCE_PATH,
+  gateCommand,
+  LEDGER_GATE_FILE,
+  LEDGER_ID_PATTERN,
+  PROVENANCE_COMMAND,
+  PROVENANCE_LOCAL_PATH,
+  PROVENANCE_READ_ACTIONS,
+  PROVENANCE_SOURCE_PATH,
   SPARSE_LEDGER_BROKER_ACTIONS,
   SPARSE_LEDGER_PROJECT_KEY,
   TRUSTED_POLICY_LOCAL_PATH,
   TRUSTED_POLICY_SOURCE_PATH,
   VALIDATION_EVIDENCE_SCRIPT,
+  ESCALATION_RULES,
+  TARGET_STACKS,
+  TARGET_STACKS_COMMAND,
+  TARGET_STACKS_DECISION_PATH,
+  TARGET_STACKS_LOCAL_PATH,
+  TARGET_STACKS_RESULT_CHECK_SCRIPT,
+  TARGET_STACKS_SOURCE_PATH,
+  TARGET_STACK_READ_ACTIONS,
   nodeEval,
   trustedPolicySha256,
 } from '../lib/stacks/dev-deploy-broker-stack';
@@ -52,7 +94,7 @@ const REV_B = '0123456789abcdef0123456789abcdef01234567';
 const template = (() => {
   const app = new cdk.App();
   const stack = new DevDeployBrokerStack(app, 'TestDevDeployBroker', {
-    env: { account: '123456789012', region: 'ap-northeast-1' },
+    env: { account: '822063948773', region: 'ap-northeast-1' },
   });
   return Template.fromStack(stack);
 })();
@@ -86,8 +128,12 @@ const buildSpec = (name: string) =>
     artifacts?: unknown;
   };
 
+/** Every command the project runs, including `finally` blocks. */
 const allCommands = (name: string): string[] =>
-  Object.values(buildSpec(name).phases).flatMap((phase) => phase.commands);
+  Object.values(buildSpec(name).phases).flatMap((phase) => [
+    ...phase.commands,
+    ...((phase as { finally?: string[] }).finally ?? []),
+  ]);
 
 const roleLogicalId = (roleName: string): string => {
   const found = byType('AWS::IAM::Role').find(([, r]) => r.Properties.RoleName === roleName);
@@ -162,9 +208,41 @@ const allowedActions = (roleName: string): string[] =>
     .filter((s) => s.Effect === 'Allow')
     .flatMap(actionsOf);
 
-const ARTIFACT_BUCKET = byType('AWS::S3::Bucket').map(([id]) => id);
+/** The pipeline's artifact store (the ledger audit bucket is the other bucket in the stack). */
+const ARTIFACT_BUCKET = [
+  ((byType('AWS::CodePipeline::Pipeline')[0]![1].Properties.ArtifactStore as Json).Location as { Ref: string }).Ref,
+];
+const artifactBucketEntry = () => byType('AWS::S3::Bucket').find(([id]) => id === ARTIFACT_BUCKET[0])!;
 
 const LEDGER_TABLES = byType('AWS::DynamoDB::Table').map(([id]) => id);
+
+const PIPELINES = byType('AWS::CodePipeline::Pipeline').map(([id]) => id);
+const PROJECTS = byType('AWS::CodeBuild::Project');
+
+/** The three reviewed read-only provenance statements (exact actions and resource). */
+const isProvenanceStatement = (s: Statement): boolean => {
+  const acts = JSON.stringify(actionsOf(s).sort());
+  const res = JSON.stringify(s.Resource);
+  const same = (xs: readonly string[]) => acts === JSON.stringify(xs.map((a) => a.toLowerCase()).sort());
+  const validationProjectId = PROJECTS.find(([, r]) => r.Properties.Name === VALIDATION_PROJECT)?.[0];
+  return (
+    s.Effect === 'Allow' &&
+    s.Condition === undefined &&
+    ((same(PROVENANCE_READ_ACTIONS.pipeline) && res === JSON.stringify({ 'Fn::Join': ['', ['arn:', { Ref: 'AWS::Partition' }, ':codepipeline:ap-northeast-1:822063948773:', { Ref: PIPELINES[0] }]] })) ||
+      (same(PROVENANCE_READ_ACTIONS.validationBuild) && res === JSON.stringify({ 'Fn::GetAtt': [validationProjectId, 'Arn'] })) ||
+      (same(PROVENANCE_READ_ACTIONS.artifactBucket) && res === JSON.stringify({ 'Fn::GetAtt': [ARTIFACT_BUCKET[0], 'Arn'] })))
+  );
+};
+
+/** The single reviewed target-stack read (S10a): DescribeStacks on exactly the three stack ARNs. */
+const TARGET_STACK_ARNS = TARGET_STACKS.map((t) => ({
+  'Fn::Join': ['', ['arn:', { Ref: 'AWS::Partition' }, `:cloudformation:${t.region ?? 'ap-northeast-1'}:822063948773:stack/${t.stackName}/*`]],
+}));
+const isTargetStackStatement = (s: Statement): boolean =>
+  s.Effect === 'Allow' &&
+  s.Condition === undefined &&
+  JSON.stringify(actionsOf(s)) === JSON.stringify(TARGET_STACK_READ_ACTIONS.map((a) => a.toLowerCase())) &&
+  JSON.stringify(s.Resource) === JSON.stringify(TARGET_STACK_ARNS);
 
 /** Does a statement's Resource reference the sparse ledger table (any form)? */
 const refersToLedger = (s: Statement): boolean =>
@@ -254,9 +332,25 @@ describe('dev deploy broker invariants: build environment allowlist', () => {
     expect(projectEnvNames(BROKER_PROJECT)).toEqual(
       [
         'OR_BROKER_TARGET_ACCOUNT',
+        'OR_LEDGER_MODULE_BUCKET',
+        'OR_LEDGER_MODULE_KEY',
+        'OR_LEDGER_MODULE_SHA256',
+        'OR_LEDGER_RUNNER_BUCKET',
+        'OR_LEDGER_RUNNER_KEY',
+        'OR_LEDGER_RUNNER_SHA256',
+        'OR_PIPELINE_ARTIFACT_BUCKET',
+        'OR_SPARSE_LEDGER_ID',
+        'OR_SPARSE_LEDGER_TABLE',
+        'OR_PROVENANCE_MODULE_BUCKET',
+        'OR_PROVENANCE_MODULE_KEY',
+        'OR_PROVENANCE_MODULE_SHA256',
         'OR_TRUSTED_POLICY_BUCKET',
         'OR_TRUSTED_POLICY_KEY',
         'OR_TRUSTED_POLICY_SHA256',
+        'OR_TARGET_STACKS_MODULE_BUCKET',
+        'OR_TARGET_STACKS_MODULE_KEY',
+        'OR_TARGET_STACKS_MODULE_SHA256',
+        'OR_BROKER_TARGET_REGION',
       ].sort(),
     );
   });
@@ -335,11 +429,25 @@ describe('dev deploy broker invariants: trusted broker (stack-owned buildspec, u
     expect(Object.keys(spec.phases)).toEqual(['build']);
     const commands = allCommands(BROKER_PROJECT);
     const allowedShapes = [
-      /^test -f [A-Za-z0-9_./-]+\.json$/,
+      /^test -f \/tmp\/open-reception-broker-work\/validated\/[A-Za-z0-9_./-]+\.json$/,
+      /^mkdir -m 700 \/tmp\/open-reception-broker-out$/,
       /^node -e '[^']*'$/,
       /^aws s3 cp "s3:\/\/\$OR_TRUSTED_POLICY_BUCKET\/\$OR_TRUSTED_POLICY_KEY" \/tmp\/open-reception-trusted-policy\.mjs --only-show-errors$/,
       /^node -e '[^']*' \/tmp\/open-reception-trusted-policy\.mjs$/,
-      /^node \/tmp\/open-reception-trusted-policy\.mjs --assembly infra\/cdk\.out --account "\$OR_BROKER_TARGET_ACCOUNT" > trusted-policy-result\.json$/,
+      /^node -e '[^']*'( \/tmp\/open-reception-broker-(work\/validated|out)\/[A-Za-z0-9_.-]+\.json)+$/,
+      /^mkdir -p \/tmp\/open-reception-ledger$/,
+      /^aws s3 cp "s3:\/\/\$OR_LEDGER_(MODULE|RUNNER)_BUCKET\/\$OR_LEDGER_\1_KEY" \/tmp\/open-reception-ledger\/(sparse-ledger|ledger-runner)\.mjs --only-show-errors$/,
+      /^node -e '[^']*' \/tmp\/open-reception-ledger\/(sparse-ledger|ledger-runner)\.mjs OR_LEDGER_(MODULE|RUNNER)_SHA256$/,
+      /^echo (BROKER_MODULE_INTEGRITY|TRUSTED_PROVENANCE_DENIED|TRUSTED_REVISION_MISMATCH|TRUSTED_POLICY_DENIED|TARGET_STACK_NOT_STABLE|BROKER_NOT_ARMED) > \/tmp\/open-reception-ledger\/gate$/,
+      /^aws s3 cp "s3:\/\/\$OR_TARGET_STACKS_MODULE_BUCKET\/\$OR_TARGET_STACKS_MODULE_KEY" \/tmp\/open-reception-target-stacks\.mjs --only-show-errors$/,
+      /^node -e '[^']*' \/tmp\/open-reception-target-stacks\.mjs OR_TARGET_STACKS_MODULE_SHA256$/,
+      new RegExp(`^${TARGET_STACKS_COMMAND.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}$`),
+      new RegExp(`^${LEDGER_DENY_COMMAND.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}$`),
+      /^node \/tmp\/open-reception-trusted-policy\.mjs --assembly \/tmp\/open-reception-broker-work\/validated\/infra\/cdk\.out --account 822063948773 > \/tmp\/open-reception-broker-out\/trusted-policy-result\.json$/,
+      /^aws s3 cp "s3:\/\/\$OR_PROVENANCE_MODULE_BUCKET\/\$OR_PROVENANCE_MODULE_KEY" \/tmp\/open-reception-run-provenance\.mjs --only-show-errors$/,
+      /^node -e '[^']*' \/tmp\/open-reception-run-provenance\.mjs OR_PROVENANCE_MODULE_SHA256$/,
+      new RegExp(`^${PROVENANCE_COMMAND.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}$`),
+
       /^echo "[^"$`]*" >&2$/,
       /^exit 42$/,
     ];
@@ -355,7 +463,7 @@ describe('dev deploy broker invariants: trusted broker (stack-owned buildspec, u
           requires.every((r) => r === '"fs"' || r === '"crypto"'),
           `requires: ${requires.join(',')}`,
         ).toBe(true);
-        expect(command).not.toMatch(/child_process|\bimport\(|\beval\(|new Function|spawn|exec/);
+        expect(command).not.toMatch(/child_process|\bimport\(|\beval\(|new Function|\bspawn\w*\(|\bexec\w*\(/);
       } else {
         expect(command).not.toMatch(/(^|[\s;&|(])(npm|npx|yarn|pnpm|bash|sh|source|make|cdk)(\s|$)/);
       }
@@ -364,14 +472,17 @@ describe('dev deploy broker invariants: trusted broker (stack-owned buildspec, u
       expect(command).not.toContain('require("./');
       expect(command).not.toMatch(/\bimport\(/);
     }
-    expect(commands.at(-1)).toBe('exit 42');
+    expect(buildSpec(BROKER_PROJECT).phases.build!.commands.at(-1)).toBe('exit 42');
   });
 
   it('holds no sts:AssumeRole or mutation authority; no role in the stack can reach a deploy role', () => {
     // The sparse ledger statement is the one reviewed exception to the dynamodb: ban; its exact
     // shape is pinned in the "sparse deploy ledger" block below.
+    // The provenance reads (blockers 2 / 4) are the other reviewed exception; their exact shape is
+    // pinned in the "execution provenance" block below. The S10a DescribeStacks read is the third
+    // (pinned in the "target-stack stability" block below).
     const broker = statementsFor(roleLogicalId(BROKER_ROLE))
-      .filter((s) => s.Effect === 'Allow' && !isLedgerStatement(s))
+      .filter((s) => s.Effect === 'Allow' && !isLedgerStatement(s) && !isProvenanceStatement(s) && !isTargetStackStatement(s))
       .flatMap(actionsOf);
     for (const action of broker) {
       for (const prefix of FORBIDDEN_ACTION_PREFIXES) {
@@ -429,12 +540,14 @@ describe('dev deploy broker invariants: trusted broker (stack-owned buildspec, u
 
   it('verifies the downloaded policy hash immediately after download and before executing it', () => {
     const commands = allCommands(BROKER_PROJECT);
-    const download = commands.findIndex((c) => c.startsWith('aws s3 cp '));
+    const download = commands.findIndex((c) => c.startsWith('aws s3 cp "s3://$OR_TRUSTED_POLICY_BUCKET'));
     const verify = commands.indexOf(nodeEval(BROKER_POLICY_HASH_CHECK_SCRIPT, TRUSTED_POLICY_LOCAL_PATH));
     const execute = commands.findIndex((c) => c.startsWith(`node ${TRUSTED_POLICY_LOCAL_PATH} `));
     expect(download).toBeGreaterThanOrEqual(0);
     expect(verify).toBe(download + 1);
-    expect(execute).toBe(verify + 1);
+    // Only the gate marker sits between verification and execution.
+    expect(commands[verify + 1]).toBe(gateCommand('TRUSTED_POLICY_DENIED'));
+    expect(execute).toBe(verify + 2);
     // Exactly one download and one execution of the policy file.
     expect(commands.filter((c) => c.includes(TRUSTED_POLICY_LOCAL_PATH))).toHaveLength(3);
   });
@@ -610,10 +723,23 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
     expect(bin).toContain("stackName: 'OpenReception-DevDeployBroker'");
   });
 
-  it('the broker buildspec does not run the ledger yet; when wired it must be a sha256-pinned stack asset', () => {
-    // Arming work: the ledger module must be delivered like the trusted policy (stack-published,
-    // content-hash verified before execution), never read from the candidate artifact.
-    expect(allCommands(BROKER_PROJECT).some((c) => c.includes('sparse-ledger'))).toBe(false);
+  it('the broker runs the ledger only from sha256-verified stack assets, and does not reserve while unarmed', () => {
+    const commands = allCommands(BROKER_PROJECT);
+    const ledgerUses = commands.filter((c) => c.includes('ledger-runner') || c.includes('sparse-ledger'));
+    // Downloads + verifications in the build phase, one verified deny in finally; nothing else.
+    expect(ledgerUses).toEqual([
+      `aws s3 cp "s3://$OR_LEDGER_MODULE_BUCKET/$OR_LEDGER_MODULE_KEY" ${LEDGER_MODULE_LOCAL_PATH} --only-show-errors`,
+      nodeEval(BROKER_MODULE_HASH_CHECK_SCRIPT, LEDGER_MODULE_LOCAL_PATH, 'OR_LEDGER_MODULE_SHA256'),
+      `aws s3 cp "s3://$OR_LEDGER_RUNNER_BUCKET/$OR_LEDGER_RUNNER_KEY" ${LEDGER_RUNNER_LOCAL_PATH} --only-show-errors`,
+      nodeEval(BROKER_MODULE_HASH_CHECK_SCRIPT, LEDGER_RUNNER_LOCAL_PATH, 'OR_LEDGER_RUNNER_SHA256'),
+      LEDGER_DENY_COMMAND,
+    ]);
+    expect(commands.some((c) => / reserve\b| outcome\b/.test(c))).toBe(false);
+    expect(buildSpec(BROKER_PROJECT).phases.build).toHaveProperty('finally', [LEDGER_DENY_COMMAND]);
+    // The ledger files are verified before the first gate, i.e. before any denial can happen.
+    expect(commands.indexOf(nodeEval(BROKER_MODULE_HASH_CHECK_SCRIPT, LEDGER_RUNNER_LOCAL_PATH, 'OR_LEDGER_RUNNER_SHA256'))).toBeLessThan(
+      commands.indexOf(gateCommand('TRUSTED_PROVENANCE_DENIED')),
+    );
   });
 
   it('the stack pins the same partition key the ledger module writes', async () => {
@@ -639,9 +765,12 @@ describe('dev deploy broker invariants: trusted source revision', () => {
         type: string;
         value: string;
       }>;
-      expect(vars).toEqual([
-        { name: 'OR_TRUSTED_SOURCE_REVISION', type: 'PLAINTEXT', value: TRUSTED_COMMIT_ID },
-      ]);
+      const expected = [{ name: 'OR_TRUSTED_SOURCE_REVISION', type: 'PLAINTEXT', value: TRUSTED_COMMIT_ID }];
+      if (action.Name === 'TrustedBrokerUnarmed') {
+        // CodePipeline's own execution id (never candidate-controlled), for the provenance check.
+        expected.unshift({ name: 'OR_PIPELINE_EXECUTION_ID', type: 'PLAINTEXT', value: '#{codepipeline.PipelineExecutionId}' });
+      }
+      expect(vars).toEqual(expected);
     }
     for (const name of [VALIDATION_PROJECT, BROKER_PROJECT]) {
       const text = buildSpecText(name);
@@ -653,8 +782,9 @@ describe('dev deploy broker invariants: trusted source revision', () => {
 
   it('the synthesized commands are exactly the exported, tested scripts', () => {
     expect(allCommands(VALIDATION_PROJECT)).toContain(nodeEval(VALIDATION_EVIDENCE_SCRIPT));
-    expect(allCommands(BROKER_PROJECT)).toContain(nodeEval(BROKER_REVISION_CHECK_SCRIPT));
-    expect(allCommands(BROKER_PROJECT)).toContain(nodeEval(BROKER_NOT_ARMED_RESULT_SCRIPT));
+    expect(allCommands(BROKER_PROJECT)).toContain(nodeEval(BROKER_REVISION_CHECK_SCRIPT, BROKER_EVIDENCE_PATH));
+    expect(allCommands(BROKER_PROJECT)).toContain(nodeEval(BROKER_NOT_ARMED_RESULT_SCRIPT, POLICY_RESULT_PATH, BROKER_RESULT_PATH));
+    expect(allCommands(BROKER_PROJECT)).toContain(nodeEval(PROVENANCE_RESULT_CHECK_SCRIPT, PROVENANCE_DECISION_PATH));
     expect(allCommands(BROKER_PROJECT)).toContain(
       nodeEval(BROKER_POLICY_HASH_CHECK_SCRIPT, TRUSTED_POLICY_LOCAL_PATH),
     );
@@ -707,8 +837,14 @@ const run = (
   }
 };
 
-const revisionCheck = () => commandContaining(BROKER_PROJECT, 'broker-evidence.json","utf8"');
-const notArmed = () => commandContaining(BROKER_PROJECT, 'BROKER_NOT_ARMED');
+/**
+ * Run a broker command in a scratch workspace: its broker-owned absolute paths (the materialized
+ * artifact and the output dir) are mapped to the workspace, so the exact synthesized text runs.
+ */
+const localize = (command: string): string =>
+  command.split(`${BROKER_VALIDATED_DIR}/`).join('./').split(`${BROKER_OUT_DIR}/`).join('./');
+const revisionCheck = () => localize(commandContaining(BROKER_PROJECT, 'validation evidence revision mismatch'));
+const notArmed = () => localize(commandContaining(BROKER_PROJECT, 'rule:"BROKER_NOT_ARMED"'));
 const validationEvidence = () =>
   commandContaining(VALIDATION_PROJECT, 'writeFileSync("broker-evidence.json"');
 
@@ -901,11 +1037,14 @@ describe('trusted policy hash pin (shared bootstrap asset bucket substitution)',
     // over the exact synthesized verify -> execute -> result sequence, with the path redirected.
     const commands = allCommands(BROKER_PROJECT);
     const start = commands.indexOf(nodeEval(BROKER_POLICY_HASH_CHECK_SCRIPT, TRUSTED_POLICY_LOCAL_PATH));
-    const sequence = commands.slice(start, start + 3);
-    expect(sequence[2]).toBe(nodeEval(BROKER_NOT_ARMED_RESULT_SCRIPT));
+    const armedGate = commands.indexOf(gateCommand('BROKER_NOT_ARMED'));
+    const sequence = [...commands.slice(start, start + 3), ...commands.slice(armedGate, armedGate + 2)];
+    expect(sequence[1]).toBe(gateCommand('TRUSTED_POLICY_DENIED'));
+    expect(sequence[3]).toBe(gateCommand('BROKER_NOT_ARMED'));
+    expect(sequence[4]).toBe(nodeEval(BROKER_NOT_ARMED_RESULT_SCRIPT, POLICY_RESULT_PATH, BROKER_RESULT_PATH));
     const file = copyOfPolicy((t) => `${t}\n// tampered\n`);
     const dir = dirname(file);
-    const script = ['set -e', ...sequence.map((c) => c.split(TRUSTED_POLICY_LOCAL_PATH).join(file))].join('\n');
+    const script = ['set -e', ...sequence.map((c) => localize(c.split(TRUSTED_POLICY_LOCAL_PATH).join(file)))].join('\n');
     const r = run(script, dir, {
       OR_TRUSTED_POLICY_SHA256: pinnedSha256,
       OR_TRUSTED_SOURCE_REVISION: REV_A,
@@ -970,5 +1109,654 @@ describe('architecture view (S8 repo-side drift check)', () => {
     ]) {
       expect(mermaid).toContain(node);
     }
+  });
+});
+
+describe('deploy account pin (pre-arming blocker 3)', () => {
+  const policiesDir = resolve(__dirname, '../../scripts/aws-policies');
+
+  it('is the same account every ADR 0009 policy pins', () => {
+    const files = readdirSync(policiesDir).filter((f) => f.endsWith('.json'));
+    expect(files.length).toBeGreaterThanOrEqual(7);
+    for (const file of files) {
+      const accounts = new Set(readFileSync(join(policiesDir, file), 'utf8').match(/(?<![0-9])[0-9]{12}(?![0-9])/g) ?? []);
+      expect([...accounts], file).toEqual([DEV_DEPLOY_TARGET_ACCOUNT]);
+    }
+  });
+
+  it('both builds receive the pinned literal, never the stack-derived AWS::AccountId', () => {
+    for (const name of [VALIDATION_PROJECT, BROKER_PROJECT]) {
+      const project = Object.values(resources).find((r) => r.Type === 'AWS::CodeBuild::Project' && r.Properties.Name === name)!;
+      const env = (project.Properties.Environment as { EnvironmentVariables: Array<{ Name: string; Value: unknown }> }).EnvironmentVariables;
+      expect(env.find((e) => e.Name === 'OR_BROKER_TARGET_ACCOUNT')?.Value, name).toBe(DEV_DEPLOY_TARGET_ACCOUNT);
+    }
+  });
+
+  it('carries no CloudFormation rule whose semantics are unverified (parameter-free AWS::AccountId assertion)', () => {
+    // Only CDK's own bootstrap-version rule (which references its SSM parameter).
+    expect(Object.keys(template.toJSON().Rules ?? {})).toEqual(['CheckBootstrapVersion']);
+  });
+
+  it('a concrete synth for another account fails before any template exists', () => {
+    const app = new cdk.App();
+    expect(() => new DevDeployBrokerStack(app, 'Other', { env: { account: '123456789012', region: 'ap-northeast-1' } })).toThrow(/822063948773/);
+    // Environment-agnostic synth is allowed; the broker's first command refuses any other account.
+    expect(() => new DevDeployBrokerStack(new cdk.App(), 'Agnostic')).not.toThrow();
+  });
+
+  it('the broker checks its own account first, before reading any candidate file', () => {
+    const commands = allCommands(BROKER_PROJECT);
+    expect(commands[0]).toBe(nodeEval(BROKER_ACCOUNT_PIN_CHECK_SCRIPT));
+  });
+
+  it.each([
+    ['the pinned account', `arn:aws:codebuild:ap-northeast-1:${DEV_DEPLOY_TARGET_ACCOUNT}:build/OpenReceptionTrustedDevDeployBroker:x`, DEV_DEPLOY_TARGET_ACCOUNT, true],
+    ['another account', 'arn:aws:codebuild:ap-northeast-1:123456789012:build/OpenReceptionTrustedDevDeployBroker:x', DEV_DEPLOY_TARGET_ACCOUNT, false],
+    ['no build ARN', undefined, DEV_DEPLOY_TARGET_ACCOUNT, false],
+    ['a malformed build ARN', `arn:aws:codebuild:ap-northeast-1:${DEV_DEPLOY_TARGET_ACCOUNT}:project/x`, DEV_DEPLOY_TARGET_ACCOUNT, false],
+    ['an ARN with the account elsewhere', `arn:aws:codebuild:ap-northeast-1:123456789012:build/${DEV_DEPLOY_TARGET_ACCOUNT}`, DEV_DEPLOY_TARGET_ACCOUNT, false],
+    // An environment override cannot move the pin: the literal in the buildspec decides.
+    ['an overridden env pin matching another account', 'arn:aws:codebuild:ap-northeast-1:123456789012:build/OpenReceptionTrustedDevDeployBroker:x', '123456789012', false],
+    ['no env pin at all', `arn:aws:codebuild:ap-northeast-1:${DEV_DEPLOY_TARGET_ACCOUNT}:build/x`, undefined, true],
+  ])('the account check with %s', (_label, buildArn, envPin, ok) => {
+    const r = run(nodeEval(BROKER_ACCOUNT_PIN_CHECK_SCRIPT), workspace(), { CODEBUILD_BUILD_ARN: buildArn, OR_BROKER_TARGET_ACCOUNT: envPin });
+    expect(r.ok).toBe(ok);
+  });
+
+  it('the pin and the policy account are literals in the buildspec, not environment values', () => {
+    expect(BROKER_ACCOUNT_PIN_CHECK_SCRIPT).toContain(`const pinned="${DEV_DEPLOY_TARGET_ACCOUNT}";`);
+    expect(BROKER_ACCOUNT_PIN_CHECK_SCRIPT).not.toContain('process.env.OR_BROKER_TARGET_ACCOUNT');
+    const policyRun = allCommands(BROKER_PROJECT).find((c) => c.startsWith('node /tmp/open-reception-trusted-policy.mjs '))!;
+    expect(policyRun).toContain(`--account ${DEV_DEPLOY_TARGET_ACCOUNT} `);
+    expect(policyRun).not.toContain('$OR_BROKER_TARGET_ACCOUNT');
+  });
+});
+
+describe('artifact bucket lifecycle and physical names (pre-arming blockers 5 and 6)', () => {
+  const [bucketId, bucket] = artifactBucketEntry();
+
+  it('there is exactly one bucket and it is the pipeline artifact store', () => {
+    // The artifact store and the ledger audit bucket (CloudTrail).
+    expect(byType('AWS::S3::Bucket')).toHaveLength(2);
+    const [, pipeline] = byType('AWS::CodePipeline::Pipeline')[0]!;
+    expect((pipeline.Properties.ArtifactStore as Json).Location).toEqual({ Ref: bucketId });
+  });
+
+  it('expires candidate artifacts and incomplete uploads', () => {
+    const rules = ((bucket.Properties.LifecycleConfiguration as Json).Rules as Json[]).filter((r) => r.Status === 'Enabled');
+    expect(rules).toEqual([
+      expect.objectContaining({
+        ExpirationInDays: PIPELINE_ARTIFACT_RETENTION_DAYS,
+        AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 },
+      }),
+      expect.objectContaining({ ExpiredObjectDeleteMarker: true }),
+    ]);
+    // A rule scoped by prefix or tag would leave the rest of the bucket unbounded.
+    expect(rules[0]).not.toHaveProperty('Prefix');
+    expect(rules[0]).not.toHaveProperty('TagFilters');
+    expect(rules[0]).not.toHaveProperty('Filter');
+    expect(PIPELINE_ARTIFACT_RETENTION_DAYS).toBeGreaterThanOrEqual(1);
+    expect(PIPELINE_ARTIFACT_RETENTION_DAYS).toBeLessThanOrEqual(30);
+  });
+
+  it('keeps the default pipeline bucket protections (no public access, TLS only, encrypted)', () => {
+    expect(bucket.Properties.PublicAccessBlockConfiguration).toEqual({
+      BlockPublicAcls: true,
+      BlockPublicPolicy: true,
+      IgnorePublicAcls: true,
+      RestrictPublicBuckets: true,
+    });
+    expect(JSON.stringify(bucket.Properties.BucketEncryption)).toContain('AES256');
+    const [, policy] = byType('AWS::S3::BucketPolicy').find(([, r]) => JSON.stringify(r.Properties.Bucket).includes(bucketId))!;
+    const statements = (policy.Properties.PolicyDocument as { Statement: Statement[] }).Statement;
+    expect(statements.filter((st) => st.Effect === 'Allow')).toEqual([]);
+    expect(statements).toContainEqual(
+      expect.objectContaining({ Effect: 'Deny', Condition: { Bool: { 'aws:SecureTransport': 'false' } } }),
+    );
+  });
+
+  it('no retained resource has a fixed physical name (delete + recreate cannot collide)', () => {
+    const retained = Object.entries(resources).filter(
+      ([, r]) => (r as unknown as { DeletionPolicy?: string }).DeletionPolicy === 'Retain',
+    );
+    expect(retained.map(([, r]) => r.Type).sort()).toEqual([
+      'AWS::DynamoDB::Table',
+      'AWS::Logs::LogGroup',
+      'AWS::Logs::LogGroup',
+      'AWS::S3::Bucket',
+      'AWS::S3::Bucket',
+      // The audit bucket's policy stays with the retained audit logs.
+      'AWS::S3::BucketPolicy',
+    ]);
+    for (const [id, r] of retained) {
+      const named = Object.keys(r.Properties ?? {}).filter((k) => /Name$/.test(k));
+      expect(named, id).toEqual([]);
+    }
+  });
+});
+
+describe('execution provenance (pre-arming blockers 2 and 4)', () => {
+  const [bucketId, bucket] = artifactBucketEntry();
+
+  it('the artifact bucket keeps every version, and old versions still expire', () => {
+    expect(bucket.Properties.VersioningConfiguration).toEqual({ Status: 'Enabled' });
+    const rule = ((bucket.Properties.LifecycleConfiguration as Json).Rules as Json[])[0]!;
+    expect(rule.NoncurrentVersionExpiration).toEqual({ NoncurrentDays: PIPELINE_ARTIFACT_RETENTION_DAYS });
+  });
+
+  it('neither build role can delete a version, change versioning / lifecycle / policy, or replicate', () => {
+    for (const roleName of [VALIDATION_ROLE, BROKER_ROLE]) {
+      const denies = statementsFor(roleLogicalId(roleName)).filter((s) => s.Effect === 'Deny');
+      const covering = denies.filter((s) => JSON.stringify(s.Resource).includes(bucketId));
+      expect(covering, roleName).toHaveLength(1);
+      expect(actionsOf(covering[0]!).sort()).toEqual(ARTIFACT_HISTORY_WRITES.map((a) => a.toLowerCase()).sort());
+      expect(JSON.stringify(covering[0]!.Resource)).toContain('/*');
+      expect(covering[0]!.Condition).toBeUndefined();
+    }
+  });
+
+  it('the broker holds exactly the three reviewed read-only provenance statements; validation holds none', () => {
+    expect(statementsFor(roleLogicalId(BROKER_ROLE)).filter(isProvenanceStatement)).toHaveLength(3);
+    const validation = statementsFor(roleLogicalId(VALIDATION_ROLE)).filter((s) => s.Effect === 'Allow').flatMap(actionsOf);
+    for (const a of [...PROVENANCE_READ_ACTIONS.pipeline, ...PROVENANCE_READ_ACTIONS.validationBuild, 's3:listbucketversions']) {
+      expect(validation, a).not.toContain(a.toLowerCase());
+    }
+  });
+
+  it('runs the pinned module right after the account check, before any candidate file is read', () => {
+    const commands = allCommands(BROKER_PROJECT);
+    expect(commands.slice(0, 13)).toEqual([
+      nodeEval(BROKER_ACCOUNT_PIN_CHECK_SCRIPT),
+      `mkdir -m 700 ${BROKER_OUT_DIR}`,
+      // Ledger files verified before the first gate, so every later denial can be audited.
+      `mkdir -p ${LEDGER_LOCAL_DIR}`,
+      `aws s3 cp "s3://$OR_LEDGER_MODULE_BUCKET/$OR_LEDGER_MODULE_KEY" ${LEDGER_MODULE_LOCAL_PATH} --only-show-errors`,
+      nodeEval(BROKER_MODULE_HASH_CHECK_SCRIPT, LEDGER_MODULE_LOCAL_PATH, 'OR_LEDGER_MODULE_SHA256'),
+      `aws s3 cp "s3://$OR_LEDGER_RUNNER_BUCKET/$OR_LEDGER_RUNNER_KEY" ${LEDGER_RUNNER_LOCAL_PATH} --only-show-errors`,
+      nodeEval(BROKER_MODULE_HASH_CHECK_SCRIPT, LEDGER_RUNNER_LOCAL_PATH, 'OR_LEDGER_RUNNER_SHA256'),
+      gateCommand('BROKER_MODULE_INTEGRITY'),
+      `aws s3 cp "s3://$OR_PROVENANCE_MODULE_BUCKET/$OR_PROVENANCE_MODULE_KEY" ${PROVENANCE_LOCAL_PATH} --only-show-errors`,
+      nodeEval(BROKER_MODULE_HASH_CHECK_SCRIPT, PROVENANCE_LOCAL_PATH, 'OR_PROVENANCE_MODULE_SHA256'),
+      gateCommand('TRUSTED_PROVENANCE_DENIED'),
+      PROVENANCE_COMMAND,
+      nodeEval(PROVENANCE_RESULT_CHECK_SCRIPT, PROVENANCE_DECISION_PATH),
+    ]);
+    expect(commands[13]).toBe(gateCommand('TRUSTED_REVISION_MISMATCH'));
+    const firstCandidateRead = commands.findIndex((c) => c.includes('broker-evidence.json') || c.includes('cdk.out'));
+    expect(firstCandidateRead).toBeGreaterThan(13);
+    // The module is executed exactly once, from the verified local path.
+    expect(commands.filter((c) => c.startsWith('node ') && !c.startsWith('node -e') && c.includes(PROVENANCE_LOCAL_PATH))).toEqual([PROVENANCE_COMMAND]);
+  });
+
+  it('pins the real content SHA-256 of the provenance module', () => {
+    const vars = Object.fromEntries(
+      ((project(BROKER_PROJECT).Environment as Json).EnvironmentVariables as Array<{ Name: string; Value: unknown }>).map((v) => [v.Name, v.Value]),
+    );
+    expect(vars.OR_PROVENANCE_MODULE_SHA256).toBe(createHash('sha256').update(readFileSync(PROVENANCE_SOURCE_PATH)).digest('hex'));
+    expect(vars.OR_PIPELINE_ARTIFACT_BUCKET).toEqual({ Ref: bucketId });
+  });
+
+  it('the module hash check accepts the untouched module and refuses tampering, a missing pin or a foreign variable name', () => {
+    const dir = workspace();
+    const file = join(dir, 'm.mjs');
+    writeFileSync(file, readFileSync(PROVENANCE_SOURCE_PATH));
+    const pin = createHash('sha256').update(readFileSync(PROVENANCE_SOURCE_PATH)).digest('hex');
+    const check = (f: string, name: string, env: Record<string, string | undefined>) =>
+      run(nodeEval(BROKER_MODULE_HASH_CHECK_SCRIPT, f, name), dir, env).ok;
+    expect(check(file, 'OR_PROVENANCE_MODULE_SHA256', { OR_PROVENANCE_MODULE_SHA256: pin })).toBe(true);
+    expect(check(file, 'OR_PROVENANCE_MODULE_SHA256', {})).toBe(false);
+    expect(check(file, 'OR_PROVENANCE_MODULE_SHA256', { OR_PROVENANCE_MODULE_SHA256: 'f'.repeat(64) })).toBe(false);
+    expect(check(file, 'PATH', { PATH: pin })).toBe(false);
+    writeFileSync(file, `${readFileSync(PROVENANCE_SOURCE_PATH, 'utf8')}\n// tampered\n`);
+    expect(check(file, 'OR_PROVENANCE_MODULE_SHA256', { OR_PROVENANCE_MODULE_SHA256: pin })).toBe(false);
+  });
+
+  it('the command binds the synthesized pipeline, validation project and stage / action names', () => {
+    const [, pipeline] = byType('AWS::CodePipeline::Pipeline')[0]!;
+    expect(pipeline.Properties.Name).toBe(PIPELINE_NAME);
+    const stages = (pipeline.Properties.Stages as Array<{ Name: string; Actions: Array<{ Name: string }> }>).map((st) => `${st.Name}/${st.Actions.map((a) => a.Name).join('+')}`);
+    expect(stages).toEqual(Object.values(PIPELINE_STAGES).map((x) => `${x.stage}/${x.action}`));
+    expect(PROVENANCE_COMMAND).toContain(`--validation-project ${VALIDATION_PROJECT} `);
+  });
+});
+
+describe('the broker never reads or writes the candidate tree CodeBuild extracted (review C1)', () => {
+  it('every file path a broker command names is broker-owned or a verified module under /tmp', () => {
+    for (const command of allCommands(BROKER_PROJECT)) {
+      if (command.startsWith('echo ') && !command.includes(' > ')) continue; // log line only
+      // Drop inline scripts and quoted strings; what remains are the paths and flags the shell sees.
+      const shell = command.replace(/node -e '[^']*'/g, 'node').replace(/"[^"]*"/g, '');
+      for (const token of shell.split(/\s+/).filter(Boolean)) {
+        if (/^(node|test|-f|-e|mkdir|-m|-p|700|aws|s3|cp|deny|--gate-file|&&|\|\||if|then|fi|\[|=|0|\];|>&2;|--only-show-errors|echo|exit|42|>|>&2|822063948773|--assembly|--account|--pipeline|--validation-project|--artifact-bucket-env|--stages|--stacks)$/.test(token)) continue;
+        if (/^"\$[A-Z_]+"$|^"s3:\/\/\$[A-Z_]+\/\$[A-Z_]+"$|^OR_[A-Z0-9_]+$|^[A-Z][A-Za-z]+$|^[A-Z_]+$|^Source\/PromotionBranch,Validate\/UnprivilegedValidation,BrokerBoundary\/TrustedBrokerUnarmed$|^OpenReception-Web-dev,OpenReception-WebMonitoring-dev,OpenReception-CfMon-dev@us-east-1$/.test(token)) continue;
+        expect(token.startsWith('/tmp/open-reception-'), `${token} in: ${command}`).toBe(true);
+      }
+    }
+  });
+
+  it('the paths match the provenance module and the decision is checked right after it runs', async () => {
+    const m = (await import(pathToFileURL(resolve(__dirname, '../broker/run-provenance.mjs')).href)) as Record<string, string>;
+    expect(m.BROKER_WORK_DIR).toBe(BROKER_WORK_DIR);
+    expect(m.BROKER_OUT_DIR).toBe(BROKER_OUT_DIR);
+    expect(m.VALIDATED_DIR).toBe(BROKER_VALIDATED_DIR);
+    expect(m.DECISION_PATH).toBe(PROVENANCE_DECISION_PATH);
+    expect(BROKER_ASSEMBLY_DIR.startsWith(`${BROKER_VALIDATED_DIR}/`)).toBe(true);
+    const commands = allCommands(BROKER_PROJECT);
+    expect(commands[commands.indexOf(PROVENANCE_COMMAND) + 1]).toBe(nodeEval(PROVENANCE_RESULT_CHECK_SCRIPT, PROVENANCE_DECISION_PATH));
+  });
+
+  it('the decision check requires allowed, this execution, this revision and the broker-owned extraction', () => {
+    const decision = (d: Json) => {
+      const dir = workspace();
+      writeFileSync(join(dir, 'provenance.json'), JSON.stringify(d));
+      return run(nodeEval(PROVENANCE_RESULT_CHECK_SCRIPT, join(dir, 'provenance.json')), dir, {
+        OR_PIPELINE_EXECUTION_ID: 'e-1',
+        OR_TRUSTED_SOURCE_REVISION: REV_A,
+      }).ok;
+    };
+    const good = { result: 'allowed', rule: null, facts: { executionId: 'e-1', revision: REV_A, validatedArtifact: { extractedTo: BROKER_VALIDATED_DIR } } };
+    expect(decision(good)).toBe(true);
+    expect(decision({ ...good, result: 'denied' })).toBe(false);
+    expect(decision({ ...good, rule: 'X' })).toBe(false);
+    expect(decision({ ...good, facts: { ...good.facts, executionId: 'e-2' } })).toBe(false);
+    expect(decision({ ...good, facts: { ...good.facts, revision: REV_B } })).toBe(false);
+    expect(decision({ ...good, facts: { ...good.facts, validatedArtifact: { extractedTo: '.' } } })).toBe(false);
+    expect(decision({})).toBe(false);
+  });
+
+  it('a symlinked output name in the candidate tree can no longer truncate a verified module', () => {
+    // No command may redirect (>, >>, 2>, tee) anywhere but the broker-owned output dir.
+    for (const command of allCommands(BROKER_PROJECT)) {
+      const shell = command.replace(/node -e '[^']*'/g, 'node').replace(/"[^"]*"/g, '');
+      expect(shell, command).not.toMatch(/\btee\b/);
+      for (const m of shell.matchAll(/\d?>>?\s*(\S+)/g)) {
+        const target = m[1]!;
+        if (target === '&2' || target === '&2;') continue;
+        // The broker-owned output dir, or the ledger gate marker (both under /tmp, broker-created).
+        expect(target.startsWith(`${BROKER_OUT_DIR}/`) || target === LEDGER_GATE_FILE, command).toBe(true);
+      }
+    }
+  });
+
+  it('inline broker scripts take every file path from argv, never as a literal', () => {
+    for (const command of allCommands(BROKER_PROJECT).filter((c) => c.startsWith("node -e '"))) {
+      expect(command, command).not.toMatch(/(readFileSync|writeFileSync|existsSync|openSync)\("/);
+    }
+  });
+
+});
+
+describe('freshness vs retention (review C5)', () => {
+  it('an execution can only be accepted well before its artifacts or old versions can expire', async () => {
+    const m = (await import(pathToFileURL(resolve(__dirname, '../broker/run-provenance.mjs')).href)) as { MAX_EXECUTION_AGE_MS: number };
+    expect(m.MAX_EXECUTION_AGE_MS * 4).toBeLessThanOrEqual(PIPELINE_ARTIFACT_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+  });
+});
+
+describe('ledger wiring (#1153): delivery, pin and denial audit', () => {
+  const env = () =>
+    Object.fromEntries(
+      ((project(BROKER_PROJECT).Environment as Json).EnvironmentVariables as Array<{ Name: string; Value: unknown }>).map((v) => [v.Name, v.Value]),
+    );
+
+  it('pins the real content SHA-256 of both ledger files', () => {
+    expect(env().OR_LEDGER_MODULE_SHA256).toBe(createHash('sha256').update(readFileSync(LEDGER_MODULE_SOURCE_PATH)).digest('hex'));
+    expect(env().OR_LEDGER_RUNNER_SHA256).toBe(createHash('sha256').update(readFileSync(LEDGER_RUNNER_SOURCE_PATH)).digest('hex'));
+  });
+
+  it('passes the ledger table and the human-chosen ledger id parameter, nothing candidate-controlled', () => {
+    const [tableId] = byType('AWS::DynamoDB::Table')[0]!;
+    expect(env().OR_SPARSE_LEDGER_TABLE).toEqual({ Ref: tableId });
+    expect(env().OR_SPARSE_LEDGER_ID).toEqual({ Ref: 'SparseLedgerId' });
+    const params = template.toJSON().Parameters as Record<string, { AllowedPattern?: string; Default?: unknown }>;
+    expect(params.SparseLedgerId?.AllowedPattern).toBe(LEDGER_ID_PATTERN);
+    expect(params.SparseLedgerId?.Default).toBeUndefined();
+  });
+
+  it('the stack ledger id pattern accepts exactly what the ledger module accepts', async () => {
+    const ledger = (await import(pathToFileURL(LEDGER_MODULE_SOURCE_PATH).href)) as { isLedgerId: (v: unknown) => boolean };
+    const re = new RegExp(LEDGER_ID_PATTERN);
+    for (const id of ['ledger-2026-09-28', 'a1234567', 'x'.repeat(128), 'short', 'x'.repeat(129), '-leading', 'has space', 'ok.id_v1-x']) {
+      expect(re.test(id), id).toBe(ledger.isLedgerId(id));
+    }
+  });
+
+  it('names each gate before evaluating it, in order, ending at BROKER_NOT_ARMED', () => {
+    const gates = allCommands(BROKER_PROJECT).filter((c) => c.startsWith('echo ') && c.endsWith(`> ${LEDGER_GATE_FILE}`));
+    expect(gates).toEqual([
+      gateCommand('BROKER_MODULE_INTEGRITY'),
+      gateCommand('TRUSTED_PROVENANCE_DENIED'),
+      gateCommand('TRUSTED_REVISION_MISMATCH'),
+      gateCommand('BROKER_MODULE_INTEGRITY'),
+      gateCommand('TRUSTED_POLICY_DENIED'),
+      gateCommand('BROKER_MODULE_INTEGRITY'),
+      gateCommand('TARGET_STACK_NOT_STABLE'),
+      gateCommand('BROKER_NOT_ARMED'),
+    ]);
+    // Every trusted-module download / hash check runs under the integrity marker.
+    const commands2 = allCommands(BROKER_PROJECT);
+    for (const i of commands2.map((c, i) => (c.startsWith('aws s3 cp ') && !c.includes('OR_LEDGER_') ? i : -1)).filter((i) => i >= 0)) {
+      const lastGate = commands2.slice(0, i).reverse().find((c) => c.endsWith(`> ${LEDGER_GATE_FILE}`));
+      expect(lastGate, commands2[i]).toBe(gateCommand('BROKER_MODULE_INTEGRITY'));
+    }
+    const commands = allCommands(BROKER_PROJECT);
+    expect(commands.indexOf(gateCommand('TRUSTED_REVISION_MISMATCH'))).toBeLessThan(commands.indexOf(nodeEval(BROKER_REVISION_CHECK_SCRIPT, BROKER_EVIDENCE_PATH)));
+    expect(commands.indexOf(gateCommand('TRUSTED_POLICY_DENIED'))).toBeLessThan(commands.findIndex((c) => c.startsWith(`node ${TRUSTED_POLICY_LOCAL_PATH}`)));
+  });
+
+  it('the finally line never runs an unverified runner (tampered file or missing pin)', () => {
+    const dir = workspace();
+    const fakeDir = join(dir, 'ledger');
+    execFileSync('mkdir', ['-p', fakeDir]);
+    // Rewrite the local paths into the scratch dir and plant a runner that would leave a marker.
+    const line = LEDGER_DENY_COMMAND.split(LEDGER_LOCAL_DIR).join(fakeDir);
+    writeFileSync(join(fakeDir, 'sparse-ledger.mjs'), readFileSync(LEDGER_MODULE_SOURCE_PATH));
+    writeFileSync(join(fakeDir, 'ledger-runner.mjs'), 'require("fs").writeFileSync("ran", "x")');
+    const pins = {
+      OR_LEDGER_MODULE_SHA256: createHash('sha256').update(readFileSync(LEDGER_MODULE_SOURCE_PATH)).digest('hex'),
+      OR_LEDGER_RUNNER_SHA256: createHash('sha256').update(readFileSync(LEDGER_RUNNER_SOURCE_PATH)).digest('hex'),
+    };
+    const r = run(line, dir, { ...pins, CODEBUILD_BUILD_SUCCEEDING: '0' });
+    expect(r.ok).toBe(true); // finally never fails the phase
+    expect(existsSync(join(dir, 'ran'))).toBe(false);
+  });
+
+  it('the finally line does nothing for a succeeding build (only a failing build is a denial)', () => {
+    const dir = workspace();
+    const ledgerDir = join(dir, 'ledger');
+    execFileSync('mkdir', ['-p', ledgerDir]);
+    writeFileSync(join(ledgerDir, 'sparse-ledger.mjs'), readFileSync(LEDGER_MODULE_SOURCE_PATH));
+    writeFileSync(join(ledgerDir, 'ledger-runner.mjs'), 'require("fs").writeFileSync("ran", "x")');
+    const line = LEDGER_DENY_COMMAND.split(LEDGER_LOCAL_DIR).join(ledgerDir);
+    for (const succeeding of ['1', undefined]) {
+      expect(run(line, dir, { CODEBUILD_BUILD_SUCCEEDING: succeeding }).ok).toBe(true);
+    }
+    expect(existsSync(join(dir, 'ran'))).toBe(false);
+    expect(LEDGER_DENY_COMMAND.startsWith('if [ "$CODEBUILD_BUILD_SUCCEEDING" = 0 ]; then ')).toBe(true);
+  });
+
+  it('the finally line audits the gate that stopped the build through the verified runner', () => {
+    const dir = workspace();
+    const ledgerDir = join(dir, 'ledger');
+    const binDir = join(dir, 'bin');
+    execFileSync('mkdir', ['-p', ledgerDir, binDir]);
+    writeFileSync(join(ledgerDir, 'sparse-ledger.mjs'), readFileSync(LEDGER_MODULE_SOURCE_PATH));
+    writeFileSync(join(ledgerDir, 'ledger-runner.mjs'), readFileSync(LEDGER_RUNNER_SOURCE_PATH));
+    writeFileSync(join(ledgerDir, 'gate'), 'TRUSTED_POLICY_DENIED\n');
+    // A fake CLI that records the call (the real one is only present in CodeBuild).
+    writeFileSync(join(binDir, 'aws'), `#!/bin/sh\nprintf '%s\\n' "$@" > ${join(dir, 'aws-call.txt')}\ncat "\${4#file://}" > ${join(dir, 'aws-request.json')}\necho '{}'\n`);
+    execFileSync('chmod', ['+x', join(binDir, 'aws')]);
+    const line = LEDGER_DENY_COMMAND.split(LEDGER_LOCAL_DIR).join(ledgerDir);
+    const r = run(line, dir, {
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      OR_LEDGER_MODULE_SHA256: createHash('sha256').update(readFileSync(LEDGER_MODULE_SOURCE_PATH)).digest('hex'),
+      OR_LEDGER_RUNNER_SHA256: createHash('sha256').update(readFileSync(LEDGER_RUNNER_SOURCE_PATH)).digest('hex'),
+      OR_SPARSE_LEDGER_TABLE: 'OpenReception-DevDeployBroker-SparseDeployLedgerX-1',
+      OR_TRUSTED_SOURCE_REVISION: REV_A,
+      CODEBUILD_BUILD_ID: 'OpenReceptionTrustedDevDeployBroker:0000-1111',
+      CODEBUILD_BUILD_SUCCEEDING: '0',
+    });
+    expect(r.ok).toBe(true);
+    expect(JSON.parse(r.stdout.trim().split('\n').at(-1)!)).toMatchObject({ event: 'ledger.denial_recorded', rule: 'TRUSTED_POLICY_DENIED' });
+    const call = readFileSync(join(dir, 'aws-call.txt'), 'utf8').trim().split('\n');
+    expect(call.slice(0, 3)).toEqual(['dynamodb', 'put-item', '--cli-input-json']);
+    expect(call[3]).toMatch(/^file:\/\//);
+    const request = JSON.parse(readFileSync(join(dir, 'aws-request.json'), 'utf8')) as { Item: Record<string, { S?: string }>; ConditionExpression: string };
+    expect(request.Item.status?.S).toBe('denied_before_mutation');
+    expect(request.Item.denialRule?.S).toBe('TRUSTED_POLICY_DENIED');
+    expect(request.Item.SK?.S).toBe('ATTEMPT#OpenReceptionTrustedDevDeployBroker:0000-1111');
+    expect(request.ConditionExpression).toBe('attribute_not_exists(#PK)');
+  });
+});
+
+describe('ledger audit: CloudTrail data events on the ledger table (#1153)', () => {
+  const [trailId, trail] = byType('AWS::CloudTrail::Trail')[0]!;
+  const [ledgerId] = byType('AWS::DynamoDB::Table')[0]!;
+  const auditBucketId = byType('AWS::S3::Bucket').map(([id]) => id).find((id) => id !== ARTIFACT_BUCKET[0])!;
+
+  it('is one trail recording only write data events of exactly the ledger table', () => {
+    expect(byType('AWS::CloudTrail::Trail')).toHaveLength(1);
+    expect(trail.Properties.AdvancedEventSelectors).toEqual([
+      {
+        Name: 'SparseLedgerWrites',
+        FieldSelectors: [
+          { Field: 'eventCategory', Equals: ['Data'] },
+          { Field: 'resources.type', Equals: ['AWS::DynamoDB::Table'] },
+          { Field: 'resources.ARN', Equals: [{ 'Fn::GetAtt': [ledgerId, 'Arn'] }] },
+          { Field: 'readOnly', Equals: ['false'] },
+        ],
+      },
+    ]);
+    // No classic selectors (which would add management events) and no extra regions.
+    expect(trail.Properties.EventSelectors).toBeUndefined();
+    expect(trail.Properties).toMatchObject({ IsLogging: true, EnableLogFileValidation: true, IsMultiRegionTrail: false, IncludeGlobalServiceEvents: false, TrailName: LEDGER_AUDIT_TRAIL_NAME });
+    expect(trail.Properties.S3BucketName).toEqual({ Ref: auditBucketId });
+    expect((trail as unknown as { DependsOn?: string[] }).DependsOn?.some((d) => byType('AWS::S3::BucketPolicy').some(([pid]) => pid === d))).toBe(true);
+    void trailId;
+  });
+
+  it('the audit bucket is private, versioned, retained and kept for the reviewed period', () => {
+    const [, bucket] = byType('AWS::S3::Bucket').find(([id]) => id === auditBucketId)!;
+    expect(bucket.Properties.VersioningConfiguration).toEqual({ Status: 'Enabled' });
+    expect(bucket.Properties.PublicAccessBlockConfiguration).toEqual({ BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true });
+    expect((bucket as unknown as { DeletionPolicy?: string }).DeletionPolicy).toBe('Retain');
+    const rules = (bucket.Properties.LifecycleConfiguration as Json).Rules as Json[];
+    expect(rules).toEqual([expect.objectContaining({ ExpirationInDays: LEDGER_AUDIT_RETENTION_DAYS, NoncurrentVersionExpiration: { NoncurrentDays: LEDGER_AUDIT_RETENTION_DAYS } })]);
+  });
+
+  it('the audit bucket policy is retained with the bucket (the deny must outlive a stack deletion)', () => {
+    const policies = byType('AWS::S3::BucketPolicy').filter(([, r]) => JSON.stringify(r.Properties.PolicyDocument).includes('DenyAuditHistoryRewrite'));
+    expect(policies).toHaveLength(1);
+    expect(policies[0]![1]).toMatchObject({ DeletionPolicy: 'Retain', UpdateReplacePolicy: 'Retain' });
+  });
+
+  it('only CloudTrail (for this trail) may write; nobody but the human deploy role may erase or unprotect', () => {
+    const [, policy] = byType('AWS::S3::BucketPolicy').find(([, r]) => JSON.stringify(r.Properties.Bucket).includes(auditBucketId))!;
+    const statements = (policy.Properties.PolicyDocument as { Statement: Statement[] }).Statement;
+    const allows = statements.filter((st) => st.Effect === 'Allow');
+    expect(allows.map((st) => JSON.stringify(st.Principal))).toEqual([JSON.stringify({ Service: 'cloudtrail.amazonaws.com' }), JSON.stringify({ Service: 'cloudtrail.amazonaws.com' })]);
+    expect(allows.flatMap(actionsOf).sort()).toEqual(['s3:getbucketacl', 's3:putobject']);
+    for (const st of allows) expect(JSON.stringify(st.Condition)).toContain(`trail/${LEDGER_AUDIT_TRAIL_NAME}`);
+    const protect = statements.find((st) => st.Effect === 'Deny' && actionsOf(st).includes('s3:deleteobjectversion'))!;
+    expect(actionsOf(protect).sort()).toEqual(LEDGER_AUDIT_PROTECTED_ACTIONS.map((a) => a.toLowerCase()).sort());
+    for (const a of ['s3:deleteobjectversion', 's3:putbucketpolicy', 's3:putbucketacl', 's3:putobjectacl', 's3:putbucketpublicaccessblock', 's3:putencryptionconfiguration', 's3:putbucketownershipcontrols']) {
+      expect(actionsOf(protect), a).toContain(a);
+    }
+    expect(protect.Principal).toEqual({ AWS: '*' });
+    expect(protect.Condition).toEqual({ ArnNotEquals: { 'aws:PrincipalArn': [{ Ref: 'SparseLedgerStackDeployRoleArn' }] } });
+    expect(actionsOf(protect)).toContain('s3:deletebucket');
+    // Writes: only a request on behalf of this trail (identity-based PutObject elsewhere is not enough).
+    const writes = statements.find((st) => st.Effect === 'Deny' && JSON.stringify(actionsOf(st)) === JSON.stringify(['s3:putobject']))!;
+    expect(writes.Principal).toEqual({ AWS: '*' });
+    expect(Object.keys(writes.Condition as Json)).toEqual(['StringNotEqualsIfExists']);
+    expect(JSON.stringify(writes.Condition)).toContain('aws:SourceArn');
+    expect(JSON.stringify(writes.Condition)).toContain(`trail/${LEDGER_AUDIT_TRAIL_NAME}`);
+  });
+
+  it('no build role has any authority over the trail or its bucket', () => {
+    for (const roleName of [VALIDATION_ROLE, BROKER_ROLE]) {
+      for (const st of statementsFor(roleLogicalId(roleName)).filter((s) => s.Effect === 'Allow')) {
+        expect(actionsOf(st).some((a) => a.startsWith('cloudtrail:'))).toBe(false);
+        expect(JSON.stringify(st.Resource ?? null)).not.toContain(auditBucketId);
+      }
+    }
+  });
+});
+
+describe('alerts for attempts that may stay in_progress (#1153)', () => {
+  const [topicId] = byType('AWS::SNS::Topic')[0]!;
+
+  it('one alert topic, without any subscription in the stack (the owner subscribes a human endpoint)', () => {
+    expect(byType('AWS::SNS::Topic')).toHaveLength(1);
+    expect(byType('AWS::SNS::Subscription')).toHaveLength(0);
+  });
+
+  it('every runner event that can leave an attempt in_progress or a denial unaudited raises the alarm', () => {
+    const runner = readFileSync(LEDGER_RUNNER_SOURCE_PATH, 'utf8');
+    const emitted = new Set([...runner.matchAll(/event: (?:[^']*\? )?'(ledger\.[a-z_]+)'/g)].map((m) => m[1]));
+    for (const e of LEDGER_ATTENTION_EVENTS) expect(emitted, e).toContain(e);
+    const [, filter] = byType('AWS::Logs::MetricFilter')[0]!;
+    const pattern = filter.Properties.FilterPattern as string;
+    for (const e of LEDGER_ATTENTION_EVENTS) expect(pattern).toContain(`($.event = "${e}")`);
+    expect(pattern).toContain('($.audited IS FALSE)');
+    expect(filter.Properties.LogGroupName).toEqual({ Ref: byType('AWS::Logs::LogGroup').find(([id]) => id.startsWith('BrokerLogs'))![0] });
+    const [, alarm] = byType('AWS::CloudWatch::Alarm')[0]!;
+    expect(alarm.Properties).toMatchObject({
+      MetricName: (filter.Properties.MetricTransformations as Json[])[0]!.MetricName,
+      Statistic: 'Sum',
+      Period: 300,
+      Threshold: 1,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      TreatMissingData: 'notBreaching',
+      AlarmActions: [{ Ref: topicId }],
+    });
+  });
+
+  it('a broker build that times out, is stopped or faults is reported (its bookkeeping never ran)', () => {
+    // Literal values: a timeout / fault is a phase status, not a documented build-status value.
+    expect([...BROKER_ABORT_STATES]).toEqual(['TIMED_OUT', 'STOPPED', 'FAULT']);
+    const patterns = byType('AWS::Events::Rule').map(([, r]) => r.Properties.EventPattern);
+    expect(patterns).toEqual([
+      {
+        source: ['aws.codebuild'],
+        'detail-type': ['CodeBuild Build State Change'],
+        detail: { 'project-name': [BROKER_PROJECT], 'build-status': ['TIMED_OUT', 'STOPPED', 'FAULT'] },
+      },
+      {
+        source: ['aws.codebuild'],
+        'detail-type': ['CodeBuild Build Phase Change'],
+        detail: { 'project-name': [BROKER_PROJECT], 'completed-phase-status': ['TIMED_OUT', 'STOPPED', 'FAULT'] },
+      },
+    ]);
+    for (const [, rule] of byType('AWS::Events::Rule')) {
+      expect(rule.Properties.Targets).toEqual([expect.objectContaining({ Arn: { Ref: topicId } })]);
+    }
+  });
+
+  it('CloudWatch may publish the alarm to the topic (the topic policy replaces the default one)', () => {
+    const [, policy] = byType('AWS::SNS::TopicPolicy')[0]!;
+    const statements = (policy.Properties.PolicyDocument as { Statement: Statement[] }).Statement;
+    const cw = statements.filter((s) => JSON.stringify(s.Principal) === JSON.stringify({ Service: 'cloudwatch.amazonaws.com' }));
+    expect(cw).toHaveLength(1);
+    expect(cw[0]).toMatchObject({ Effect: 'Allow', Action: 'sns:Publish', Resource: { Ref: topicId } });
+    const [alarmId] = byType('AWS::CloudWatch::Alarm')[0]!;
+    expect(cw[0]!.Condition).toEqual({ ArnEquals: { 'aws:SourceArn': { 'Fn::GetAtt': [alarmId, 'Arn'] } }, StringEquals: { 'aws:SourceAccount': { Ref: 'AWS::AccountId' } } });
+  });
+});
+
+describe('target-stack stability gate (S10a): a failed or busy target stack blocks automated attempts', () => {
+  const commands = () => allCommands(BROKER_PROJECT);
+
+  it('the broker holds exactly one reviewed DescribeStacks statement on the three target stacks; validation holds none', () => {
+    const broker = statementsFor(roleLogicalId(BROKER_ROLE));
+    expect(broker.filter(isTargetStackStatement)).toHaveLength(1);
+    const cfn = broker.filter((s) => actionsOf(s).some((a) => a.startsWith('cloudformation:')));
+    expect(cfn).toEqual(broker.filter(isTargetStackStatement));
+    expect(allowedActions(VALIDATION_ROLE).some((a) => a.startsWith('cloudformation:'))).toBe(false);
+  });
+
+  it('the Validation synth writes only the three stacks, with the ADR 0009 qualifier and region (blocker 7)', () => {
+    const synth = allCommands(VALIDATION_PROJECT).find((c) => c.includes('npx cdk synth '))!;
+    expect(synth).toContain(' -c promotionStacksOnly=true ');
+    expect(synth).toContain(' -c @aws-cdk/core:bootstrapQualifier=orcloud01');
+    // The CDK CLI derives CDK_DEFAULT_REGION from AWS_REGION, so both are pinned.
+    expect(synth).toContain('AWS_REGION="$OR_BROKER_TARGET_REGION" ');
+    expect(synth).toContain('CDK_DEFAULT_REGION="$OR_BROKER_TARGET_REGION" ');
+    // bin/open-reception.ts builds no other stack when the flag is set.
+    const bin = readFileSync(resolve(__dirname, '../bin/open-reception.ts'), 'utf8');
+    const plainGuard = bin.indexOf('if (!promotionStacksOnly) {');
+    const realtimeGuard = bin.indexOf('if (config.realtime.enabled && !promotionStacksOnly) {');
+    expect(plainGuard).toBeGreaterThanOrEqual(0);
+    expect(realtimeGuard).toBeGreaterThan(plainGuard);
+    const guarded = bin.slice(plainGuard, realtimeGuard);
+    expect(guarded).toContain('new NotificationStack(');
+    expect(guarded).toContain('new MonitoringStack(');
+    expect(bin.slice(realtimeGuard)).toContain('new RealtimeRuntimeStack(');
+    expect(bin.slice(0, plainGuard)).not.toMatch(/new (Notification|Monitoring|RealtimeRuntime)Stack\(/);
+    expect(bin.match(/new [A-Za-z]+Stack\(/g)).toHaveLength(6);
+    expect(bin).toContain("String(app.node.tryGetContext('promotionStacksOnly') ?? '') === 'true'");
+  });
+
+  it('checks exactly the stacks the Validation synth produces', () => {
+    const synth = allCommands(VALIDATION_PROJECT).find((c) => c.includes('npx cdk synth '))!;
+    const names = synth.split('npx cdk synth ')[1]!.split(' --output')[0]!.split(' ');
+    expect(names).toEqual(TARGET_STACKS.map((t) => t.stackName));
+  });
+
+  it('downloads, verifies, runs and checks the pinned module after the policy passed and before BROKER_NOT_ARMED', () => {
+    const c = commands();
+    const policy = c.findIndex((x) => x.startsWith(`node ${TRUSTED_POLICY_LOCAL_PATH} `));
+    const download = c.findIndex((x) => x.startsWith('aws s3 cp "s3://$OR_TARGET_STACKS_MODULE_BUCKET'));
+    expect(download).toBeGreaterThan(policy);
+    expect(c.slice(download - 1, download + 5)).toEqual([
+      gateCommand('BROKER_MODULE_INTEGRITY'),
+      `aws s3 cp "s3://$OR_TARGET_STACKS_MODULE_BUCKET/$OR_TARGET_STACKS_MODULE_KEY" ${TARGET_STACKS_LOCAL_PATH} --only-show-errors`,
+      nodeEval(BROKER_MODULE_HASH_CHECK_SCRIPT, TARGET_STACKS_LOCAL_PATH, 'OR_TARGET_STACKS_MODULE_SHA256'),
+      gateCommand('TARGET_STACK_NOT_STABLE'),
+      TARGET_STACKS_COMMAND,
+      nodeEval(TARGET_STACKS_RESULT_CHECK_SCRIPT, TARGET_STACKS_DECISION_PATH),
+    ]);
+    expect(c[download + 5]).toBe(gateCommand('BROKER_NOT_ARMED'));
+    expect(c.filter((x) => x.includes(TARGET_STACKS_LOCAL_PATH))).toHaveLength(3);
+  });
+
+  it('pins the real content SHA-256 of the module and the broker region', () => {
+    const vars = Object.fromEntries(
+      ((project(BROKER_PROJECT).Environment as Json).EnvironmentVariables as Array<{ Name: string; Value: unknown }>).map((v) => [v.Name, v.Value]),
+    );
+    expect(vars.OR_TARGET_STACKS_MODULE_SHA256).toBe(createHash('sha256').update(readFileSync(TARGET_STACKS_SOURCE_PATH)).digest('hex'));
+    expect(vars.OR_TARGET_STACKS_MODULE_KEY).toMatch(/^[0-9a-f]{64}\.mjs$/);
+    expect(vars.OR_BROKER_TARGET_REGION).toEqual({ Ref: 'AWS::Region' });
+  });
+
+  it('the module paths match the stack and the runner records the gate', async () => {
+    const m = (await import(pathToFileURL(TARGET_STACKS_SOURCE_PATH).href)) as Record<string, unknown>;
+    expect(m.BROKER_OUT_DIR).toBe(BROKER_OUT_DIR);
+    expect(m.DECISION_PATH).toBe(TARGET_STACKS_DECISION_PATH);
+    const runner = (await import(pathToFileURL(LEDGER_RUNNER_SOURCE_PATH).href)) as { GATE_RULES: readonly string[] };
+    expect(runner.GATE_RULES).toContain('TARGET_STACK_NOT_STABLE');
+    // Every gate the buildspec names is one the runner records by name (never BROKER_GATE_UNKNOWN).
+    for (const g of commands().filter((x) => x.endsWith(`> ${LEDGER_GATE_FILE}`))) {
+      expect(runner.GATE_RULES, g).toContain(g.split(' ')[1]);
+    }
+  });
+
+  it('the decision check requires allowed, this execution, this revision and exactly the reviewed stacks', () => {
+    const decision = (d: unknown) => {
+      const dir = workspace();
+      writeFileSync(join(dir, 'target-stacks.json'), JSON.stringify(d));
+      return run(nodeEval(TARGET_STACKS_RESULT_CHECK_SCRIPT, join(dir, 'target-stacks.json')), dir, {
+        OR_PIPELINE_EXECUTION_ID: 'e-1',
+        OR_TRUSTED_SOURCE_REVISION: REV_A,
+      }).ok;
+    };
+    const stacks = TARGET_STACKS.map((t) => ({ stackName: t.stackName, region: t.region ?? 'ap-northeast-1', status: 'UPDATE_COMPLETE' }));
+    const good = { result: 'allowed', rule: null, executionId: 'e-1', revision: REV_A, stacks };
+    expect(decision(good)).toBe(true);
+    expect(decision({ ...good, result: 'denied' })).toBe(false);
+    expect(decision({ ...good, rule: 'TARGET_STACK_NOT_STABLE' })).toBe(false);
+    expect(decision({ ...good, executionId: 'e-2' })).toBe(false);
+    expect(decision({ ...good, executionId: null })).toBe(false);
+    expect(decision({ ...good, revision: REV_B })).toBe(false);
+    expect(decision({ ...good, stacks: stacks.slice(1) })).toBe(false);
+    expect(decision({ ...good, stacks: [] })).toBe(false);
+    expect(decision({})).toBe(false);
+  });
+
+  it('a denial that needs a human (unstable stack, repeated failure of one revision) raises the alarm', async () => {
+    const [, filter] = byType('AWS::Logs::MetricFilter')[0]!;
+    const pattern = filter.Properties.FilterPattern as string;
+    for (const r of ESCALATION_RULES) expect(pattern).toContain(`($.rule = "${r}")`);
+    const ledger = (await import(pathToFileURL(LEDGER_MODULE_SOURCE_PATH).href)) as { RULES: Record<string, string> };
+    expect(ESCALATION_RULES).toContain(ledger.RULES.REVISION_REPEATED_FAILURE);
+    // Every rule the stability module can log (its own line carries the precise rule).
+    const stacks = (await import(pathToFileURL(TARGET_STACKS_SOURCE_PATH).href)) as { RULES: Record<string, string> };
+    for (const r of Object.values(stacks.RULES)) expect(ESCALATION_RULES, r).toContain(r);
+  });
+
+  it('the target stacks and regions are the ones the trusted policy approves', async () => {
+    const policy = (await import(pathToFileURL(TRUSTED_POLICY_SOURCE_PATH).href)) as { APPROVED_STACKS: Record<string, string> };
+    // The broker (and the region-less stacks) run in the dev region the policy pins for Web.
+    expect(Object.fromEntries(TARGET_STACKS.map((t) => [t.stackName, t.region ?? 'ap-northeast-1']))).toEqual(policy.APPROVED_STACKS);
   });
 });
