@@ -63,7 +63,12 @@ export type SyntheticProviderConfig = {
   stablePartialMs: number;
   /** speech.end → turn.committed。 */
   commitMs: number;
-  /** turn.committed → tts.request → first_byte → playback_start の各段。 */
+  /**
+   * tts.request / first_byte / playback_start の時刻。**3 つとも `turn.committed` からの経過**で、
+   * 段ごとの所要時間ではない（`synthesisRequestMs` だけを増やすと first byte は動かず、
+   * 「要求を遅らせたのに応答は同じ時刻に来る」という物理的に一貫しない設定になる）。
+   * #1200 の単調性テストがこれを検出した。段を遅らせるときは、後段も同じだけずらす。
+   */
   synthesisRequestMs: number;
   firstByteMs: number;
   firstAudioMs: number;

@@ -153,7 +153,13 @@ export type SloResult = {
   skipped: SloSkip[];
 };
 
-type Check = {
+/**
+ * SLO の 1 項目: 対応する実測値・許容値・向き。
+ *
+ * `evaluateAgainstSlo` と評価器の自己診断（`evaluation-diagnostics.ts`）が**同じ一覧**を使う。
+ * 「何が良い向きか」を 2 か所で書くと、片方だけ直ったときに比較と判定が食い違うため。
+ */
+export type SloCheck = {
   metric: keyof VoiceEvalThresholds;
   label: string;
   observed: number | null;
@@ -162,7 +168,7 @@ type Check = {
   direction: 'max' | 'min';
 };
 
-function collectChecks(metrics: VoiceEvalSuiteMetrics, thresholds: VoiceEvalThresholds): Check[] {
+export function listSloChecks(metrics: VoiceEvalSuiteMetrics, thresholds: VoiceEvalThresholds): SloCheck[] {
   const { latency, stt, turn, bargeIn, entity, reliability } = metrics;
   return [
     {
@@ -302,7 +308,7 @@ export function evaluateAgainstSlo(
   const violations: SloViolation[] = [];
   const skipped: SloSkip[] = [];
 
-  for (const check of collectChecks(metrics, thresholds)) {
+  for (const check of listSloChecks(metrics, thresholds)) {
     if (check.observed === null) {
       const reason = `${check.label}: 計測不能（該当サンプルが 0 件）`;
       if (options.strict) {
