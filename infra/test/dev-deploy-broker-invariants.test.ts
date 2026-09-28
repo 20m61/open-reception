@@ -1655,6 +1655,28 @@ describe('target-stack stability gate (S10a): a failed or busy target stack bloc
     expect(allowedActions(VALIDATION_ROLE).some((a) => a.startsWith('cloudformation:'))).toBe(false);
   });
 
+  it('the Validation synth writes only the three stacks, with the ADR 0009 qualifier and region (blocker 7)', () => {
+    const synth = allCommands(VALIDATION_PROJECT).find((c) => c.includes('npx cdk synth '))!;
+    expect(synth).toContain(' -c promotionStacksOnly=true ');
+    expect(synth).toContain(' -c @aws-cdk/core:bootstrapQualifier=orcloud01');
+    // The CDK CLI derives CDK_DEFAULT_REGION from AWS_REGION, so both are pinned.
+    expect(synth).toContain('AWS_REGION="$OR_BROKER_TARGET_REGION" ');
+    expect(synth).toContain('CDK_DEFAULT_REGION="$OR_BROKER_TARGET_REGION" ');
+    // bin/open-reception.ts builds no other stack when the flag is set.
+    const bin = readFileSync(resolve(__dirname, '../bin/open-reception.ts'), 'utf8');
+    const plainGuard = bin.indexOf('if (!promotionStacksOnly) {');
+    const realtimeGuard = bin.indexOf('if (config.realtime.enabled && !promotionStacksOnly) {');
+    expect(plainGuard).toBeGreaterThanOrEqual(0);
+    expect(realtimeGuard).toBeGreaterThan(plainGuard);
+    const guarded = bin.slice(plainGuard, realtimeGuard);
+    expect(guarded).toContain('new NotificationStack(');
+    expect(guarded).toContain('new MonitoringStack(');
+    expect(bin.slice(realtimeGuard)).toContain('new RealtimeRuntimeStack(');
+    expect(bin.slice(0, plainGuard)).not.toMatch(/new (Notification|Monitoring|RealtimeRuntime)Stack\(/);
+    expect(bin.match(/new [A-Za-z]+Stack\(/g)).toHaveLength(6);
+    expect(bin).toContain("String(app.node.tryGetContext('promotionStacksOnly') ?? '') === 'true'");
+  });
+
   it('checks exactly the stacks the Validation synth produces', () => {
     const synth = allCommands(VALIDATION_PROJECT).find((c) => c.includes('npx cdk synth '))!;
     const names = synth.split('npx cdk synth ')[1]!.split(' --output')[0]!.split(' ');
