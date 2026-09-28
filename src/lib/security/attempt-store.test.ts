@@ -20,6 +20,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { KIOSK_AUTHORIZE_POLICY, type AttemptPolicy } from '@/domain/security/attempt-budget';
 import { getBackend } from '@/lib/data';
 import {
+  ATTEMPT_CLOCK_SKEW_MS,
   recordLayeredSuccess,
   recordSuccess,
   reserveAttempt,
@@ -198,6 +199,70 @@ describe('試行予算ストア (#1021 AC4)', () => {
       .put(broken as { id: string });
     const r = await reserveAttempt(KEY, POLICY, 2000);
     expect(r.allowed).toBe(true);
+  });
+
+  /**
+   * 🔴 **妥当でないレコードで予算を壊さない（#1163）。**
+   *
+   * 有限でも妥当でない値がある。未来の `startedAt` は窓明けの判定
+   * （`now - startedAt >= windowMs`）を永遠に偽にして**恒久的に締め出し**、
+   * 負の `attempts` は**予算を広げる**。どちらも「読めないレコード」として置き換え、
+   * 予算は次の試行から数え直す。
+   *
+   * 不変条件は両側で縛る: 上界（置き換えた後は**ちょうど予算ぶん**しか入場できない）と、
+   * 下界（許可される＝締め出されない）。
+   */
+  const TEN_YEARS = 10 * 365 * 24 * 60 * 60 * 1000;
+  const putRaw = (record: Record<string, unknown>) =>
+    getBackend()
+      .collection<{ id: string }>('auth-attempts', { ttlSeconds: 7200 })
+      .put({ id: KEY, ...record } as { id: string });
+  /** 置き換えた後に、ちょうど予算ぶん入場でき、その次は断られること。 */
+  const expectFreshBudget = async (now: number) => {
+    for (let i = 0; i < POLICY.budget; i += 1) {
+      const r = await reserveAttempt(KEY, POLICY, now);
+      expect(r.allowed, `${i} 回目で断られた（予算は ${POLICY.budget}）`).toBe(true);
+    }
+    expect((await reserveAttempt(KEY, POLICY, now)).allowed, '予算を超えて入場できた').toBe(false);
+  };
+
+  it.each([
+    ['10 年先の startedAt で予算を使い切った記録', { startedAt: 2000 + TEN_YEARS, attempts: 3 }],
+    ['猶予をちょうど 1ms 超える未来の startedAt', { startedAt: 2000 + ATTEMPT_CLOCK_SKEW_MS + 1, attempts: 3 }],
+    ['負の attempts', { startedAt: 2000, attempts: -1000 }],
+    ['-1 の attempts', { startedAt: 2000, attempts: -1 }],
+    ['整数でない attempts', { startedAt: 2000, attempts: 1.5 }],
+    ['安全な整数を超える attempts', { startedAt: 2000, attempts: 2 ** 53 }],
+  ])('🔴 妥当でない記録（%s）は置き換えて数え直す (#1163)', async (_label, broken) => {
+    await putRaw(broken);
+    await expectFreshBudget(2000);
+  });
+
+  /**
+   * 🔴 **下界: 時計のずれの範囲の未来は、正当な記録として数え続ける (#1163)。**
+   *
+   * Lambda の instance 間の時計はわずかにずれる。猶予内の未来を「窓なし」にすると、
+   * ずれだけで窓がリセットされて予算が緩む。猶予の境界ちょうどまでは数え、
+   * 待たせる時間も有界（窓の長さ＋猶予以下）であること。
+   */
+  it.each([
+    ['1ms 先', 1],
+    ['猶予ちょうど', ATTEMPT_CLOCK_SKEW_MS],
+  ])('🔴 時計のずれの範囲（%s）の窓は数え続け、待ち時間は有界 (#1163)', async (_label, ahead) => {
+    await putRaw({ startedAt: 2000 + ahead, attempts: POLICY.budget });
+    const r = await reserveAttempt(KEY, POLICY, 2000);
+    expect(r.allowed, '猶予内の使い切った窓がリセットされた').toBe(false);
+    if (r.allowed) throw new Error('unreachable');
+    expect(r.retryAfterMs).toBeGreaterThan(0);
+    expect(r.retryAfterMs).toBeLessThanOrEqual(POLICY.windowMs + ATTEMPT_CLOCK_SKEW_MS);
+    // 窓が明ければ通る（恒久的に閉じない）。
+    expect((await reserveAttempt(KEY, POLICY, 2000 + ahead + POLICY.windowMs)).allowed).toBe(true);
+  });
+
+  it('🔴 正当な記録（予算内の回数、過去の開始）はそのまま数える (#1163 の下界)', async () => {
+    await putRaw({ startedAt: 1000, attempts: POLICY.budget - 1 });
+    expect((await reserveAttempt(KEY, POLICY, 2000)).allowed).toBe(true);
+    expect((await reserveAttempt(KEY, POLICY, 2000)).allowed, '正当な記録が読み捨てられた').toBe(false);
   });
 
   /** 実運用の方針でも上界・下界が成り立つ（定数を差し替えても壊れない）。 */

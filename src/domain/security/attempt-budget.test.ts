@@ -140,6 +140,33 @@ describe('予算判定 (#1021 AC4)', () => {
     });
   });
 
+  /**
+   * 🔴 **少し未来の窓も数える (#1163)。** 未来の窓を「窓が無い」にはしない。
+   *
+   * Lambda の instance 間で時計がずれると、進んだ instance が開いた窓は遅れた instance から
+   * 未来に見える。そこで窓をリセットすると、**instance を跨ぐだけで予算が戻る**。
+   * 大きく未来の（壊れた）窓を捨てるのは永続層の `toWindow` の責務で、上界は
+   * `ATTEMPT_CLOCK_SKEW_MS` で縛る（`attempt-store.test.ts`）。この純関数は窓を信じる。
+   */
+  describe('未来の窓 (#1163)', () => {
+    it('🔴 未来の窓で予算に達していれば断る（リセットしない）', () => {
+      const r = consumeAttempt(POLICY, windowAt(2000, POLICY.budget), 1999);
+      expect(r.allowed, '未来の窓がリセットされた').toBe(false);
+    });
+
+    it('🔴 未来の窓で断るときの待ち時間は、ずれの分だけ長い', () => {
+      const r = consumeAttempt(POLICY, windowAt(2000, POLICY.budget), 1000);
+      if (r.allowed) throw new Error('unreachable');
+      expect(r.retryAfterMs).toBe(POLICY.windowMs + 1000);
+    });
+
+    it('未来の窓でも予算内なら通し、startedAt を動かさない', () => {
+      const r = consumeAttempt(POLICY, windowAt(2000, 1), 1000);
+      if (!r.allowed) throw new Error('unreachable');
+      expect(r.nextWindow).toEqual({ startedAt: 2000, failures: 1 });
+    });
+  });
+
   describe('予算の値', () => {
     /**
      * 🔴 **来訪者側の予算は、人間の打ち間違いが届かない大きさにする。**

@@ -64,7 +64,18 @@ const ttlAt = (now: number) => Math.floor(now / 1000) + TTL_SECONDS;
 const attempts = () =>
   getBackend().collection<AttemptRecord>('auth-attempts', { ttlSeconds: TTL_SECONDS });
 
-function toWindow(record: AttemptRecord | undefined): AttemptWindow | undefined {
+/**
+ * 端末・サーバ間の時計のずれとして許す幅（ms）。これより未来の `startedAt` は読めない扱いにする（#1163）。
+ *
+ * 🔴 **未来の窓を信じると予算が長く閉じたままになる。** `startedAt` が 10 年先のレコードは
+ * `now - startedAt` が負のまま窓が明けず、使い切っていれば**その鍵は 10 年断られ続ける**。
+ * 逆に「未来なら常に捨てる」にすると、少しのずれで使い切った窓が開き直り、**予算が戻る**。
+ * だから猶予の内側は数え続け、外側だけを壊れたレコードとして置き換える。
+ * 待ち時間の上界は `windowMs + ATTEMPT_CLOCK_SKEW_MS` になる。
+ */
+export const ATTEMPT_CLOCK_SKEW_MS = 60_000;
+
+function toWindow(record: AttemptRecord | undefined, now: number): AttemptWindow | undefined {
   if (record === undefined) return undefined;
   // 🔴 壊れたレコードで 500 にしない（未認証経路なので、1 件で全端末が落ちる）。
   //    読めないものは「窓が無い」＝許可側へ倒す —— 予算は次の失敗から数え直される。
@@ -72,7 +83,17 @@ function toWindow(record: AttemptRecord | undefined): AttemptWindow | undefined 
   // 🔴 **`typeof` の検査は撤回した（変異検証で生存＝等価）。** `Number.isFinite` は
   //    引数を**強制変換しない**ので、文字列・`undefined`・`null` はすべて false になる
   //    （グローバルの `isFinite` と違う点）。2 段で書いていたのは片方が無駄だった。
-  if (!Number.isFinite(record.startedAt) || !Number.isFinite(record.attempts)) return undefined;
+  //
+  // 🔴 **有限なだけでは足りない（#1163）。** 負の `attempts` は予算を実質的に増やし
+  //    （-1000 なら 1000 回余分に通る）、小数や 2^53 以上は `+ 1` の数え上げが壊れる。
+  //    `Number.isSafeInteger` も強制変換しないので、`attempts` では `isFinite` の役目を兼ねる。
+  //    `startedAt` は `isFinite` のまま（整数に絞る変異は生存した＝等価。小数の時刻は
+  //    普通の窓として数えられ、予算に影響しない）。
+  if (!Number.isFinite(record.startedAt) || !Number.isSafeInteger(record.attempts)) {
+    return undefined;
+  }
+  if (record.attempts < 0) return undefined;
+  if (record.startedAt > now + ATTEMPT_CLOCK_SKEW_MS) return undefined;
   return { startedAt: record.startedAt, failures: record.attempts };
 }
 
@@ -104,7 +125,7 @@ export async function reserveAttempt(
 ): Promise<AttemptDecision> {
   for (let i = 0; i < CAS_RETRIES; i += 1) {
     const current = await attempts().get(key);
-    const window = toWindow(current);
+    const window = toWindow(current, now);
     const decision = consumeAttempt(policy, window, now);
     // 予算超過は書き込まずに断る（**未認証経路から書き込みを無限に誘発させない**）。
     if (!decision.allowed) return decision;
