@@ -24,7 +24,10 @@ IAM・CloudFormation・DynamoDB・SNS・CloudTrail に一切書き込まない�
 | override で `SPARSE_REVISION_REPEATED_FAILURE` を解除できるか | **解除不可**のまま | 手順 9 |
 | override の仕様（revision・rule・日ごとに 1 件、消費後は同じ日に再許可できない） | **このまま** | 手順 9 |
 | `REVIEW_IN_PROGRESS` の stack | **止める**（人間が片付けるまで `TARGET_STACK_NOT_STABLE`） | 手順 10 |
-| stack deploy role を CDK の deploy role から渡す経路（bootstrap の変更） | **未決定**（Human Gate） | 手順 4 |
+| stack deploy role を deploy する経路 | **(a) broker 専用の bootstrap（qualifier `orbrkr01`）を作る**。deploy / publishing role を引き受けられるのは owner の人間 principal だけ | 手順 4 |
+| blocker 8 の未解決 2 件 | 移行用 policy を廃止して Deny で塞ぐ（#1192） | 手順 3 |
+| issuer role の権限 | **`dynamodb:Attributes` の条件で絞る**（live で確かめてから使う） | 手順 2・8 |
+| Claude から broker の log / artifact を読めなくなる副作用 | 受け入れる | 手順 3 |
 
 ## 全体の順序
 
@@ -33,7 +36,7 @@ IAM・CloudFormation・DynamoDB・SNS・CloudTrail に一切書き込まない�
 | 1 | 2 つの role の名前を決める | いつでも | — |
 | 2 | override issuer role を作る | broker stack の deploy 前 | role を消せば戻る |
 | 3 | boundary / cfn-exec policy の新しい版を適用する | ブロッカー 8 の merge 後、broker stack の deploy 前 | 前の版を default に戻せば戻る |
-| 4 | stack deploy role を作り、渡せることを確かめる | broker stack の deploy 前 | role を消せば戻る |
+| 4 | broker 専用の bootstrap（`orbrkr01`）を作る。その cfn-exec role が stack deploy role | broker stack の deploy 前 | bootstrap stack を消せば戻る（deploy 前に限る） |
 | 5 | broker stack を deploy する | 1〜4 の後 | table・監査 bucket は `RETAIN`・削除保護（下記） |
 | 6 | 警報の通知先（メール）を購読する | 5 の直後 | unsubscribe で戻る |
 | 7 | CloudTrail の data events を確認する | 5 の後 | —（確認のみ） |
@@ -47,12 +50,13 @@ IAM・CloudFormation・DynamoDB・SNS・CloudTrail に一切書き込まない�
 | parameter | 何の role か | 引き受けるのは |
 |---|---|---|
 | `SparseLedgerOverrideIssuerRoleArn` | 人間が genesis・override を書き、stuck attempt を閉じるための role | owner の人間 principal だけ |
-| `SparseLedgerStackDeployRoleArn` | この broker stack **専用**の CloudFormation 実行 role | `cloudformation.amazonaws.com` だけ（人間が deploy するとき） |
+| `SparseLedgerStackDeployRoleArn` | broker 専用 bootstrap の cfn-exec role（`cdk-orbrkr01-cfn-exec-role-822063948773-ap-northeast-1`。CDK の命名規則で決まる） | `cloudformation.amazonaws.com` だけ（owner が deploy するとき） |
 
 どちらも stack の `HUMAN_ROLE_ARN_PATTERN` で、role 名（path の後ろ）が次で**始まるものは拒否される**:
 `cdk-orcloud01-`、`OpenReception`、`nodi-`、`salon-loop-`、`Kiaff`。
-**名前はこれらの外にする**（例: `ledger-override-issuer-human`、`ledger-stack-deploy-human`）。
-既存の CDK bootstrap の cfn-exec role を流用しない（手順 4 の理由）。
+issuer role の**名前はこれらの外にする**（例: `ledger-override-issuer-human`）。
+stack deploy role は、手順 4 で作る broker 専用 bootstrap の cfn-exec role である（`cdk-orbrkr01-` はこの pattern で拒否されない）。
+共有の bootstrap（`hnb659fds`）や Claude の bootstrap（`orcloud01`）の cfn-exec role は使わない（手順 4 の理由）。
 
 🔴 誤った role を渡すと、table の resource policy が stack 自身の create / update（PITR の有効化など）を
 止めることがある。復旧は手順 5 の「Rollback」を参照。
@@ -79,11 +83,39 @@ IAM・CloudFormation・DynamoDB・SNS・CloudTrail に一切書き込まない�
   「override はこの rule を解除しない」（owner 決定）は、ledger のコードでは守られているが、issuer の手作業に対しては
   **運用の約束でしか守られない**。この runbook の builder（`buildGenesisPut` / `buildIssueOverridePut` / `buildOutcomeTransaction`）以外で
   書かないこと。誰が何を書いたかは手順 7 の CloudTrail に残る。
-  さらに絞る場合は、inline policy に `dynamodb:Attributes`（`ForAllValues:StringEquals`）の条件を付ける。
-  - `PutItem`: genesis と override の属性だけ
-  - `UpdateItem`: attempt を閉じる属性だけ、かつ `dynamodb:EnclosingOperation = TransactWriteItems`
+  **owner 決定: `dynamodb:Attributes` の条件で絞る。** inline policy の形は次のとおり（`<TABLE_ARN>` は手順 5 の後に分かる）。
 
-  ただし、この条件は live で動作を確かめていない。手順 8 の genesis が拒否されないことを確かめてから使う。
+  ```json
+  {
+    "Version": "2012-10-17",
+    "Statement": [
+      { "Sid": "Read", "Effect": "Allow", "Action": ["dynamodb:GetItem", "dynamodb:Query"], "Resource": "<TABLE_ARN>",
+        "Condition": { "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": ["PROJECT#open-reception"] } } },
+      { "Sid": "GenesisAndOverride", "Effect": "Allow", "Action": "dynamodb:PutItem", "Resource": "<TABLE_ARN>",
+        "Condition": { "ForAllValues:StringEquals": {
+          "dynamodb:LeadingKeys": ["PROJECT#open-reception"],
+          "dynamodb:Attributes": ["PK", "SK", "ledgerId", "timezone", "createdAt", "totalAttempts",
+            "revision", "rule", "day", "expiresAt", "reason", "approver", "issuedAt"] } } },
+      { "Sid": "CloseAttemptAsFailed", "Effect": "Allow", "Action": "dynamodb:UpdateItem", "Resource": "<TABLE_ARN>",
+        "Condition": {
+          "ForAllValues:StringEquals": {
+            "dynamodb:LeadingKeys": ["PROJECT#open-reception"],
+            "dynamodb:Attributes": ["PK", "SK", "status", "finishedAt", "day", "revision", "failureCount", "updatedAt",
+              "attemptCount", "timezone", "lastFailureAt", "unsettledCount"] },
+          "StringEquals": { "dynamodb:EnclosingOperation": "TransactWriteItems" } } }
+    ]
+  }
+  ```
+
+  - 属性の一覧は `buildGenesisPut` / `buildIssueOverridePut` / `buildOutcomeTransaction`（`failed`）が書く属性と、
+    条件式で読む属性である（`infra/broker/sparse-ledger.mjs`）。`successCount`・`lastSuccessAt`・`lastDay`・
+    `lastDayAttempts` などは含めないので、attempt を `succeeded` で閉じたり、genesis の累計を書き換えたりはできない。
+  - これは事故を減らす絞り込みで、完全ではない。たとえば `PutItem` で既存の `REV#` を上書きする操作は、条件式を
+    IAM では強制できないので残る。ただし、そうして壊れた counter は ledger が `SPARSE_LEDGER_CORRUPT` として止める（fail closed）。
+    誰が何を書いたかは、手順 7 の CloudTrail に残る。
+  - 🔴 **この条件は live で未確認**（条件式や key の属性が `dynamodb:Attributes` に数えられるかどうか）。
+    手順 8 の genesis で `AccessDenied` になったら、条件を外さずに止めて記録し、属性の一覧を直してから再試行する。
+    手順 10a の close も、初めて使う前に同じように確かめる。
 
 - 確認:
 
@@ -107,10 +139,10 @@ policy の版を 2 回に分けて適用しないよう、この手順はブロ�
 （`cloudformation:*` on `OpenReception-DevDeployBroker`）を足した。**締める方向の変更**で、
 Claude の deploy chain とその下の workload role が ledger を書いたり消したりできなくなる。
 
-事前確認（文字数の上限 6,144。`claude-boundary-migration.json` は残り 2 文字）:
+事前確認（文字数の上限 6,144。`claude-boundary.json` は 6,108、残り 36 文字。移行用の `*-migration.json` は #1192 で廃止した）:
 
 ```bash
-for f in claude-boundary claude-boundary-migration claude-cfn-exec claude-cfn-exec-migration; do
+for f in claude-boundary claude-cfn-exec; do
   node -e "const n=JSON.stringify(JSON.parse(require('fs').readFileSync('scripts/aws-policies/$f.json','utf8'))).length;console.log('$f',n,'/ 6144')"
 done
 aws iam list-policy-versions --policy-arn arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary --query 'length(Versions)'
@@ -118,7 +150,7 @@ aws iam list-policy-versions --policy-arn arn:aws:iam::822063948773:policy/OpenR
 # 5 なら、default でない最古の版を delete-policy-version で消してから進む
 ```
 
-適用（**通常の版**。migration 版ではない。**2 本とも**）:
+適用（**2 本とも**）:
 
 ```bash
 aws iam create-policy-version \
@@ -147,7 +179,11 @@ for pair in \
   "cloudwatch:DisableAlarmActions arn:aws:cloudwatch:ap-northeast-1:822063948773:alarm:OpenReception-DevDeployBroker-LedgerAttentionAlarmX-x" \
   "sns:SetTopicAttributes arn:aws:sns:ap-northeast-1:822063948773:OpenReception-DevDeployBroker-BrokerAlertsX-x" \
   "s3:DeleteObjectVersion arn:aws:s3:::openreception-devdeployb-pipelineartifactsx-x/k" \
-  "iam:DeleteRolePolicy arn:aws:iam::822063948773:role/OpenReceptionTrustedDevDeployBrokerRole"; do
+  "iam:DeleteRolePolicy arn:aws:iam::822063948773:role/OpenReceptionTrustedDevDeployBrokerRole" \
+  "sts:AssumeRole arn:aws:iam::822063948773:role/cdk-orbrkr01-deploy-role-822063948773-ap-northeast-1" \
+  "s3:PutObject arn:aws:s3:::cdk-orbrkr01-assets-822063948773-ap-northeast-1/x" \
+  "logs:PutAccountPolicy *" \
+  "s3:CreateAccessPoint arn:aws:s3:ap-northeast-1:822063948773:accesspoint/x"; do
   set -- $pair
   aws iam simulate-principal-policy --policy-source-arn "$EXEC" --action-names "$1" --resource-arns "$2" \
     --query 'EvaluationResults[0].EvalDecision' --output text   # すべて explicitDeny
@@ -164,19 +200,24 @@ aws iam list-policy-versions --policy-arn <ARN> --query 'Versions[*].[VersionId,
 aws iam set-default-policy-version --policy-arn <ARN> --version-id <直前の版>
 ```
 
-## 4. stack deploy role を作り、渡せることを確かめる
+## 4. broker 専用の bootstrap を作る（owner 決定 (a)）
 
-この role は 2 つの resource policy で**例外扱い**になる。
+stack deploy role は、2 つの resource policy で**例外扱い**になる。
 
 - ledger table の管理操作（`UpdateTable`・`DeleteTable`・`PutResourcePolicy`・PITR の変更など）
 - 監査 bucket の履歴削除と保護の変更（version の削除、versioning / lifecycle / policy の変更、`DeleteBucket` など）
 
-そのため、**この stack 以外の deploy に使ってはいけない。** 候補コード由来の stack（Web / WebMonitoring / CfMon など）を
-この role で deploy すると、その template から ledger や監査ログを消せてしまう。
+そのため、**この stack 以外の deploy に使ってはいけない**し、**owner 以外がこの role で deploy を始められてもいけない**。
+共有の `hnb659fds` の deploy role は account 全体から引き受けられ、自分の cfn-exec role しか渡せないので使えない。
+そこで broker stack は、専用の bootstrap（qualifier `orbrkr01`、`infra/lib/config/broker-bootstrap.ts`）で合成する（#1192）。
 
-- 名前: 手順 1 で決めたもの（`HUMAN_ROLE_ARN_PATTERN` の外）。
-- trust policy: `cloudformation.amazonaws.com` だけ。人間・Claude・CodeBuild は含めない。
-- 権限: broker stack が作るものだけにする。`cdk synth`（credential 不要）で数えた resource は次のとおり。
+- その bootstrap の **cfn-exec role**（`cdk-orbrkr01-cfn-exec-role-822063948773-ap-northeast-1`）が stack deploy role になる。
+- deploy / file publishing / image publishing / lookup の 4 role は、owner の人間 principal だけを信頼させる。
+- Claude の chain は、#1192 の policy で `role/cdk-orbrkr01-*` の AssumeRole / PassRole と `cdk-orbrkr01-*` の bucket を拒否される（手順 3）。
+
+### 4a. cfn-exec role に付ける policy を作る
+
+権限は broker stack が作るものだけにする。`cdk synth`（credential 不要）で数えた resource は次のとおり。
 
   | resource type | 数 |
   |---|---|
@@ -210,42 +251,56 @@ aws iam set-default-policy-version --policy-arn <ARN> --version-id <直前の版
   - pipeline の作成には、GitHub 接続（`GitHubConnectionArn`）への `codestar-connections:PassConnection`
     （または `codeconnections:PassConnection`）が要る。
   - `Resource: "*"` が要る read 系（`Describe*` 等）以外で、他の stack の resource に届かないこと。
+  - template の `BootstrapVersion` parameter（SSM `/cdk-bootstrap/orbrkr01/version`）を解決するため、
+    その parameter への `ssm:GetParameters` が要る。
 
-- **渡せることの確認（deploy 前に必須）**: `cdk deploy --role-arn` は、CDK bootstrap の deploy role
-  （`cdk.json` の qualifier は `hnb659fds`）を引き受けてから、CloudFormation にこの role を渡す。
-  **既定の bootstrap template では、deploy role の `iam:PassRole` は bootstrap 自身の cfn-exec role に限られる。**
-  bootstrap を変えていなければ、下の確認は `implicitDeny` になる。
 
-  ```bash
-  DEPLOY=arn:aws:iam::822063948773:role/cdk-hnb659fds-deploy-role-822063948773-ap-northeast-1
-  aws iam get-role --role-name cdk-hnb659fds-deploy-role-822063948773-ap-northeast-1 --query 'Role.RoleName'
-  aws iam simulate-principal-policy --policy-source-arn "$DEPLOY" \
-    --action-names iam:PassRole --resource-arns <stack deploy role ARN> \
-    --query 'EvaluationResults[0].EvalDecision' --output text    # allowed であること
-  ```
+### 4b. trust を owner に絞った bootstrap template を作る
 
-  deploy role が無い、または `allowed` でない場合は**ここで止める**。bootstrap を変えるのは別の Human Gate である。
-  owner が決め、#1146 に記録する。
+```bash
+cd infra
+npx cdk bootstrap --show-template > /tmp/broker-bootstrap.yaml
+```
 
-  🔴 **共有の `hnb659fds` deploy role の PassRole を単純に広げない。** その deploy role は account 全体から引き受けられる
-  （Claude の role は boundary の `DenySharedBootstrapRoles` で拒否されるが、他の project や人間は引き受けられる）。
-  PassRole を広げると、誰でも任意の template をこの role で実行できるようになる。
-  この role は、監査 bucket の履歴削除、bucket policy の変更、ledger の resource policy と table の変更・削除ができる。
+`/tmp/broker-bootstrap.yaml` で、次の 4 role の `AssumeRolePolicyDocument` の `Principal.AWS` を、owner の人間 principal の ARN
+（SSO の permission set の role、または MFA 必須の IAM user）だけにする。
+- `FilePublishingRole`
+- `ImagePublishingRole`
+- `LookupRole`
+- `DeploymentActionRole`
 
-  選択肢（owner が決める）:
-  - (a) この stack 専用の bootstrap qualifier を作り、その deploy role の trust を owner の人間 principal だけにする。
-  - (b) 既存の deploy role に、次の 2 つをあわせて付ける:
-    - この role への PassRole（`iam:PassedToService = cloudformation.amazonaws.com`）
-    - `cloudformation:RoleArn` がこの role で、対象が `stack/OpenReception-DevDeployBroker/*` 以外の
-      `CreateStack` / `UpdateStack` / `CreateChangeSet` を拒否する Deny
+`TrustedAccounts` / `TrustedAccountsForLookup` による追加の信頼は残さない（空のまま）。
+`CloudFormationExecutionRole` の trust（`cloudformation.amazonaws.com`）は変えない。
 
-  broker stack をほかの経路で deploy する方法は、この runbook では扱わない。
+### 4c. bootstrap する（owner の admin credential で）
+
+```bash
+npx cdk bootstrap aws://822063948773/ap-northeast-1 \
+  --qualifier orbrkr01 --toolkit-stack-name CDKToolkit-orbrkr01 \
+  --cloudformation-execution-policies <4a の policy の ARN> \
+  --template /tmp/broker-bootstrap.yaml
+```
+
+確認:
+
+```bash
+for r in deploy-role file-publishing-role image-publishing-role lookup-role; do
+  aws iam get-role --role-name "cdk-orbrkr01-$r-822063948773-ap-northeast-1" \
+    --query 'Role.AssumeRolePolicyDocument.Statement[].Principal' --output json   # owner の principal だけ
+done
+aws iam list-attached-role-policies --role-name cdk-orbrkr01-cfn-exec-role-822063948773-ap-northeast-1 \
+  --query 'AttachedPolicies[].PolicyName'     # 4a の policy だけ（AdministratorAccess でないこと）
+```
+
+**Rollback**: bootstrap stack（`CDKToolkit-orbrkr01`）は owner が消せる。ただし、broker stack を deploy した後は
+消さない（その asset と cfn-exec role を使っている）。
 
 ## 5. broker stack を deploy する
 
 broker stack は人間が管理する control plane であり、Claude の deploy chain では deploy しない
-（手順 3 で Claude の chain からは Deny される）。owner の人間 credential で、手順 4 の
-stack deploy role を CloudFormation 実行 role として使う。
+（手順 3 で Claude の chain からは Deny される）。owner の人間 credential で実行する。
+`bin/dev-deploy-broker.ts` は専用の bootstrap（`orbrkr01`）を使うので、CDK は `cdk-orbrkr01-deploy-role` を引き受け、
+手順 4 の cfn-exec role を CloudFormation の実行 role として渡す（`--role-arn` は要らない）。
 
 `SparseLedgerId` は owner が決める。これは ledger の識別子で、secret ではない。
 
@@ -259,9 +314,8 @@ parameter を含めた変更は、**実行しない change set** を作って確
 ```bash
 cd infra
 ARGS=(--app "npx ts-node --prefer-ts-exts bin/dev-deploy-broker.ts" OpenReception-DevDeployBroker
-  --role-arn <stack deploy role ARN>
   --parameters SparseLedgerOverrideIssuerRoleArn=<issuer role ARN>
-  --parameters SparseLedgerStackDeployRoleArn=<stack deploy role ARN>
+  --parameters SparseLedgerStackDeployRoleArn=arn:aws:iam::822063948773:role/cdk-orbrkr01-cfn-exec-role-822063948773-ap-northeast-1
   --parameters SparseLedgerId=<owner が決めた ledger id>
   --parameters GitHubConnectionArn=<既存の値> --parameters DevAppSecretsName=open-reception/dev/app-v2
   --parameters DevPublicOriginOverride=<既存の値> --parameters DevProviderSecretBackend=secrets-manager
@@ -318,11 +372,11 @@ aws cloudformation describe-stacks --stack-name OpenReception-DevDeployBroker \
   - resource policy を消し、正しい parameter で再 deploy する。
   - resource policy は drift 検出されない。
 - 監査 bucket の policy は、stack deploy role 以外による保護の変更（versioning・lifecycle・policy・暗号化・
-  public access block・ownership）を拒否する。違う `--role-arn` で deploy すると、stack 自身の bucket 更新も止まる。
+  public access block・ownership）を拒否する。違う実行 role で deploy すると、stack 自身の bucket 更新も止まる。
   復旧: **account の root user** は S3 の bucket policy を常に消せる（S3 の締め出し防止の例外）。
   消している間は監査の保護が外れるので、実施日時と理由を #1153 に記録し、すぐ正しい role で再 deploy する。
-- stack deploy role を**変える**とき: 新しい role で deploy すると、上の Deny に止められる。
-  1 回目は **古い role を `--role-arn` に**、新しい role を `SparseLedgerStackDeployRoleArn` に渡して update し、
+- stack deploy role を**変える**とき（bootstrap を作り直す場合など）: 新しい role で deploy すると、上の Deny に止められる。
+  1 回目は **古い role で**実行し、新しい role を `SparseLedgerStackDeployRoleArn` に渡して update する。
   2 回目以降は新しい role を使う。
 - table・監査 bucket・bucket policy・log group は `RETAIN`。stack を消しても残る。
   table には削除保護も付いている。
