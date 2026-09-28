@@ -65,6 +65,20 @@ export const PINNED_PROVIDER_FUNCTIONS = Object.freeze({
     codeDigest: '995bb422d7f6a33bfe7fdad08fc5b6af4bc09333949def485ca5b6e4a139570b',
   }),
 });
+/**
+ * Lambda layers the dev assembly may declare (owner decision on #1146, 2026-09-28: approve CDK
+ * BucketDeployment's AWS CLI layer). A layer is code for every function that loads it, so like the
+ * pinned providers it is reviewed by content: the zip the CLI would publish under `Content.S3Key`
+ * must be exactly the reviewed file (`@aws-cdk/asset-awscli-v1` 2.2.282 `lib/layer.zip`), and no
+ * other layer, property or content is accepted. A CDK upgrade that changes the file is a policy change.
+ */
+export const PINNED_LAYERS = Object.freeze({
+  AssetDeploymentAwsCliLayerC0B4D779: Object.freeze({
+    description: '/opt/awscli/aws',
+    fileSha256: 'e32c564500d8f80cfaaff79b1211480b95448f76780301d2b09c7133b89b4bd7',
+  }),
+});
+
 const PINNED_PROVIDER_BY_ROLE = new Map(Object.entries(PINNED_PROVIDER_FUNCTIONS).map(([fn, p]) => [p.role, fn]));
 
 /**
@@ -298,6 +312,7 @@ const RESOURCE_COUNT_CAPS = Object.freeze({
   'AWS::Logs::LogGroup': 20,
   'AWS::Logs::MetricFilter': 12,
   'Custom::CDKBucketDeployment': 2,
+  'AWS::Lambda::LayerVersion': 1,
 });
 const MAX_TOTAL_RESOURCES = 220;
 const MAX_RESOURCES_PER_STACK = 140;
@@ -911,7 +926,7 @@ function policyAttachmentCounts(templateResources) {
 }
 
 function evaluateResource(stackName, logicalId, resource, templateResources = {}, context = {}) {
-  const { targetAccount = '', attachedPolicies = new Map(), region = '', codeDigest = () => null } = context;
+  const { targetAccount = '', attachedPolicies = new Map(), region = '', codeDigest = () => null, fileDigest = () => null } = context;
   const out = [];
   if (!isRecord(resource) || typeof resource.Type !== 'string') {
     return [violation('RESOURCE_SHAPE_INVALID', stackName, logicalId, 'resource has no concrete Type')];
@@ -921,6 +936,23 @@ function evaluateResource(stackName, logicalId, resource, templateResources = {}
 
   if (HUMAN_GATE_RESOURCE_TYPES.has(type)) {
     out.push(violation('RESOURCE_TYPE_HUMAN_GATE', stackName, logicalId, HUMAN_GATE_RESOURCE_TYPES.get(type)));
+    return out;
+  }
+  if (type === 'AWS::Lambda::LayerVersion') {
+    const pinned = Object.hasOwn(PINNED_LAYERS, logicalId) ? PINNED_LAYERS[logicalId] : undefined;
+    const content = props.Content;
+    const ok =
+      pinned !== undefined &&
+      Object.keys(props).every((k) => k === 'Content' || k === 'Description') &&
+      props.Description === pinned.description &&
+      isRecord(content) &&
+      Object.keys(content).length === 2 &&
+      isBootstrapBucket(content.S3Bucket, region, targetAccount) &&
+      typeof content.S3Key === 'string' &&
+      fileDigest(content.S3Key, region) === pinned.fileSha256;
+    if (!ok) {
+      out.push(violation('LAYER_NOT_REVIEWED', stackName, logicalId, 'only the pinned AWS CLI layer (exact content, bucket and description) is reviewed'));
+    }
     return out;
   }
   if (!APPROVED_RESOURCE_TYPES.has(type)) {
@@ -1677,6 +1709,24 @@ export function evaluateAssembly({ assemblyDir, targetAccount }) {
     return digests.length > 0 && digests.every((d) => d !== null && d === digests[0]) ? digests[0] : null;
   };
 
+  // SHA-256 of the single file the CLI would publish under an object key in `region`: every source
+  // published there must be a plain (packaging `file`) in-assembly file with the same bytes.
+  const fileDigest = (objectKey, region) => {
+    const all = /^[0-9a-f]{64}\.zip$/.test(objectKey) ? objectKeySources.get(objectKey) ?? [] : [];
+    if (!all.some((src) => src.region === region)) return null;
+    const digests = all.map((src) => {
+      if (src.packaging !== 'file') return null;
+      try {
+        const file = safeTemplatePath(assemblyDir, src.path);
+        if (!file || !fs.lstatSync(file).isFile()) return null;
+        return createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+      } catch {
+        return null;
+      }
+    });
+    return digests.length > 0 && digests.every((d) => d !== null && d === digests[0]) ? digests[0] : null;
+  };
+
   // Pass 2: stacks.
   for (const [artifactId, artifact] of Object.entries(manifest.artifacts)) {
     if (!isRecord(artifact) || artifact.type !== 'aws:cloudformation:stack') continue;
@@ -1740,7 +1790,7 @@ export function evaluateAssembly({ assemblyDir, targetAccount }) {
       if (isRecord(resource) && typeof resource.Type === 'string') {
         counts[resource.Type] = (counts[resource.Type] ?? 0) + 1;
       }
-      violations.push(...evaluateResource(stackName, logicalId, resource, template.Resources, { targetAccount, attachedPolicies, region: expectedRegion, codeDigest }));
+      violations.push(...evaluateResource(stackName, logicalId, resource, template.Resources, { targetAccount, attachedPolicies, region: expectedRegion, codeDigest, fileDigest }));
     }
   }
 
