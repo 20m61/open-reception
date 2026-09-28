@@ -20,6 +20,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { KIOSK_AUTHORIZE_POLICY, type AttemptPolicy } from '@/domain/security/attempt-budget';
 import { getBackend } from '@/lib/data';
 import {
+  ATTEMPT_CLOCK_SKEW_MS,
   recordLayeredSuccess,
   recordSuccess,
   reserveAttempt,
@@ -192,12 +193,122 @@ describe('試行予算ストア (#1021 AC4)', () => {
     ['startedAt が文字列', { id: KEY, startedAt: 'x', failures: 1 }],
     ['failures が欠落', { id: KEY, startedAt: 1000 }],
     ['NaN', { id: KEY, startedAt: Number.NaN, failures: Number.NaN }],
+    // 🔴 CAS で置き換えようとすると `NaN !== NaN` で永遠に負ける（#1163 の置き換えの経路）。
+    ['startedAt だけ NaN', { id: KEY, startedAt: Number.NaN, attempts: 1 }],
+    ['attempts だけ NaN', { id: KEY, startedAt: 1000, attempts: Number.NaN }],
+    // 🔴 object は参照で比べられるので、CAS で置き換えようとすると永遠に負ける。
+    ['attempts が object', { id: KEY, startedAt: 1000, attempts: {} }],
   ])('🔴 壊れたレコード（%s）で落ちない', async (_label, broken) => {
     await getBackend()
       .collection<{ id: string }>('auth-attempts', { ttlSeconds: 7200 })
       .put(broken as { id: string });
     const r = await reserveAttempt(KEY, POLICY, 2000);
     expect(r.allowed).toBe(true);
+  });
+
+  /**
+   * 🔴 **妥当でないレコードで予算を壊さない（#1163）。**
+   *
+   * 有限でも妥当でない値がある。未来の `startedAt` は窓明けの判定
+   * （`now - startedAt >= windowMs`）を永遠に偽にして**恒久的に締め出し**、
+   * 負の `attempts` は**予算を広げる**。どちらも「読めないレコード」として置き換え、
+   * 予算は次の試行から数え直す。
+   *
+   * 不変条件は両側で縛る: 上界（置き換えた後は**ちょうど予算ぶん**しか入場できない）と、
+   * 下界（許可される＝締め出されない）。
+   */
+  const TEN_YEARS = 10 * 365 * 24 * 60 * 60 * 1000;
+  const putRaw = (record: Record<string, unknown>) =>
+    getBackend()
+      .collection<{ id: string }>('auth-attempts', { ttlSeconds: 7200 })
+      .put({ id: KEY, ...record } as { id: string });
+  /** 置き換えた後に、ちょうど予算ぶん入場でき、その次は断られること。 */
+  const expectFreshBudget = async (now: number) => {
+    for (let i = 0; i < POLICY.budget; i += 1) {
+      const r = await reserveAttempt(KEY, POLICY, now);
+      expect(r.allowed, `${i} 回目で断られた（予算は ${POLICY.budget}）`).toBe(true);
+    }
+    expect((await reserveAttempt(KEY, POLICY, now)).allowed, '予算を超えて入場できた').toBe(false);
+  };
+
+  it.each([
+    ['10 年先の startedAt で予算を使い切った記録', { startedAt: 2000 + TEN_YEARS, attempts: 3 }],
+    ['猶予をちょうど 1ms 超える未来の startedAt', { startedAt: 2000 + ATTEMPT_CLOCK_SKEW_MS + 1, attempts: 3 }],
+    ['負の attempts', { startedAt: 2000, attempts: -1000 }],
+    ['-1 の attempts', { startedAt: 2000, attempts: -1 }],
+    ['整数でない attempts', { startedAt: 2000, attempts: 1.5 }],
+    ['安全な整数を超える attempts', { startedAt: 2000, attempts: 2 ** 53 }],
+  ])('🔴 妥当でない記録（%s）は置き換えて数え直す (#1163)', async (_label, broken) => {
+    await putRaw(broken);
+    await expectFreshBudget(2000);
+  });
+
+  /**
+   * 🔴 **置き換えも原子的である（#1163 の独立レビュー MINOR-1）。** 壊れた記録を読んだ
+   * 並行バーストが、置き換えの隙に全員入場しないこと（`put` で置き換えていたときは
+   * 予算 3 に対して 20 回中 20 回が入場した）。
+   */
+  it.each([
+    ['10 年先の startedAt', { startedAt: 2000 + TEN_YEARS, attempts: 3 }],
+    ['猶予を 1ms 超える未来', { startedAt: 2000 + ATTEMPT_CLOCK_SKEW_MS + 1, attempts: 3 }],
+    ['負の attempts', { startedAt: 2000, attempts: -1 }],
+    ['文字列の attempts', { startedAt: 2000, attempts: 'x' }],
+    ['attempts の欠落', { startedAt: 2000 }],
+  ])('🔴 妥当でない記録（%s）への並行バーストも予算を超えない (#1163)', async (_label, broken) => {
+    await putRaw(broken);
+    const results = await Promise.all(
+      Array.from({ length: 20 }, () => reserveAttempt(KEY, POLICY, 2000)),
+    );
+    const admitted = results.filter((r) => r.allowed).length;
+    expect(admitted, `予算 ${POLICY.budget} に対して ${admitted} 回入場した`).toBe(POLICY.budget);
+  });
+
+  /** 🔴 置き換えるときも TTL を付け直す（`updateIf` は `recordFor` を通らない）。 */
+  it('🔴 妥当でない記録を置き換えると TTL が付く (#1163)', async () => {
+    await putRaw({ startedAt: 2000 + TEN_YEARS, attempts: 3 });
+    expect((await reserveAttempt(KEY, POLICY, 2000)).allowed).toBe(true);
+    const after = await getBackend()
+      .collection<{ id: string; ttl?: number }>('auth-attempts', { ttlSeconds: 7200 })
+      .get(KEY);
+    expect(after?.ttl, '置き換えた記録に TTL が載っていない').toBeGreaterThan(Math.floor(2000 / 1000));
+  });
+
+  /**
+   * 🔴 **猶予の大きさそのものを縛る（#1163 の独立レビュー MINOR-2）。** 上のテストは猶予に
+   * 対して相対的に書いてあるので、値がいくつでも通ってしまう。
+   * - 小さすぎる（例: 1ms）と、わずかな時計のずれで窓がリセットされて予算が戻る
+   * - 大きすぎる（例: 1 日）と、壊れた未来の記録で鍵が長く閉じる
+   */
+  it('🔴 時計のずれの猶予は 1 秒以上、kiosk の窓以下', () => {
+    expect(ATTEMPT_CLOCK_SKEW_MS).toBeGreaterThanOrEqual(1_000);
+    expect(ATTEMPT_CLOCK_SKEW_MS).toBeLessThanOrEqual(KIOSK_AUTHORIZE_POLICY.windowMs);
+  });
+
+  /**
+   * 🔴 **下界: 時計のずれの範囲の未来は、正当な記録として数え続ける (#1163)。**
+   *
+   * Lambda の instance 間の時計はわずかにずれる。猶予内の未来を「窓なし」にすると、
+   * ずれだけで窓がリセットされて予算が緩む。猶予の境界ちょうどまでは数え、
+   * 待たせる時間も有界（窓の長さ＋猶予以下）であること。
+   */
+  it.each([
+    ['1ms 先', 1],
+    ['猶予ちょうど', ATTEMPT_CLOCK_SKEW_MS],
+  ])('🔴 時計のずれの範囲（%s）の窓は数え続け、待ち時間は有界 (#1163)', async (_label, ahead) => {
+    await putRaw({ startedAt: 2000 + ahead, attempts: POLICY.budget });
+    const r = await reserveAttempt(KEY, POLICY, 2000);
+    expect(r.allowed, '猶予内の使い切った窓がリセットされた').toBe(false);
+    if (r.allowed) throw new Error('unreachable');
+    expect(r.retryAfterMs).toBeGreaterThan(0);
+    expect(r.retryAfterMs).toBeLessThanOrEqual(POLICY.windowMs + ATTEMPT_CLOCK_SKEW_MS);
+    // 窓が明ければ通る（恒久的に閉じない）。
+    expect((await reserveAttempt(KEY, POLICY, 2000 + ahead + POLICY.windowMs)).allowed).toBe(true);
+  });
+
+  it('🔴 正当な記録（予算内の回数、過去の開始）はそのまま数える (#1163 の下界)', async () => {
+    await putRaw({ startedAt: 1000, attempts: POLICY.budget - 1 });
+    expect((await reserveAttempt(KEY, POLICY, 2000)).allowed).toBe(true);
+    expect((await reserveAttempt(KEY, POLICY, 2000)).allowed, '正当な記録が読み捨てられた').toBe(false);
   });
 
   /** 実運用の方針でも上界・下界が成り立つ（定数を差し替えても壊れない）。 */

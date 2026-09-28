@@ -64,7 +64,18 @@ const ttlAt = (now: number) => Math.floor(now / 1000) + TTL_SECONDS;
 const attempts = () =>
   getBackend().collection<AttemptRecord>('auth-attempts', { ttlSeconds: TTL_SECONDS });
 
-function toWindow(record: AttemptRecord | undefined): AttemptWindow | undefined {
+/**
+ * サーバ（Lambda の instance）間の時計のずれとして許す幅（ms）。これより未来の `startedAt` は読めない扱いにする（#1163）。
+ *
+ * 🔴 **未来の窓を信じると予算が長く閉じたままになる。** `startedAt` が 10 年先のレコードは
+ * `now - startedAt` が負のまま窓が明けず、使い切っていれば**その鍵は 10 年断られ続ける**。
+ * 逆に「未来なら常に捨てる」にすると、少しのずれで使い切った窓が開き直り、**予算が戻る**。
+ * だから猶予の内側は数え続け、外側だけを壊れたレコードとして置き換える。
+ * 待ち時間の上界は `windowMs + ATTEMPT_CLOCK_SKEW_MS` になる。
+ */
+export const ATTEMPT_CLOCK_SKEW_MS = 60_000;
+
+function toWindow(record: AttemptRecord | undefined, now: number): AttemptWindow | undefined {
   if (record === undefined) return undefined;
   // 🔴 壊れたレコードで 500 にしない（未認証経路なので、1 件で全端末が落ちる）。
   //    読めないものは「窓が無い」＝許可側へ倒す —— 予算は次の失敗から数え直される。
@@ -72,9 +83,34 @@ function toWindow(record: AttemptRecord | undefined): AttemptWindow | undefined 
   // 🔴 **`typeof` の検査は撤回した（変異検証で生存＝等価）。** `Number.isFinite` は
   //    引数を**強制変換しない**ので、文字列・`undefined`・`null` はすべて false になる
   //    （グローバルの `isFinite` と違う点）。2 段で書いていたのは片方が無駄だった。
-  if (!Number.isFinite(record.startedAt) || !Number.isFinite(record.attempts)) return undefined;
+  //
+  // 🔴 **有限なだけでは足りない（#1163）。** 負の `attempts` は予算を実質的に増やし
+  //    （-1000 なら 1000 回余分に通る）。小数や 2^53 以上はこのコードが書かない値なので、
+  //    壊れた記録として置き換える（読めても 1 窓断るだけだが、壊れた値を信じる理由がない）。
+  //    `Number.isSafeInteger` も強制変換しないので、`attempts` では `isFinite` の役目を兼ねる。
+  //    `startedAt` は `isFinite` のまま（整数に絞る変異は生存した＝等価。小数の時刻は
+  //    普通の窓として数えられ、予算に影響しない）。
+  if (!Number.isFinite(record.startedAt) || !Number.isSafeInteger(record.attempts)) {
+    return undefined;
+  }
+  if (record.attempts < 0) return undefined;
+  if (record.startedAt > now + ATTEMPT_CLOCK_SKEW_MS) return undefined;
   return { startedAt: record.startedAt, failures: record.attempts };
 }
+
+/**
+ * CAS の `expected` に渡して一致しうる値か。
+ *
+ * - 数値（`NaN` を除く）・文字列: 値で比較できる
+ * - `undefined`（欠落）: dynamo は `attribute_not_exists`、memory は `!==` で一致する
+ * - `NaN`: 自分と等しくないので**原理的に勝てない**
+ * - object: memory は参照で比べる（保存時に clone する）ので勝てない
+ * - `null`: dynamo の条件式で `=` が一致するかを契約テストで確かめていないので、ここでは扱わない
+ */
+const comparable = (value: unknown): boolean =>
+  value === undefined ||
+  typeof value === 'string' ||
+  (typeof value === 'number' && !Number.isNaN(value));
 
 /**
  * 試行を**原子的に予約する**。入場できたら `allowed: true` を返し、**その時点で 1 回数える**。
@@ -104,7 +140,7 @@ export async function reserveAttempt(
 ): Promise<AttemptDecision> {
   for (let i = 0; i < CAS_RETRIES; i += 1) {
     const current = await attempts().get(key);
-    const window = toWindow(current);
+    const window = toWindow(current, now);
     const decision = consumeAttempt(policy, window, now);
     // 予算超過は書き込まずに断る（**未認証経路から書き込みを無限に誘発させない**）。
     if (!decision.allowed) return decision;
@@ -128,7 +164,23 @@ export async function reserveAttempt(
     //    使い切って「断る」へ落ちる —— **壊れたレコード 1 件で全端末が締め出される**
     //    （テストで実測した）。読めない値は守るべき lost-update を持たないので、
     //    素直に `put` で置き換える（`recordFor` を通るので TTL も付く）。
+    //
+    //    🔴 **ただし比較できる値なら CAS で置き換える（#1163 の独立レビュー MINOR-1）。**
+    //    未来・負・小数・文字列・欠落の記録は「読めない」が、CAS は勝てる（`comparable`）。
+    //    ここで `put` を使うと、壊れた記録を読んだ並行バーストが**全員入場し**
+    //    （実測: 予算 3 に対して 20 回中 20 回）、遅れた `put` が勝者の作った窓を消す。
+    //    `put` へ落とすのは、CAS が勝てない値（`NaN`・object）と未確認の `null` だけにする。
+    //    この残りは並行バーストを 1 回だけ素通しうる（記録の破損でしか生じない）。
     if (window === undefined) {
+      if (comparable(current.startedAt) && comparable(current.attempts)) {
+        const reset = await attempts().updateIf(
+          key,
+          { startedAt: next.startedAt, attempts: 1, ttl: ttlAt(now) },
+          { startedAt: current.startedAt, attempts: current.attempts },
+        );
+        if (reset) return decision;
+        continue; // 他が先に置き換えた → 読み直す
+      }
       await attempts().put({ id: key, startedAt: next.startedAt, attempts: 1 });
       return decision;
     }
