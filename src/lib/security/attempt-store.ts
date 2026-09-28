@@ -65,7 +65,7 @@ const attempts = () =>
   getBackend().collection<AttemptRecord>('auth-attempts', { ttlSeconds: TTL_SECONDS });
 
 /**
- * 端末・サーバ間の時計のずれとして許す幅（ms）。これより未来の `startedAt` は読めない扱いにする（#1163）。
+ * サーバ（Lambda の instance）間の時計のずれとして許す幅（ms）。これより未来の `startedAt` は読めない扱いにする（#1163）。
  *
  * 🔴 **未来の窓を信じると予算が長く閉じたままになる。** `startedAt` が 10 年先のレコードは
  * `now - startedAt` が負のまま窓が明けず、使い切っていれば**その鍵は 10 年断られ続ける**。
@@ -85,7 +85,8 @@ function toWindow(record: AttemptRecord | undefined, now: number): AttemptWindow
   //    （グローバルの `isFinite` と違う点）。2 段で書いていたのは片方が無駄だった。
   //
   // 🔴 **有限なだけでは足りない（#1163）。** 負の `attempts` は予算を実質的に増やし
-  //    （-1000 なら 1000 回余分に通る）、小数や 2^53 以上は `+ 1` の数え上げが壊れる。
+  //    （-1000 なら 1000 回余分に通る）。小数や 2^53 以上はこのコードが書かない値なので、
+  //    壊れた記録として置き換える（読めても 1 窓断るだけだが、壊れた値を信じる理由がない）。
   //    `Number.isSafeInteger` も強制変換しないので、`attempts` では `isFinite` の役目を兼ねる。
   //    `startedAt` は `isFinite` のまま（整数に絞る変異は生存した＝等価。小数の時刻は
   //    普通の窓として数えられ、予算に影響しない）。
@@ -96,6 +97,10 @@ function toWindow(record: AttemptRecord | undefined, now: number): AttemptWindow
   if (record.startedAt > now + ATTEMPT_CLOCK_SKEW_MS) return undefined;
   return { startedAt: record.startedAt, failures: record.attempts };
 }
+
+/** CAS の `expected` に渡して一致しうる値か（`NaN` は自分と等しくないので勝てない）。 */
+const comparable = (value: unknown): value is number =>
+  typeof value === 'number' && !Number.isNaN(value);
 
 /**
  * 試行を**原子的に予約する**。入場できたら `allowed: true` を返し、**その時点で 1 回数える**。
@@ -149,7 +154,22 @@ export async function reserveAttempt(
     //    使い切って「断る」へ落ちる —— **壊れたレコード 1 件で全端末が締め出される**
     //    （テストで実測した）。読めない値は守るべき lost-update を持たないので、
     //    素直に `put` で置き換える（`recordFor` を通るので TTL も付く）。
+    //
+    //    🔴 **ただし比較できる値なら CAS で置き換える（#1163 の独立レビュー MINOR-1）。**
+    //    未来・負・小数の記録は「読めない」が、`===` で自分と等しいので CAS は勝てる。
+    //    ここで `put` を使うと、壊れた記録を読んだ並行バーストが**全員入場し**
+    //    （実測: 予算 3 に対して 20 回中 20 回）、遅れた `put` が勝者の作った窓を消す。
+    //    `put` へ落とすのは、CAS が原理的に勝てない値（`NaN`・数値でないもの）だけにする。
     if (window === undefined) {
+      if (comparable(current.startedAt) && comparable(current.attempts)) {
+        const reset = await attempts().updateIf(
+          key,
+          { startedAt: next.startedAt, attempts: 1, ttl: ttlAt(now) },
+          { startedAt: current.startedAt, attempts: current.attempts },
+        );
+        if (reset) return decision;
+        continue; // 他が先に置き換えた → 読み直す
+      }
       await attempts().put({ id: key, startedAt: next.startedAt, attempts: 1 });
       return decision;
     }

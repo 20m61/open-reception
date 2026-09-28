@@ -193,6 +193,8 @@ describe('試行予算ストア (#1021 AC4)', () => {
     ['startedAt が文字列', { id: KEY, startedAt: 'x', failures: 1 }],
     ['failures が欠落', { id: KEY, startedAt: 1000 }],
     ['NaN', { id: KEY, startedAt: Number.NaN, failures: Number.NaN }],
+    // 🔴 CAS で置き換えようとすると `NaN !== NaN` で永遠に負ける（#1163 の置き換えの経路）。
+    ['startedAt だけ NaN', { id: KEY, startedAt: Number.NaN, attempts: 1 }],
   ])('🔴 壊れたレコード（%s）で落ちない', async (_label, broken) => {
     await getBackend()
       .collection<{ id: string }>('auth-attempts', { ttlSeconds: 7200 })
@@ -236,6 +238,45 @@ describe('試行予算ストア (#1021 AC4)', () => {
   ])('🔴 妥当でない記録（%s）は置き換えて数え直す (#1163)', async (_label, broken) => {
     await putRaw(broken);
     await expectFreshBudget(2000);
+  });
+
+  /**
+   * 🔴 **置き換えも原子的である（#1163 の独立レビュー MINOR-1）。** 壊れた記録を読んだ
+   * 並行バーストが、置き換えの隙に全員入場しないこと（`put` で置き換えていたときは
+   * 予算 3 に対して 20 回中 20 回が入場した）。
+   */
+  it.each([
+    ['10 年先の startedAt', { startedAt: 2000 + TEN_YEARS, attempts: 3 }],
+    ['猶予を 1ms 超える未来', { startedAt: 2000 + ATTEMPT_CLOCK_SKEW_MS + 1, attempts: 3 }],
+    ['負の attempts', { startedAt: 2000, attempts: -1 }],
+  ])('🔴 妥当でない記録（%s）への並行バーストも予算を超えない (#1163)', async (_label, broken) => {
+    await putRaw(broken);
+    const results = await Promise.all(
+      Array.from({ length: 20 }, () => reserveAttempt(KEY, POLICY, 2000)),
+    );
+    const admitted = results.filter((r) => r.allowed).length;
+    expect(admitted, `予算 ${POLICY.budget} に対して ${admitted} 回入場した`).toBe(POLICY.budget);
+  });
+
+  /** 🔴 置き換えるときも TTL を付け直す（`updateIf` は `recordFor` を通らない）。 */
+  it('🔴 妥当でない記録を置き換えると TTL が付く (#1163)', async () => {
+    await putRaw({ startedAt: 2000 + TEN_YEARS, attempts: 3 });
+    expect((await reserveAttempt(KEY, POLICY, 2000)).allowed).toBe(true);
+    const after = await getBackend()
+      .collection<{ id: string; ttl?: number }>('auth-attempts', { ttlSeconds: 7200 })
+      .get(KEY);
+    expect(after?.ttl, '置き換えた記録に TTL が載っていない').toBeGreaterThan(Math.floor(2000 / 1000));
+  });
+
+  /**
+   * 🔴 **猶予の大きさそのものを縛る（#1163 の独立レビュー MINOR-2）。** 上のテストは猶予に
+   * 対して相対的に書いてあるので、値がいくつでも通ってしまう。
+   * - 小さすぎる（例: 1ms）と、わずかな時計のずれで窓がリセットされて予算が戻る
+   * - 大きすぎる（例: 1 日）と、壊れた未来の記録で鍵が長く閉じる
+   */
+  it('🔴 時計のずれの猶予は 1 秒以上、kiosk の窓以下', () => {
+    expect(ATTEMPT_CLOCK_SKEW_MS).toBeGreaterThanOrEqual(1_000);
+    expect(ATTEMPT_CLOCK_SKEW_MS).toBeLessThanOrEqual(KIOSK_AUTHORIZE_POLICY.windowMs);
   });
 
   /**
