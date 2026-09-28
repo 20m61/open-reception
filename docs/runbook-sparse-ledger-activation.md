@@ -163,6 +163,20 @@ aws iam create-policy-version \
   --policy-document file://scripts/aws-policies/claude-cfn-exec.json --set-as-default
 ```
 
+続けて、層 1（deploy role の inline policy、2 リージョン）と entry role の inline policy も更新する
+（#1192 で `role/cdk-orbrkr01-*` の Deny を足したため）:
+
+```bash
+for r in ap-northeast-1 us-east-1; do
+  aws iam put-role-policy --role-name "cdk-orcloud01-deploy-role-822063948773-$r" \
+    --policy-name OpenReceptionClaudeDeployRestriction \
+    --policy-document file://scripts/aws-policies/claude-deploy-role-restriction.json
+done
+aws iam put-role-policy --role-name OpenReceptionClaudeDeploy-dev \
+  --policy-name OpenReceptionClaudeDeployEntry \
+  --policy-document file://scripts/aws-policies/claude-deploy-entry.json
+```
+
 確認（どちらも `explicitDeny` であること）:
 
 ```bash
