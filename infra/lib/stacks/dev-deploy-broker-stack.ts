@@ -6,6 +6,7 @@ import { Construct } from 'constructs';
 import * as codebuild from 'aws-cdk-lib/aws-codebuild';
 import * as codepipeline from 'aws-cdk-lib/aws-codepipeline';
 import * as actions from 'aws-cdk-lib/aws-codepipeline-actions';
+import * as cloudtrail from 'aws-cdk-lib/aws-cloudtrail';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
@@ -85,6 +86,26 @@ export const SPARSE_LEDGER_PROTECTED_CONTROL = [
   'dynamodb:DisableKinesisStreamingDestination',
 ] as const;
 
+/** Actions on the ledger audit bucket that could erase or unprotect delivered CloudTrail files. */
+export const LEDGER_AUDIT_PROTECTED_ACTIONS = [
+  's3:DeleteObject',
+  's3:DeleteObjectVersion',
+  's3:PutBucketVersioning',
+  's3:PutLifecycleConfiguration',
+  's3:PutBucketPolicy',
+  's3:DeleteBucketPolicy',
+  's3:PutBucketObjectLockConfiguration',
+  's3:PutReplicationConfiguration',
+  // Exposure / takeover of the logs (log file validation detects edits, not reads).
+  's3:PutBucketAcl',
+  's3:PutObjectAcl',
+  's3:PutBucketPublicAccessBlock',
+  's3:PutEncryptionConfiguration',
+  's3:PutBucketOwnershipControls',
+  // An empty bucket (before the first delivery) could otherwise be deleted.
+  's3:DeleteBucket',
+] as const;
+
 export const SPARSE_LEDGER_BROKER_ACTIONS = [
   'dynamodb:GetItem',
   'dynamodb:PutItem',
@@ -131,6 +152,14 @@ export const LEDGER_GATE_FILE = `${LEDGER_LOCAL_DIR}/gate`;
 export const LEDGER_ID_PATTERN = '^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$';
 
 export const PIPELINE_NAME = 'OpenReceptionSparseDevDeploy';
+
+/**
+ * CloudTrail data events on the ledger table (#1153): the authenticated principal behind every
+ * write (genesis, override issuance, reservations, and refused attempts), since the ledger's own
+ * `approver` attribute is written by the issuer and is not itself authenticated.
+ */
+export const LEDGER_AUDIT_TRAIL_NAME = 'OpenReceptionSparseLedgerAudit';
+export const LEDGER_AUDIT_RETENTION_DAYS = 400;
 /** Stage/Action names the provenance check binds to (Source, Validate, BrokerBoundary). */
 export const PIPELINE_STAGES = Object.freeze({
   source: { stage: 'Source', action: 'PromotionBranch' },
@@ -478,6 +507,96 @@ export class DevDeployBrokerStack extends cdk.Stack {
         ],
       }),
     });
+    // Write data events of the ledger table only (no management events: the account's own trail
+    // covers those, and a second copy would be billed). Log file validation makes deletion or
+    // editing of delivered files detectable; versioning keeps overwritten files.
+    const ledgerAuditBucket = new s3.Bucket(this, 'LedgerAuditLogs', {
+      versioned: true,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      lifecycleRules: [
+        {
+          id: 'KeepLedgerAudit',
+          enabled: true,
+          expiration: cdk.Duration.days(LEDGER_AUDIT_RETENTION_DAYS),
+          noncurrentVersionExpiration: cdk.Duration.days(LEDGER_AUDIT_RETENTION_DAYS),
+        },
+      ],
+    });
+    const ledgerTrailArn = cdk.Stack.of(this).formatArn({
+      service: 'cloudtrail',
+      resource: 'trail',
+      resourceName: LEDGER_AUDIT_TRAIL_NAME,
+    });
+    ledgerAuditBucket.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: 'CloudTrailAclCheck',
+        principals: [new iam.ServicePrincipal('cloudtrail.amazonaws.com')],
+        actions: ['s3:GetBucketAcl'],
+        resources: [ledgerAuditBucket.bucketArn],
+        conditions: { StringEquals: { 'aws:SourceArn': ledgerTrailArn } },
+      }),
+    );
+    ledgerAuditBucket.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: 'CloudTrailWrite',
+        principals: [new iam.ServicePrincipal('cloudtrail.amazonaws.com')],
+        actions: ['s3:PutObject'],
+        resources: [ledgerAuditBucket.arnForObjects(`AWSLogs/${cdk.Aws.ACCOUNT_ID}/*`)],
+        conditions: {
+          StringEquals: { 's3:x-amz-acl': 'bucket-owner-full-control', 'aws:SourceArn': ledgerTrailArn },
+        },
+      }),
+    );
+    // Nobody but the human stack-deploy role may erase history or change the bucket's protection.
+    ledgerAuditBucket.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: 'DenyAuditHistoryRewrite',
+        effect: iam.Effect.DENY,
+        principals: [new iam.AnyPrincipal()],
+        actions: [...LEDGER_AUDIT_PROTECTED_ACTIONS],
+        resources: [ledgerAuditBucket.bucketArn, ledgerAuditBucket.arnForObjects('*')],
+        conditions: { ArnNotEquals: { 'aws:PrincipalArn': [stackDeployRoleArn.valueAsString] } },
+      }),
+    );
+    // Identity-based s3:PutObject elsewhere in the account would otherwise let any principal add
+    // objects to this trail-only store (an Allow here is not an allowlist). Only a request made on
+    // behalf of this trail (aws:SourceArn is set by CloudTrail) may write.
+    ledgerAuditBucket.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: 'DenyWritesExceptThisTrail',
+        effect: iam.Effect.DENY,
+        principals: [new iam.AnyPrincipal()],
+        actions: ['s3:PutObject'],
+        resources: [ledgerAuditBucket.arnForObjects('*')],
+        conditions: { StringNotEqualsIfExists: { 'aws:SourceArn': ledgerTrailArn } },
+      }),
+    );
+    // The protection must outlive a stack deletion as long as the retained logs do.
+    ledgerAuditBucket.policy!.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
+    const ledgerTrail = new cloudtrail.CfnTrail(this, 'LedgerDataEventsTrail', {
+      trailName: LEDGER_AUDIT_TRAIL_NAME,
+      isLogging: true,
+      s3BucketName: ledgerAuditBucket.bucketName,
+      enableLogFileValidation: true,
+      isMultiRegionTrail: false,
+      includeGlobalServiceEvents: false,
+      advancedEventSelectors: [
+        {
+          name: 'SparseLedgerWrites',
+          fieldSelectors: [
+            { field: 'eventCategory', equalTo: ['Data'] },
+            { field: 'resources.type', equalTo: ['AWS::DynamoDB::Table'] },
+            { field: 'resources.ARN', equalTo: [sparseLedger.tableArn] },
+            { field: 'readOnly', equalTo: ['false'] },
+          ],
+        },
+      ],
+    });
+    ledgerTrail.node.addDependency(ledgerAuditBucket.policy!);
+
     brokerRole.addToPolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
