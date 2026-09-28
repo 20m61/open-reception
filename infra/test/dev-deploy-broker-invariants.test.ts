@@ -15,6 +15,23 @@ import {
   DEV_DEPLOY_TARGET_ACCOUNT,
   DevDeployBrokerStack,
   PIPELINE_ARTIFACT_RETENTION_DAYS,
+  ARTIFACT_HISTORY_WRITES,
+  BROKER_MODULE_HASH_CHECK_SCRIPT,
+  PIPELINE_NAME,
+  PIPELINE_STAGES,
+  BROKER_ASSEMBLY_DIR,
+  BROKER_EVIDENCE_PATH,
+  BROKER_OUT_DIR,
+  BROKER_RESULT_PATH,
+  BROKER_VALIDATED_DIR,
+  BROKER_WORK_DIR,
+  POLICY_RESULT_PATH,
+  PROVENANCE_DECISION_PATH,
+  PROVENANCE_RESULT_CHECK_SCRIPT,
+  PROVENANCE_COMMAND,
+  PROVENANCE_LOCAL_PATH,
+  PROVENANCE_READ_ACTIONS,
+  PROVENANCE_SOURCE_PATH,
   SPARSE_LEDGER_BROKER_ACTIONS,
   SPARSE_LEDGER_PROJECT_KEY,
   TRUSTED_POLICY_LOCAL_PATH,
@@ -169,6 +186,24 @@ const ARTIFACT_BUCKET = byType('AWS::S3::Bucket').map(([id]) => id);
 
 const LEDGER_TABLES = byType('AWS::DynamoDB::Table').map(([id]) => id);
 
+const PIPELINES = byType('AWS::CodePipeline::Pipeline').map(([id]) => id);
+const PROJECTS = byType('AWS::CodeBuild::Project');
+
+/** The three reviewed read-only provenance statements (exact actions and resource). */
+const isProvenanceStatement = (s: Statement): boolean => {
+  const acts = JSON.stringify(actionsOf(s).sort());
+  const res = JSON.stringify(s.Resource);
+  const same = (xs: readonly string[]) => acts === JSON.stringify(xs.map((a) => a.toLowerCase()).sort());
+  const validationProjectId = PROJECTS.find(([, r]) => r.Properties.Name === VALIDATION_PROJECT)?.[0];
+  return (
+    s.Effect === 'Allow' &&
+    s.Condition === undefined &&
+    ((same(PROVENANCE_READ_ACTIONS.pipeline) && res === JSON.stringify({ 'Fn::Join': ['', ['arn:', { Ref: 'AWS::Partition' }, ':codepipeline:ap-northeast-1:822063948773:', { Ref: PIPELINES[0] }]] })) ||
+      (same(PROVENANCE_READ_ACTIONS.validationBuild) && res === JSON.stringify({ 'Fn::GetAtt': [validationProjectId, 'Arn'] })) ||
+      (same(PROVENANCE_READ_ACTIONS.artifactBucket) && res === JSON.stringify({ 'Fn::GetAtt': [ARTIFACT_BUCKET[0], 'Arn'] })))
+  );
+};
+
 /** Does a statement's Resource reference the sparse ledger table (any form)? */
 const refersToLedger = (s: Statement): boolean =>
   LEDGER_TABLES.some((id) => JSON.stringify(s.Resource ?? null).includes(`"${id}"`));
@@ -257,6 +292,10 @@ describe('dev deploy broker invariants: build environment allowlist', () => {
     expect(projectEnvNames(BROKER_PROJECT)).toEqual(
       [
         'OR_BROKER_TARGET_ACCOUNT',
+        'OR_PIPELINE_ARTIFACT_BUCKET',
+        'OR_PROVENANCE_MODULE_BUCKET',
+        'OR_PROVENANCE_MODULE_KEY',
+        'OR_PROVENANCE_MODULE_SHA256',
         'OR_TRUSTED_POLICY_BUCKET',
         'OR_TRUSTED_POLICY_KEY',
         'OR_TRUSTED_POLICY_SHA256',
@@ -338,11 +377,17 @@ describe('dev deploy broker invariants: trusted broker (stack-owned buildspec, u
     expect(Object.keys(spec.phases)).toEqual(['build']);
     const commands = allCommands(BROKER_PROJECT);
     const allowedShapes = [
-      /^test -f [A-Za-z0-9_./-]+\.json$/,
+      /^test -f \/tmp\/open-reception-broker-work\/validated\/[A-Za-z0-9_./-]+\.json$/,
+      /^mkdir -m 700 \/tmp\/open-reception-broker-out$/,
       /^node -e '[^']*'$/,
       /^aws s3 cp "s3:\/\/\$OR_TRUSTED_POLICY_BUCKET\/\$OR_TRUSTED_POLICY_KEY" \/tmp\/open-reception-trusted-policy\.mjs --only-show-errors$/,
       /^node -e '[^']*' \/tmp\/open-reception-trusted-policy\.mjs$/,
-      /^node \/tmp\/open-reception-trusted-policy\.mjs --assembly infra\/cdk\.out --account "\$OR_BROKER_TARGET_ACCOUNT" > trusted-policy-result\.json$/,
+      /^node -e '[^']*'( \/tmp\/open-reception-broker-(work\/validated|out)\/[A-Za-z0-9_.-]+\.json)+$/,
+      /^node \/tmp\/open-reception-trusted-policy\.mjs --assembly \/tmp\/open-reception-broker-work\/validated\/infra\/cdk\.out --account "\$OR_BROKER_TARGET_ACCOUNT" > \/tmp\/open-reception-broker-out\/trusted-policy-result\.json$/,
+      /^aws s3 cp "s3:\/\/\$OR_PROVENANCE_MODULE_BUCKET\/\$OR_PROVENANCE_MODULE_KEY" \/tmp\/open-reception-run-provenance\.mjs --only-show-errors$/,
+      /^node -e '[^']*' \/tmp\/open-reception-run-provenance\.mjs OR_PROVENANCE_MODULE_SHA256$/,
+      new RegExp(`^${PROVENANCE_COMMAND.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}$`),
+
       /^echo "[^"$`]*" >&2$/,
       /^exit 42$/,
     ];
@@ -358,7 +403,7 @@ describe('dev deploy broker invariants: trusted broker (stack-owned buildspec, u
           requires.every((r) => r === '"fs"' || r === '"crypto"'),
           `requires: ${requires.join(',')}`,
         ).toBe(true);
-        expect(command).not.toMatch(/child_process|\bimport\(|\beval\(|new Function|spawn|exec/);
+        expect(command).not.toMatch(/child_process|\bimport\(|\beval\(|new Function|\bspawn\w*\(|\bexec\w*\(/);
       } else {
         expect(command).not.toMatch(/(^|[\s;&|(])(npm|npx|yarn|pnpm|bash|sh|source|make|cdk)(\s|$)/);
       }
@@ -373,8 +418,10 @@ describe('dev deploy broker invariants: trusted broker (stack-owned buildspec, u
   it('holds no sts:AssumeRole or mutation authority; no role in the stack can reach a deploy role', () => {
     // The sparse ledger statement is the one reviewed exception to the dynamodb: ban; its exact
     // shape is pinned in the "sparse deploy ledger" block below.
+    // The provenance reads (blockers 2 / 4) are the other reviewed exception; their exact shape is
+    // pinned in the "execution provenance" block below.
     const broker = statementsFor(roleLogicalId(BROKER_ROLE))
-      .filter((s) => s.Effect === 'Allow' && !isLedgerStatement(s))
+      .filter((s) => s.Effect === 'Allow' && !isLedgerStatement(s) && !isProvenanceStatement(s))
       .flatMap(actionsOf);
     for (const action of broker) {
       for (const prefix of FORBIDDEN_ACTION_PREFIXES) {
@@ -432,7 +479,7 @@ describe('dev deploy broker invariants: trusted broker (stack-owned buildspec, u
 
   it('verifies the downloaded policy hash immediately after download and before executing it', () => {
     const commands = allCommands(BROKER_PROJECT);
-    const download = commands.findIndex((c) => c.startsWith('aws s3 cp '));
+    const download = commands.findIndex((c) => c.startsWith('aws s3 cp "s3://$OR_TRUSTED_POLICY_BUCKET'));
     const verify = commands.indexOf(nodeEval(BROKER_POLICY_HASH_CHECK_SCRIPT, TRUSTED_POLICY_LOCAL_PATH));
     const execute = commands.findIndex((c) => c.startsWith(`node ${TRUSTED_POLICY_LOCAL_PATH} `));
     expect(download).toBeGreaterThanOrEqual(0);
@@ -642,9 +689,12 @@ describe('dev deploy broker invariants: trusted source revision', () => {
         type: string;
         value: string;
       }>;
-      expect(vars).toEqual([
-        { name: 'OR_TRUSTED_SOURCE_REVISION', type: 'PLAINTEXT', value: TRUSTED_COMMIT_ID },
-      ]);
+      const expected = [{ name: 'OR_TRUSTED_SOURCE_REVISION', type: 'PLAINTEXT', value: TRUSTED_COMMIT_ID }];
+      if (action.Name === 'TrustedBrokerUnarmed') {
+        // CodePipeline's own execution id (never candidate-controlled), for the provenance check.
+        expected.unshift({ name: 'OR_PIPELINE_EXECUTION_ID', type: 'PLAINTEXT', value: '#{codepipeline.PipelineExecutionId}' });
+      }
+      expect(vars).toEqual(expected);
     }
     for (const name of [VALIDATION_PROJECT, BROKER_PROJECT]) {
       const text = buildSpecText(name);
@@ -656,8 +706,9 @@ describe('dev deploy broker invariants: trusted source revision', () => {
 
   it('the synthesized commands are exactly the exported, tested scripts', () => {
     expect(allCommands(VALIDATION_PROJECT)).toContain(nodeEval(VALIDATION_EVIDENCE_SCRIPT));
-    expect(allCommands(BROKER_PROJECT)).toContain(nodeEval(BROKER_REVISION_CHECK_SCRIPT));
-    expect(allCommands(BROKER_PROJECT)).toContain(nodeEval(BROKER_NOT_ARMED_RESULT_SCRIPT));
+    expect(allCommands(BROKER_PROJECT)).toContain(nodeEval(BROKER_REVISION_CHECK_SCRIPT, BROKER_EVIDENCE_PATH));
+    expect(allCommands(BROKER_PROJECT)).toContain(nodeEval(BROKER_NOT_ARMED_RESULT_SCRIPT, POLICY_RESULT_PATH, BROKER_RESULT_PATH));
+    expect(allCommands(BROKER_PROJECT)).toContain(nodeEval(PROVENANCE_RESULT_CHECK_SCRIPT, PROVENANCE_DECISION_PATH));
     expect(allCommands(BROKER_PROJECT)).toContain(
       nodeEval(BROKER_POLICY_HASH_CHECK_SCRIPT, TRUSTED_POLICY_LOCAL_PATH),
     );
@@ -710,8 +761,14 @@ const run = (
   }
 };
 
-const revisionCheck = () => commandContaining(BROKER_PROJECT, 'broker-evidence.json","utf8"');
-const notArmed = () => commandContaining(BROKER_PROJECT, 'BROKER_NOT_ARMED');
+/**
+ * Run a broker command in a scratch workspace: its broker-owned absolute paths (the materialized
+ * artifact and the output dir) are mapped to the workspace, so the exact synthesized text runs.
+ */
+const localize = (command: string): string =>
+  command.split(`${BROKER_VALIDATED_DIR}/`).join('./').split(`${BROKER_OUT_DIR}/`).join('./');
+const revisionCheck = () => localize(commandContaining(BROKER_PROJECT, 'validation evidence revision mismatch'));
+const notArmed = () => localize(commandContaining(BROKER_PROJECT, 'rule:"BROKER_NOT_ARMED"'));
 const validationEvidence = () =>
   commandContaining(VALIDATION_PROJECT, 'writeFileSync("broker-evidence.json"');
 
@@ -905,10 +962,10 @@ describe('trusted policy hash pin (shared bootstrap asset bucket substitution)',
     const commands = allCommands(BROKER_PROJECT);
     const start = commands.indexOf(nodeEval(BROKER_POLICY_HASH_CHECK_SCRIPT, TRUSTED_POLICY_LOCAL_PATH));
     const sequence = commands.slice(start, start + 3);
-    expect(sequence[2]).toBe(nodeEval(BROKER_NOT_ARMED_RESULT_SCRIPT));
+    expect(sequence[2]).toBe(nodeEval(BROKER_NOT_ARMED_RESULT_SCRIPT, POLICY_RESULT_PATH, BROKER_RESULT_PATH));
     const file = copyOfPolicy((t) => `${t}\n// tampered\n`);
     const dir = dirname(file);
-    const script = ['set -e', ...sequence.map((c) => c.split(TRUSTED_POLICY_LOCAL_PATH).join(file))].join('\n');
+    const script = ['set -e', ...sequence.map((c) => localize(c.split(TRUSTED_POLICY_LOCAL_PATH).join(file)))].join('\n');
     const r = run(script, dir, {
       OR_TRUSTED_POLICY_SHA256: pinnedSha256,
       OR_TRUSTED_SOURCE_REVISION: REV_A,
@@ -1043,6 +1100,7 @@ describe('artifact bucket lifecycle and physical names (pre-arming blockers 5 an
         ExpirationInDays: PIPELINE_ARTIFACT_RETENTION_DAYS,
         AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 },
       }),
+      expect.objectContaining({ ExpiredObjectDeleteMarker: true }),
     ]);
     // A rule scoped by prefix or tag would leave the rest of the bucket unbounded.
     expect(rules[0]).not.toHaveProperty('Prefix');
@@ -1082,5 +1140,152 @@ describe('artifact bucket lifecycle and physical names (pre-arming blockers 5 an
       const named = Object.keys(r.Properties ?? {}).filter((k) => /Name$/.test(k));
       expect(named, id).toEqual([]);
     }
+  });
+});
+
+describe('execution provenance (pre-arming blockers 2 and 4)', () => {
+  const [bucketId, bucket] = byType('AWS::S3::Bucket')[0]!;
+
+  it('the artifact bucket keeps every version, and old versions still expire', () => {
+    expect(bucket.Properties.VersioningConfiguration).toEqual({ Status: 'Enabled' });
+    const rule = ((bucket.Properties.LifecycleConfiguration as Json).Rules as Json[])[0]!;
+    expect(rule.NoncurrentVersionExpiration).toEqual({ NoncurrentDays: PIPELINE_ARTIFACT_RETENTION_DAYS });
+  });
+
+  it('neither build role can delete a version, change versioning / lifecycle / policy, or replicate', () => {
+    for (const roleName of [VALIDATION_ROLE, BROKER_ROLE]) {
+      const denies = statementsFor(roleLogicalId(roleName)).filter((s) => s.Effect === 'Deny');
+      const covering = denies.filter((s) => JSON.stringify(s.Resource).includes(bucketId));
+      expect(covering, roleName).toHaveLength(1);
+      expect(actionsOf(covering[0]!).sort()).toEqual(ARTIFACT_HISTORY_WRITES.map((a) => a.toLowerCase()).sort());
+      expect(JSON.stringify(covering[0]!.Resource)).toContain('/*');
+      expect(covering[0]!.Condition).toBeUndefined();
+    }
+  });
+
+  it('the broker holds exactly the three reviewed read-only provenance statements; validation holds none', () => {
+    expect(statementsFor(roleLogicalId(BROKER_ROLE)).filter(isProvenanceStatement)).toHaveLength(3);
+    const validation = statementsFor(roleLogicalId(VALIDATION_ROLE)).filter((s) => s.Effect === 'Allow').flatMap(actionsOf);
+    for (const a of [...PROVENANCE_READ_ACTIONS.pipeline, ...PROVENANCE_READ_ACTIONS.validationBuild, 's3:listbucketversions']) {
+      expect(validation, a).not.toContain(a.toLowerCase());
+    }
+  });
+
+  it('runs the pinned module right after the account check, before any candidate file is read', () => {
+    const commands = allCommands(BROKER_PROJECT);
+    expect(commands.slice(0, 6)).toEqual([
+      nodeEval(BROKER_ACCOUNT_PIN_CHECK_SCRIPT),
+      `mkdir -m 700 ${BROKER_OUT_DIR}`,
+      `aws s3 cp "s3://$OR_PROVENANCE_MODULE_BUCKET/$OR_PROVENANCE_MODULE_KEY" ${PROVENANCE_LOCAL_PATH} --only-show-errors`,
+      nodeEval(BROKER_MODULE_HASH_CHECK_SCRIPT, PROVENANCE_LOCAL_PATH, 'OR_PROVENANCE_MODULE_SHA256'),
+      PROVENANCE_COMMAND,
+      nodeEval(PROVENANCE_RESULT_CHECK_SCRIPT, PROVENANCE_DECISION_PATH),
+    ]);
+    const firstCandidateRead = commands.findIndex((c) => c.includes('broker-evidence.json') || c.includes('cdk.out'));
+    expect(firstCandidateRead).toBeGreaterThan(5);
+    // The module is executed exactly once, from the verified local path.
+    expect(commands.filter((c) => c.startsWith('node ') && !c.startsWith('node -e') && c.includes(PROVENANCE_LOCAL_PATH))).toEqual([PROVENANCE_COMMAND]);
+  });
+
+  it('pins the real content SHA-256 of the provenance module', () => {
+    const vars = Object.fromEntries(
+      ((project(BROKER_PROJECT).Environment as Json).EnvironmentVariables as Array<{ Name: string; Value: unknown }>).map((v) => [v.Name, v.Value]),
+    );
+    expect(vars.OR_PROVENANCE_MODULE_SHA256).toBe(createHash('sha256').update(readFileSync(PROVENANCE_SOURCE_PATH)).digest('hex'));
+    expect(vars.OR_PIPELINE_ARTIFACT_BUCKET).toEqual({ Ref: bucketId });
+  });
+
+  it('the module hash check accepts the untouched module and refuses tampering, a missing pin or a foreign variable name', () => {
+    const dir = workspace();
+    const file = join(dir, 'm.mjs');
+    writeFileSync(file, readFileSync(PROVENANCE_SOURCE_PATH));
+    const pin = createHash('sha256').update(readFileSync(PROVENANCE_SOURCE_PATH)).digest('hex');
+    const check = (f: string, name: string, env: Record<string, string | undefined>) =>
+      run(nodeEval(BROKER_MODULE_HASH_CHECK_SCRIPT, f, name), dir, env).ok;
+    expect(check(file, 'OR_PROVENANCE_MODULE_SHA256', { OR_PROVENANCE_MODULE_SHA256: pin })).toBe(true);
+    expect(check(file, 'OR_PROVENANCE_MODULE_SHA256', {})).toBe(false);
+    expect(check(file, 'OR_PROVENANCE_MODULE_SHA256', { OR_PROVENANCE_MODULE_SHA256: 'f'.repeat(64) })).toBe(false);
+    expect(check(file, 'PATH', { PATH: pin })).toBe(false);
+    writeFileSync(file, `${readFileSync(PROVENANCE_SOURCE_PATH, 'utf8')}\n// tampered\n`);
+    expect(check(file, 'OR_PROVENANCE_MODULE_SHA256', { OR_PROVENANCE_MODULE_SHA256: pin })).toBe(false);
+  });
+
+  it('the command binds the synthesized pipeline, validation project and stage / action names', () => {
+    const [, pipeline] = byType('AWS::CodePipeline::Pipeline')[0]!;
+    expect(pipeline.Properties.Name).toBe(PIPELINE_NAME);
+    const stages = (pipeline.Properties.Stages as Array<{ Name: string; Actions: Array<{ Name: string }> }>).map((st) => `${st.Name}/${st.Actions.map((a) => a.Name).join('+')}`);
+    expect(stages).toEqual(Object.values(PIPELINE_STAGES).map((x) => `${x.stage}/${x.action}`));
+    expect(PROVENANCE_COMMAND).toContain(`--validation-project ${VALIDATION_PROJECT} `);
+  });
+});
+
+describe('the broker never reads or writes the candidate tree CodeBuild extracted (review C1)', () => {
+  it('every file path a broker command names is broker-owned or a verified module under /tmp', () => {
+    for (const command of allCommands(BROKER_PROJECT)) {
+      if (command.startsWith('echo ') && !command.includes(' > ')) continue; // log line only
+      const shell = command.startsWith("node -e '") ? command.slice(command.lastIndexOf("'") + 1) : command;
+      for (const token of shell.split(/\s+/).filter(Boolean)) {
+        if (/^(node|test|-f|-e|mkdir|-m|700|aws|s3|cp|--only-show-errors|echo|exit|42|>|>&2|--assembly|--account|--pipeline|--validation-project|--artifact-bucket-env|--stages)$/.test(token)) continue;
+        if (/^"\$[A-Z_]+"$|^"s3:\/\/\$[A-Z_]+\/\$[A-Z_]+"$|^OR_[A-Z0-9_]+$|^[A-Z][A-Za-z]+$|^Source\/PromotionBranch,Validate\/UnprivilegedValidation,BrokerBoundary\/TrustedBrokerUnarmed$/.test(token)) continue;
+        expect(token.startsWith('/tmp/open-reception-'), `${token} in: ${command}`).toBe(true);
+      }
+    }
+  });
+
+  it('the paths match the provenance module and the decision is checked right after it runs', async () => {
+    const m = (await import(pathToFileURL(resolve(__dirname, '../broker/run-provenance.mjs')).href)) as Record<string, string>;
+    expect(m.BROKER_WORK_DIR).toBe(BROKER_WORK_DIR);
+    expect(m.BROKER_OUT_DIR).toBe(BROKER_OUT_DIR);
+    expect(m.VALIDATED_DIR).toBe(BROKER_VALIDATED_DIR);
+    expect(m.DECISION_PATH).toBe(PROVENANCE_DECISION_PATH);
+    expect(BROKER_ASSEMBLY_DIR.startsWith(`${BROKER_VALIDATED_DIR}/`)).toBe(true);
+    const commands = allCommands(BROKER_PROJECT);
+    expect(commands[commands.indexOf(PROVENANCE_COMMAND) + 1]).toBe(nodeEval(PROVENANCE_RESULT_CHECK_SCRIPT, PROVENANCE_DECISION_PATH));
+  });
+
+  it('the decision check requires allowed, this execution, this revision and the broker-owned extraction', () => {
+    const decision = (d: Json) => {
+      const dir = workspace();
+      writeFileSync(join(dir, 'provenance.json'), JSON.stringify(d));
+      return run(nodeEval(PROVENANCE_RESULT_CHECK_SCRIPT, join(dir, 'provenance.json')), dir, {
+        OR_PIPELINE_EXECUTION_ID: 'e-1',
+        OR_TRUSTED_SOURCE_REVISION: REV_A,
+      }).ok;
+    };
+    const good = { result: 'allowed', rule: null, facts: { executionId: 'e-1', revision: REV_A, validatedArtifact: { extractedTo: BROKER_VALIDATED_DIR } } };
+    expect(decision(good)).toBe(true);
+    expect(decision({ ...good, result: 'denied' })).toBe(false);
+    expect(decision({ ...good, rule: 'X' })).toBe(false);
+    expect(decision({ ...good, facts: { ...good.facts, executionId: 'e-2' } })).toBe(false);
+    expect(decision({ ...good, facts: { ...good.facts, revision: REV_B } })).toBe(false);
+    expect(decision({ ...good, facts: { ...good.facts, validatedArtifact: { extractedTo: '.' } } })).toBe(false);
+    expect(decision({})).toBe(false);
+  });
+
+  it('a symlinked output name in the candidate tree can no longer truncate a verified module', () => {
+    // No command may redirect (>, >>, 2>, tee) anywhere but the broker-owned output dir.
+    for (const command of allCommands(BROKER_PROJECT)) {
+      const shell = command.replace(/node -e '[^']*'/g, 'node').replace(/"[^"]*"/g, '');
+      expect(shell, command).not.toMatch(/\btee\b/);
+      for (const m of shell.matchAll(/\d?>>?\s*(\S+)/g)) {
+        const target = m[1]!;
+        if (target === '&2') continue;
+        expect(target.startsWith(`${BROKER_OUT_DIR}/`), command).toBe(true);
+      }
+    }
+  });
+
+  it('inline broker scripts take every file path from argv, never as a literal', () => {
+    for (const command of allCommands(BROKER_PROJECT).filter((c) => c.startsWith("node -e '"))) {
+      expect(command, command).not.toMatch(/(readFileSync|writeFileSync|existsSync|openSync)\("/);
+    }
+  });
+
+});
+
+describe('freshness vs retention (review C5)', () => {
+  it('an execution can only be accepted well before its artifacts or old versions can expire', async () => {
+    const m = (await import(pathToFileURL(resolve(__dirname, '../broker/run-provenance.mjs')).href)) as { MAX_EXECUTION_AGE_MS: number };
+    expect(m.MAX_EXECUTION_AGE_MS * 4).toBeLessThanOrEqual(PIPELINE_ARTIFACT_RETENTION_DAYS * 24 * 60 * 60 * 1000);
   });
 });

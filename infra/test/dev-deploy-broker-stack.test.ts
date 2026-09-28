@@ -163,7 +163,7 @@ describe('DevDeployBrokerStack (#1146 Phase 1)', () => {
     expect(buildSpec).toContain('OR_TRUSTED_POLICY_BUCKET');
     expect(buildSpec).toContain('OR_TRUSTED_POLICY_KEY');
     expect(buildSpec).toContain('/tmp/open-reception-trusted-policy.mjs');
-    expect(buildSpec).toContain('--assembly infra/cdk.out');
+    expect(buildSpec).toContain('--assembly /tmp/open-reception-broker-work/validated/infra/cdk.out');
     expect(buildSpec).toContain('trusted-policy-result.json');
     expect(buildSpec).not.toContain('npm ');
     expect(buildSpec).not.toContain('scripts/');

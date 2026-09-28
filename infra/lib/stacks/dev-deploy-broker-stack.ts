@@ -97,6 +97,56 @@ export const PIPELINE_ARTIFACT_RETENTION_DAYS = 7;
 /** Broker-local download target of the trusted policy (outside the candidate artifact tree). */
 export const TRUSTED_POLICY_LOCAL_PATH = '/tmp/open-reception-trusted-policy.mjs';
 
+/** Trusted execution-provenance module (pre-arming blockers 2 and 4), published like the policy. */
+export const PROVENANCE_SOURCE_PATH = path.join(__dirname, '../../broker/run-provenance.mjs');
+export const PROVENANCE_LOCAL_PATH = '/tmp/open-reception-run-provenance.mjs';
+
+/**
+ * Broker-owned directories outside the candidate artifact tree (same values as
+ * `infra/broker/run-provenance.mjs`, pinned by test). The broker never reads from or writes into
+ * the tree CodeBuild extracted: a candidate symlink there could redirect a write onto a verified
+ * module. Gates read only the exact artifact version the provenance check fetched into
+ * BROKER_VALIDATED_DIR, and results go to BROKER_OUT_DIR, which must not exist beforehand.
+ */
+export const BROKER_WORK_DIR = '/tmp/open-reception-broker-work';
+export const BROKER_VALIDATED_DIR = `${BROKER_WORK_DIR}/validated`;
+export const BROKER_OUT_DIR = '/tmp/open-reception-broker-out';
+export const BROKER_EVIDENCE_PATH = `${BROKER_VALIDATED_DIR}/broker-evidence.json`;
+export const BROKER_ASSEMBLY_DIR = `${BROKER_VALIDATED_DIR}/infra/cdk.out`;
+export const PROVENANCE_DECISION_PATH = `${BROKER_OUT_DIR}/provenance.json`;
+export const POLICY_RESULT_PATH = `${BROKER_OUT_DIR}/trusted-policy-result.json`;
+export const BROKER_RESULT_PATH = `${BROKER_OUT_DIR}/broker-result.json`;
+
+export const PIPELINE_NAME = 'OpenReceptionSparseDevDeploy';
+/** Stage/Action names the provenance check binds to (Source, Validate, BrokerBoundary). */
+export const PIPELINE_STAGES = Object.freeze({
+  source: { stage: 'Source', action: 'PromotionBranch' },
+  validate: { stage: 'Validate', action: 'UnprivilegedValidation' },
+  broker: { stage: 'BrokerBoundary', action: 'TrustedBrokerUnarmed' },
+});
+
+/**
+ * S3 actions that could erase or rewrite the version history the provenance check relies on, or
+ * turn versioning off. Explicitly denied to the Validation role (candidate code) and the broker.
+ */
+export const ARTIFACT_HISTORY_WRITES = [
+  's3:DeleteObject',
+  's3:DeleteObjectVersion',
+  's3:PutBucketVersioning',
+  's3:PutLifecycleConfiguration',
+  's3:PutBucketPolicy',
+  's3:DeleteBucketPolicy',
+  's3:PutReplicationConfiguration',
+  's3:PutBucketObjectLockConfiguration',
+] as const;
+
+/** Read-only APIs the provenance check calls (and nothing else). */
+export const PROVENANCE_READ_ACTIONS = {
+  pipeline: ['codepipeline:ListPipelineExecutions', 'codepipeline:ListActionExecutions'],
+  validationBuild: ['codebuild:BatchGetBuilds'],
+  artifactBucket: ['s3:ListBucketVersions', 's3:GetBucketVersioning'],
+} as const;
+
 /**
  * SHA-256 of the trusted policy file content, computed at synth time.
  *
@@ -147,6 +197,46 @@ export const VALIDATION_EVIDENCE_SCRIPT = [
   'fs.writeFileSync("broker-evidence.json",JSON.stringify(out,null,2));',
 ].join(' ');
 
+/**
+ * Broker: verify a downloaded trusted module against the SHA-256 pinned at synth. argv[1] is the
+ * file, argv[2] the NAME of the environment variable holding the pin (so one reviewed script
+ * serves every module). Missing / malformed pin or any byte difference fails closed.
+ */
+export const BROKER_MODULE_HASH_CHECK_SCRIPT = [
+  'const fs=require("fs");',
+  'const crypto=require("crypto");',
+  'const name=process.argv[2];',
+  'if(typeof name!=="string"||!/^OR_[A-Z0-9_]+_SHA256$/.test(name)){throw new Error("pin variable name missing or invalid")}',
+  'const expected=process.env[name];',
+  'if(typeof expected!=="string"||!/^[0-9a-f]{64}$/.test(expected)){throw new Error("module sha256 pin missing or invalid")}',
+  'const file=process.argv[1];',
+  'if(typeof file!=="string"||!file){throw new Error("module path missing")}',
+  'const actual=crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");',
+  'if(actual!==expected){throw new Error("module sha256 mismatch")}',
+].join(' ');
+
+/** The broker command that runs the verified provenance module (blockers 2 and 4). */
+export const PROVENANCE_COMMAND = [
+  `node ${PROVENANCE_LOCAL_PATH}`,
+  `--pipeline ${PIPELINE_NAME}`,
+  `--validation-project ${VALIDATION_PROJECT_NAME}`,
+  '--artifact-bucket-env OR_PIPELINE_ARTIFACT_BUCKET',
+  `--stages ${[PIPELINE_STAGES.source, PIPELINE_STAGES.validate, PIPELINE_STAGES.broker].map((x) => `${x.stage}/${x.action}`).join(',')}`,
+].join(' ');
+
+/**
+ * Broker: the provenance module's exit code is not the only control. Its decision file (in the
+ * broker-owned output dir) must say allowed, for THIS execution and revision, with the artifact
+ * materialized in the broker-owned directory. argv[1] is the decision file.
+ */
+export const PROVENANCE_RESULT_CHECK_SCRIPT = [
+  'const fs=require("fs");',
+  'const d=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));',
+  'const f=d&&d.facts;',
+  'const ok=d&&d.result==="allowed"&&d.rule===null&&f&&f.executionId===process.env.OR_PIPELINE_EXECUTION_ID&&typeof f.executionId==="string"&&f.revision===process.env.OR_TRUSTED_SOURCE_REVISION&&typeof f.revision==="string"&&f.validatedArtifact&&f.validatedArtifact.extractedTo==="/tmp/open-reception-broker-work/validated";',
+  'if(!ok){throw new Error("provenance decision missing, denied or not for this execution")}',
+].join(' ');
+
 /** Trusted revision shape: a full 40-hex commit SHA (short or missing values fail closed). */
 const FULL_SHA_CHECK =
   'const isFullSha=(v)=>typeof v==="string"&&/^[0-9a-f]{40}$/.test(v);';
@@ -159,7 +249,8 @@ const FULL_SHA_CHECK =
 export const BROKER_REVISION_CHECK_SCRIPT = [
   'const fs=require("fs");',
   FULL_SHA_CHECK,
-  'const e=JSON.parse(fs.readFileSync("broker-evidence.json","utf8"));',
+  'if(typeof process.argv[1]!=="string"||!process.argv[1]){throw new Error("evidence path missing")}',
+  'const e=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));',
   'const trusted=process.env.OR_TRUSTED_SOURCE_REVISION;',
   'if(!isFullSha(trusted)){throw new Error("trusted source revision missing or invalid")}',
   'if(e===null||typeof e!=="object"||e.schemaVersion!==1||!isFullSha(e.sourceRevision)||e.sourceRevision!==trusted){throw new Error("validation evidence revision mismatch")}',
@@ -203,10 +294,11 @@ export const BROKER_NOT_ARMED_RESULT_SCRIPT = [
   'if(typeof attemptId!=="string"||!attemptId){throw new Error("attempt id missing")}',
   'const policySha256=process.env.OR_TRUSTED_POLICY_SHA256;',
   'if(typeof policySha256!=="string"||!/^[0-9a-f]{64}$/.test(policySha256)){throw new Error("trusted policy sha256 missing or invalid")}',
-  'const policy=JSON.parse(fs.readFileSync("trusted-policy-result.json","utf8"));',
+  'if(typeof process.argv[1]!=="string"||!process.argv[1]||typeof process.argv[2]!=="string"||!process.argv[2]){throw new Error("result paths missing")}',
+  'const policy=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));',
   'if(policy===null||typeof policy!=="object"||policy.result!=="allowed"||!Number.isInteger(policy.policyVersion)){throw new Error("trusted policy result missing or not allowed")}',
   'const result={result:"denied",source_revision:sourceRevision,attempt_id:attemptId,decided_at:new Date().toISOString(),policy_version:"trusted-policy@"+policy.policyVersion+"+sha256:"+policySha256,stage:"broker-bootstrap",rule:"BROKER_NOT_ARMED",resource:null,reason:"Static trusted policy passed, but sparse ledger/live ChangeSet/role chain are intentionally not armed",retryable:false,evidence_ref:process.env.CODEBUILD_BUILD_ARN||"unknown"};',
-  'fs.writeFileSync("broker-result.json",JSON.stringify(result,null,2));',
+  'fs.writeFileSync(process.argv[2],JSON.stringify(result,null,2),{flag:"wx"});',
   'console.log(JSON.stringify(result));',
 ].join(' ');
 
@@ -292,6 +384,10 @@ export class DevDeployBrokerStack extends cdk.Stack {
     });
     const trustedPolicyContentSha256 = trustedPolicySha256();
     trustedPolicyAsset.grantRead(brokerRole);
+    const provenanceAsset = new s3assets.Asset(this, 'ProvenanceModuleAsset', {
+      path: PROVENANCE_SOURCE_PATH,
+    });
+    provenanceAsset.grantRead(brokerRole);
 
     // Sparse dev-deploy attempt ledger (#1153, Foundation S6a): state in the trusted account,
     // writable only by the broker. The Validation role (candidate code) gets no statement on it.
@@ -364,7 +460,10 @@ export class DevDeployBrokerStack extends cdk.Stack {
     // useful to the execution that produced them, so they expire (pre-arming blocker 5): no
     // unbounded cost, and no long-lived pool of stale artifacts for a later execution to reuse.
     // Same encryption / public-access / TLS settings as the CDK default pipeline bucket.
+    // Versioned (pre-arming blocker 2): an overwrite by candidate code leaves a second version,
+    // which the broker's provenance check detects; deletes are denied to both build roles below.
     const artifactBucket = new s3.Bucket(this, 'PipelineArtifacts', {
+      versioned: true,
       encryption: s3.BucketEncryption.S3_MANAGED,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       enforceSSL: true,
@@ -374,10 +473,34 @@ export class DevDeployBrokerStack extends cdk.Stack {
           id: 'ExpireCandidateArtifacts',
           enabled: true,
           expiration: cdk.Duration.days(PIPELINE_ARTIFACT_RETENTION_DAYS),
+          noncurrentVersionExpiration: cdk.Duration.days(PIPELINE_ARTIFACT_RETENTION_DAYS),
           abortIncompleteMultipartUploadAfter: cdk.Duration.days(1),
+        },
+        {
+          // Current-version expiry leaves a delete marker per key; remove it once it is alone.
+          id: 'RemoveExpiredDeleteMarkers',
+          enabled: true,
+          expiredObjectDeleteMarker: true,
         },
       ],
     });
+
+    for (const role of [validationRole, brokerRole]) {
+      role.addToPolicy(
+        new iam.PolicyStatement({
+          effect: iam.Effect.DENY,
+          actions: [...ARTIFACT_HISTORY_WRITES],
+          resources: [artifactBucket.bucketArn, artifactBucket.arnForObjects('*')],
+        }),
+      );
+    }
+    brokerRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [...PROVENANCE_READ_ACTIONS.artifactBucket],
+        resources: [artifactBucket.bucketArn],
+      }),
+    );
 
     const validationProject = new codebuild.PipelineProject(this, 'ValidationProject', {
       projectName: VALIDATION_PROJECT_NAME,
@@ -459,6 +582,10 @@ export class DevDeployBrokerStack extends cdk.Stack {
           OR_TRUSTED_POLICY_BUCKET: { value: trustedPolicyAsset.s3BucketName },
           OR_TRUSTED_POLICY_KEY: { value: trustedPolicyAsset.s3ObjectKey },
           OR_TRUSTED_POLICY_SHA256: { value: trustedPolicyContentSha256 },
+          OR_PROVENANCE_MODULE_BUCKET: { value: provenanceAsset.s3BucketName },
+          OR_PROVENANCE_MODULE_KEY: { value: provenanceAsset.s3ObjectKey },
+          OR_PROVENANCE_MODULE_SHA256: { value: trustedPolicySha256(PROVENANCE_SOURCE_PATH) },
+          OR_PIPELINE_ARTIFACT_BUCKET: { value: artifactBucket.bucketName },
         },
       },
       logging: {
@@ -471,16 +598,26 @@ export class DevDeployBrokerStack extends cdk.Stack {
           build: {
             commands: [
               nodeEval(BROKER_ACCOUNT_PIN_CHECK_SCRIPT),
-              'test -f broker-evidence.json',
-              'test -f infra/cdk.out/manifest.json',
-              nodeEval(BROKER_REVISION_CHECK_SCRIPT),
+              // Broker-owned output dir; fails if anything already exists there.
+              `mkdir -m 700 ${BROKER_OUT_DIR}`,
+              // Blockers 2 / 4: prove the input artifacts are the single versions this execution's
+              // own actions wrote, and that this execution is the newest and fresh, before any
+              // candidate file is read.
+              `aws s3 cp "s3://$OR_PROVENANCE_MODULE_BUCKET/$OR_PROVENANCE_MODULE_KEY" ${PROVENANCE_LOCAL_PATH} --only-show-errors`,
+              nodeEval(BROKER_MODULE_HASH_CHECK_SCRIPT, PROVENANCE_LOCAL_PATH, 'OR_PROVENANCE_MODULE_SHA256'),
+              PROVENANCE_COMMAND,
+              nodeEval(PROVENANCE_RESULT_CHECK_SCRIPT, PROVENANCE_DECISION_PATH),
+              // From here on, only the materialized, provenance-bound artifact is read.
+              `test -f ${BROKER_EVIDENCE_PATH}`,
+              `test -f ${BROKER_ASSEMBLY_DIR}/manifest.json`,
+              nodeEval(BROKER_REVISION_CHECK_SCRIPT, BROKER_EVIDENCE_PATH),
               // Download policy by the S3 location injected by this stack, then verify the pinned
               // content SHA-256 before executing it (fail closed on any mismatch).
               `aws s3 cp "s3://$OR_TRUSTED_POLICY_BUCKET/$OR_TRUSTED_POLICY_KEY" ${TRUSTED_POLICY_LOCAL_PATH} --only-show-errors`,
               nodeEval(BROKER_POLICY_HASH_CHECK_SCRIPT, TRUSTED_POLICY_LOCAL_PATH),
-              `node ${TRUSTED_POLICY_LOCAL_PATH} --assembly infra/cdk.out --account "$OR_BROKER_TARGET_ACCOUNT" > trusted-policy-result.json`,
+              `node ${TRUSTED_POLICY_LOCAL_PATH} --assembly ${BROKER_ASSEMBLY_DIR} --account "$OR_BROKER_TARGET_ACCOUNT" > ${POLICY_RESULT_PATH}`,
               // Even an allowed static assembly cannot mutate yet.
-              nodeEval(BROKER_NOT_ARMED_RESULT_SCRIPT),
+              nodeEval(BROKER_NOT_ARMED_RESULT_SCRIPT, POLICY_RESULT_PATH, BROKER_RESULT_PATH),
               'echo "Trusted broker is intentionally unarmed." >&2',
               'exit 42',
             ],
@@ -490,7 +627,7 @@ export class DevDeployBrokerStack extends cdk.Stack {
     });
 
     const pipeline = new codepipeline.Pipeline(this, 'Pipeline', {
-      pipelineName: 'OpenReceptionSparseDevDeploy',
+      pipelineName: PIPELINE_NAME,
       pipelineType: codepipeline.PipelineType.V1,
       artifactBucket,
       crossAccountKeys: false,
@@ -543,6 +680,11 @@ export class DevDeployBrokerStack extends cdk.Stack {
           project: brokerProject,
           input: validated,
           environmentVariables: {
+            // Set by CodePipeline for this run; the provenance check reads the execution by it.
+            OR_PIPELINE_EXECUTION_ID: {
+              type: codebuild.BuildEnvironmentVariableType.PLAINTEXT,
+              value: '#{codepipeline.PipelineExecutionId}',
+            },
             OR_TRUSTED_SOURCE_REVISION: {
               type: codebuild.BuildEnvironmentVariableType.PLAINTEXT,
               value: sourceAction.variables.commitId,
@@ -551,6 +693,21 @@ export class DevDeployBrokerStack extends cdk.Stack {
         }),
       ],
     });
+
+    brokerRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [...PROVENANCE_READ_ACTIONS.pipeline],
+        resources: [pipeline.pipelineArn],
+      }),
+    );
+    brokerRole.addToPolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [...PROVENANCE_READ_ACTIONS.validationBuild],
+        resources: [validationProject.projectArn],
+      }),
+    );
 
     cdk.Tags.of(this).add('Project', 'open-reception');
     cdk.Tags.of(this).add('Environment', 'dev');
