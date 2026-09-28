@@ -195,6 +195,9 @@ describe('試行予算ストア (#1021 AC4)', () => {
     ['NaN', { id: KEY, startedAt: Number.NaN, failures: Number.NaN }],
     // 🔴 CAS で置き換えようとすると `NaN !== NaN` で永遠に負ける（#1163 の置き換えの経路）。
     ['startedAt だけ NaN', { id: KEY, startedAt: Number.NaN, attempts: 1 }],
+    ['attempts だけ NaN', { id: KEY, startedAt: 1000, attempts: Number.NaN }],
+    // 🔴 object は参照で比べられるので、CAS で置き換えようとすると永遠に負ける。
+    ['attempts が object', { id: KEY, startedAt: 1000, attempts: {} }],
   ])('🔴 壊れたレコード（%s）で落ちない', async (_label, broken) => {
     await getBackend()
       .collection<{ id: string }>('auth-attempts', { ttlSeconds: 7200 })
@@ -249,6 +252,8 @@ describe('試行予算ストア (#1021 AC4)', () => {
     ['10 年先の startedAt', { startedAt: 2000 + TEN_YEARS, attempts: 3 }],
     ['猶予を 1ms 超える未来', { startedAt: 2000 + ATTEMPT_CLOCK_SKEW_MS + 1, attempts: 3 }],
     ['負の attempts', { startedAt: 2000, attempts: -1 }],
+    ['文字列の attempts', { startedAt: 2000, attempts: 'x' }],
+    ['attempts の欠落', { startedAt: 2000 }],
   ])('🔴 妥当でない記録（%s）への並行バーストも予算を超えない (#1163)', async (_label, broken) => {
     await putRaw(broken);
     const results = await Promise.all(

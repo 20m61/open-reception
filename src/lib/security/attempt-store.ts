@@ -98,9 +98,19 @@ function toWindow(record: AttemptRecord | undefined, now: number): AttemptWindow
   return { startedAt: record.startedAt, failures: record.attempts };
 }
 
-/** CAS の `expected` に渡して一致しうる値か（`NaN` は自分と等しくないので勝てない）。 */
-const comparable = (value: unknown): value is number =>
-  typeof value === 'number' && !Number.isNaN(value);
+/**
+ * CAS の `expected` に渡して一致しうる値か。
+ *
+ * - 数値（`NaN` を除く）・文字列: 値で比較できる
+ * - `undefined`（欠落）: dynamo は `attribute_not_exists`、memory は `!==` で一致する
+ * - `NaN`: 自分と等しくないので**原理的に勝てない**
+ * - object: memory は参照で比べる（保存時に clone する）ので勝てない
+ * - `null`: dynamo の条件式で `=` が一致するかを契約テストで確かめていないので、ここでは扱わない
+ */
+const comparable = (value: unknown): boolean =>
+  value === undefined ||
+  typeof value === 'string' ||
+  (typeof value === 'number' && !Number.isNaN(value));
 
 /**
  * 試行を**原子的に予約する**。入場できたら `allowed: true` を返し、**その時点で 1 回数える**。
@@ -156,10 +166,11 @@ export async function reserveAttempt(
     //    素直に `put` で置き換える（`recordFor` を通るので TTL も付く）。
     //
     //    🔴 **ただし比較できる値なら CAS で置き換える（#1163 の独立レビュー MINOR-1）。**
-    //    未来・負・小数の記録は「読めない」が、`===` で自分と等しいので CAS は勝てる。
+    //    未来・負・小数・文字列・欠落の記録は「読めない」が、CAS は勝てる（`comparable`）。
     //    ここで `put` を使うと、壊れた記録を読んだ並行バーストが**全員入場し**
     //    （実測: 予算 3 に対して 20 回中 20 回）、遅れた `put` が勝者の作った窓を消す。
-    //    `put` へ落とすのは、CAS が原理的に勝てない値（`NaN`・数値でないもの）だけにする。
+    //    `put` へ落とすのは、CAS が勝てない値（`NaN`・object）と未確認の `null` だけにする。
+    //    この残りは並行バーストを 1 回だけ素通しうる（記録の破損でしか生じない）。
     if (window === undefined) {
       if (comparable(current.startedAt) && comparable(current.attempts)) {
         const reset = await attempts().updateIf(
