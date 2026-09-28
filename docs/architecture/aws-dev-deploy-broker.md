@@ -198,6 +198,94 @@ tested before the broker may assume any deploy role:
    id); accepts a Lambda `Role` given as a literal existing-role ARN; accepts `Custom::*` resources
    with an arbitrary `ServiceToken`; and does not check a `BucketPolicy` with `Principal: "*"` or a
    `Lambda::Permission` granted to a foreign account.
+   **Status: closed in code (trusted policy v2).** Role trust must be the reviewed Lambda service
+   principal; the boundary must be exactly `arn:aws:iam::<account>:policy/OpenReceptionClaudeBoundary`;
+   `NotAction`, and iam / sts / cloudformation / organizations actions on anything but `iam:PassRole` of a
+   local role, are denied; role inline policies get the full review; the two CDK cross-region carve-outs are
+   exempt only in their exact reviewed shape; Lambda roles, layers and custom-resource providers must be
+   declared in the same template; resource policies may only name a local role or a service principal
+   restricted by an exact `StringEquals` / `ArnEquals` on a wildcard-free source in this account; Lambda
+   permissions likewise, and the two public permissions keep their exact reviewed shape. Added after an
+   adversarial review of the first version: templates, manifests and asset manifests are parsed with
+   duplicate keys rejected; a `Transform` / `Fn::Transform` anywhere, nested assemblies and unreviewed
+   artifact types are denied; the manifest's deploy / execution / lookup / publishing roles must be the
+   ADR 0009 `cdk-orcloud01-*` bootstrap roles for the stack's region; the template the CLI would deploy
+   (`stackTemplateAssetObjectUrl`) must be the bootstrap-bucket object named by the SHA-256 of the reviewed
+   `templateFile` and published from exactly that file; asset sources cannot run a command and container
+   images are not reviewed; any other account id in a template or manifest is denied; and properties of S3
+   buckets, DynamoDB tables, Cognito user pools, Lambda functions and SNS topics that can send data or
+   authority elsewhere (replication, notifications, resource policies, triggers, DLQs, KMS keys ...) are
+   outside a reviewed allowlist. `infra/test/fixtures/real-dev-assembly` is a byte-exact credential-free
+   synth of the three stacks with the ADR 0009 qualifier; every bypass test mutates it. A second adversarial
+   round added: a `.json` object key may only hold a stack template published under the SHA-256 of its own
+   bytes (so no asset can pre-plant the object a later template URL names), zip assets use `.zip` keys, and
+   a stack must depend on the manifest that publishes its template; legacy `aws:cdk:asset` metadata
+   (inline or in `additionalMetadataFile`, which must stay inside the assembly) and unknown artifact keys
+   are denied; `{local}` counts as this account only as a whole value or before `/` / `:`; account ids
+   split across `Fn::Join` / `Fn::Sub` parts are reassembled before the scan; SNS subscriptions must
+   connect local resources, OAuth callback / logout URLs are pinned, CloudFront access logging and alarm
+   actions other than local topics are denied; only CDK's `BootstrapVersion` parameter and rule are
+   accepted; stack tags `Project` / `Environment` / `ManagedBy` are pinned. A third adversarial round
+   added: candidate IAM (role and standalone policies) may not hold actions that change who can reach a
+   resource or where its data goes (`RESOURCE_SHARING_ACTIONS`: resource policies, ACLs, replication,
+   notifications, subscriptions, table export, function URLs / permissions / event wiring, Lambda code and
+   configuration updates, OAuth client changes, log subscriptions ..., matched as IAM globs), because a
+   deployed workload holding one could create at runtime the grants refused in templates; a resource
+   policy may grant one only in CDK's exact auto-delete shape; candidate IAM may read but not write the
+   `cdk-*` bootstrap asset buckets and may not touch `/cdk-bootstrap/*` parameters (the broker's template
+   upload and the CLI's skip-if-present publishing rely on them); the account-id scan projects nested
+   `Fn::Join`, `Fn::Sub` variables that are intrinsics and `Fn::Select` of literal lists into one string;
+   DynamoDB and S3 encryption may only use service-managed keys, log groups and SNS subscriptions have
+   property allowlists, and CloudFront distribution / behavior / origin keys are allowlisted (no edge
+   functions, WAF, real-time logs, aliases); and the three CDK provider functions whose roles hold
+   authority beyond the boundary or a resource policy (the two cross-region export providers and the
+   auto-delete provider) must run the aws-cdk-lib handler whose directory digest is pinned in the policy
+   (`PINNED_PROVIDER_FUNCTIONS`: plain files only, same digest for every source published under the code
+   key, reviewed handler, no environment or layers), no other function may run as those roles, and their
+   custom resources may only empty a bucket of the same template / write and read SSM exports under
+   `/cdk/exports/<approved stack>/` of that stack's region. A CDK upgrade that changes one of those
+   handlers is a policy change. The fixture carries those three handler directories byte-exact.
+   A delta review added: `iam:PassRole` may not name those pinned roles (a runtime role could
+   otherwise create its own function running as them), `lambda:CreateFunction` and further sharing
+   actions (SSM / API Gateway / Cognito admin / CloudFront / access grants) are denied, loop-capable
+   actions are matched as globs (`lambda:Invoke*`), the pinned code key must be published to the
+   function's own region, runtime writes to `/cdk/exports/*` are denied to everything but the two
+   reviewed carve-outs (the reader resolves those values at deploy), `Mappings` / `Conditions`
+   sections are denied (the dev assembly has none) and `Fn::Split` is resolved in the account scan.
+   **Arming requirement (provider code):** the pinned digest binds the assembly's directory, not an
+   object already in the bucket; as for templates, the armed broker must upload the pinned provider
+   zips itself (or download and verify them) instead of relying on the CLI's skip-if-present.
+   An external review (Codex) added: an app client must reference a user pool of the same template and
+   keeps the reviewed OAuth flows, scopes, auth flows, secret and identity providers (token lifetimes stay
+   free); `Custom::CDKBucketDeployment` may only copy from the bootstrap bucket into a bucket of the same
+   template; candidate IAM may write only S3 buckets the template declares (`IAM_S3_WRITE_NOT_LOCAL`);
+   and every file the policy reads from the assembly must stay inside it after resolving symlinks.
+   Residual: other Lambda code inside assets is candidate code by design (the policy reviews
+   infrastructure and the authority it grants, not application code). The permissions boundary does not
+   deny `cdk-orcloud01-*` or the sharing actions (it is within a few characters of IAM's 6,144-character
+   limit); the static rules above cover templates, and tightening the boundary is a separate human
+   change. **Arming requirement:** the CDK CLI skips publishing an object
+   that already exists, so the armed broker must upload the reviewed template bytes itself (or verify the
+   object's content) rather than trust an existing bootstrap-bucket object, and must not run the CLI's
+   asset publishing or `cdk deploy` over options this policy did not review. Product finding (not changed
+   here): the admin OAuth client enables the implicit flow with the admin scope and CDK's default
+   callback `https://example.com`.
+7. **The real dev assembly is still denied** (found while testing blocker 1 against a real synth; not
+   widened here). (a) CDK `BucketDeployment` brings an `AWS::Lambda::LayerVersion` (its CLI layer), which
+   is not a reviewed type; approving it is a policy decision. (b) The Validation synth does not pass
+   `@aws-cdk/core:bootstrapQualifier=orcloud01`, so its manifest names the default `hnb659fds` bootstrap
+   roles, which ADR 0009 denies and policy v2 rejects. (c) `cdk synth` writes every stack of the app into
+   the assembly, so `OpenReception-Notification-dev` / `OpenReception-Monitoring-dev` appear and are
+   `STACK_NOT_APPROVED`.
+   **Status (a): closed in code** (owner decision on #1146, 2026-09-28: approve the layer). The policy
+   accepts exactly one layer, `AssetDeploymentAwsCliLayerC0B4D779`, with its reviewed description, only
+   `Content.{S3Bucket, S3Key}` in the stack region's bootstrap bucket, and content equal to
+   `@aws-cdk/asset-awscli-v1` 2.2.282 `lib/layer.zip` (SHA-256 pinned in `PINNED_LAYERS`; every source
+   published under the key must be that plain file, in the layer's region). Any other layer, property or
+   content is `LAYER_NOT_REVIEWED`; a CDK upgrade that changes the file is a policy change. The zip is
+   21 MB and not committed: tests copy it from `node_modules`. As with the provider code, the armed broker
+   must upload the reviewed zip itself rather than rely on the CLI's skip-if-present. (b) / (c) are closed
+   on the broker-stack side (Validation synth flags). With both, a synth for the dev account is `allowed`.
 2. **Artifact bucket write/delete by the Validation role.** The CDK default grant lets candidate
    code of one execution overwrite or delete another execution's artifacts (cross-execution
    substitution). Needs per-execution write scope or broker-side content binding.
