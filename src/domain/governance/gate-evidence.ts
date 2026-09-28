@@ -28,7 +28,7 @@
  * - 実行中に HEAD が動いた
  * - 証拠の SHA が PR の head と違う / PR の head を読めなかった
  * - 実行したステップが 0 件（「見ていない」は「問題なし」ではない）
- * - FAIL / SKIP / 知らない状態のステップが 1 つでもある
+ * - FAIL / SKIP / FLAKY（e2e が retry で通った）/ 知らない状態のステップが 1 つでもある
  *
  * 🔴 **SKIP を通さないのは意図的。** `quality-gate.sh` の SKIP には「任意ツールが無い」
  * 「検査できなかった（#640）」「docs スコープで入力が変わらない」の 3 種があり、
@@ -266,6 +266,9 @@ export function assessGateEvidence(
     const detail = step.detail ? `（${step.detail}）` : '';
     if (step.status === 'FAIL') reasons.push(`FAIL: ${step.label}${detail}`);
     else if (step.status === 'SKIP') reasons.push(`SKIP: ${step.label}${detail}`);
+    else if (step.status === 'FLAKY') {
+      reasons.push(`FLAKY: ${step.label}${detail} —— retry で通った試行はアサーションに届いていない`);
+    }
     else reasons.push(`知らない状態 ${step.status}: ${step.label}${detail}`);
   }
 
@@ -277,7 +280,7 @@ function cell(text: string): string {
   return text.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
 }
 
-const STATUS_ICON: Readonly<Record<string, string>> = { PASS: '✅', FAIL: '❌', SKIP: '⏭️' };
+const STATUS_ICON: Readonly<Record<string, string>> = { PASS: '✅', FAIL: '❌', SKIP: '⏭️', FLAKY: '⚠️' };
 
 /** PR コメントの本文。先頭に `GATE_EVIDENCE_MARKER` を置く。 */
 export function renderGateEvidenceComment(

@@ -139,6 +139,7 @@ describe('assessGateEvidence (#1195)', () => {
     ['SKIP', 'summary=SKIP  sast (semgrep)  (semgrep not installed)', /SKIP: sast \(semgrep\)/],
     ['docs スコープの SKIP', 'summary=SKIP  e2e  (docs-scope: 入力が変わらない)', /SKIP: e2e/],
     ['FAIL', 'summary=FAIL  unit (vitest)  (43s)', /FAIL: unit \(vitest\)/],
+    ['FLAKY', 'summary=FLAKY  e2e (playwright)  (2 件が retry で通った)', /^FLAKY: e2e \(playwright\)（2 件/m],
     ['知らない状態', 'summary=WARN  lighthouse  (x)', /知らない状態 WARN/],
   ])('%s のステップがあれば PASS と書かない', (_name, line, reason) => {
     const a = assessGateEvidence(green({}, [line]), SHA);

@@ -397,6 +397,28 @@ finish() {
   exit 0
 }
 
+# run_e2e_counting_flaky <cmd...>
+#
+# e2e を走らせ、playwright の集計の `N flaky` を summary へ別の行として出す (#1195)。
+#
+# 🔴 **retry で通った試行は、アサーションに一度も届いていない。** playwright は flaky を
+# 含んでも exit 0 を返すので、`PASS  e2e` だけでは「全部 1 回で通った」と区別できない
+# （CLAUDE.md「緑を読むときは flaky を数える」）。ゲートの合否は変えない（赤にするかは
+# 運用の判断）が、証拠の判定（`gate-evidence.ts`）は `FLAKY` の行があれば PASS と書かない。
+# 終了コードは e2e のものをそのまま返す。
+run_e2e_counting_flaky() {
+  local log code flaky
+  log="$(mktemp)"
+  "$@" 2>&1 | tee "${log}"
+  code=${PIPESTATUS[0]}
+  flaky="$(gate_count_flaky < "${log}")"
+  rm -f "${log}"
+  if [[ "${flaky}" != "0" ]]; then
+    SUMMARY+=("FLAKY  e2e (playwright)  (${flaky} 件が retry で通った)")
+  fi
+  return "${code}"
+}
+
 # ---- 自己テスト用の seam --------------------------------------------------
 # `tests/config/quality-gate-stamp.test.ts` が「検査できなかったステップがあると
 # green として記録しない」ことを**実際に起動して**確かめるための入口。
@@ -411,6 +433,9 @@ if [[ -n "${QUALITY_GATE_SELFTEST:-}" ]]; then
     # #713: **実際の呼び出し経路**（終了コードを拾う 1 行を含む）を通す。
     # 検出器の中身は `QUALITY_GATE_DETECTOR_CMD` で差し替える。
     change-risk-invoke) run_change_risk_detector ;;
+    # #1195: e2e の flaky の数え方を、**本物の配線**（run_e2e_counting_flaky）で通す。
+    # 集計の出力は QUALITY_GATE_E2E_FIXTURE（ファイル）から流す。
+    e2e-flaky) step "e2e (playwright)" run_e2e_counting_flaky cat "${QUALITY_GATE_E2E_FIXTURE:?}" ;;
     *) echo "unknown QUALITY_GATE_SELFTEST: ${QUALITY_GATE_SELFTEST}" >&2; exit 2 ;;
   esac
   finish
@@ -720,7 +745,7 @@ if [[ "$RUN_E2E" -eq 1 ]]; then
   if scope_skips e2e; then scope_skip "e2e (playwright)"
   elif ! gate_tool_playwright_chromium_present; then
     skip_unverified "e2e (playwright)" "playwright chromium not installed (npx playwright install chromium)"
-  else step "e2e (playwright)" npm run --silent test:e2e; fi
+  else step "e2e (playwright)" run_e2e_counting_flaky npm run --silent test:e2e; fi
 fi
 
 if [[ "$RUN_SECRETS" -eq 1 ]]; then

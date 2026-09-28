@@ -278,3 +278,14 @@ gate_evidence_finish() {
     for line in "$@"; do _gate_evidence_line summary "${line}"; done
   } > "${file}.tmp" && mv "${file}.tmp" "${file}"
 }
+
+# gate_count_flaky — playwright の出力（標準入力）から flaky の件数を出す。無ければ 0。
+#
+# 集計は `  2 flaky` のように**行単独**で出る。テスト名に "flaky" を含む行
+# （`✓ … flaky な …`）を拾わないよう、行全体が「数字 + flaky」の形のものだけを数える。
+# 複数あれば（再実行の集計が重なったとき）最後の 1 つを採る。
+gate_count_flaky() {
+  local n
+  n="$(grep -E '^[[:space:]]*[0-9]+ flaky[[:space:]]*$' | tail -n 1 | grep -Eo '[0-9]+' || true)"
+  printf '%s\n' "${n:-0}"
+}

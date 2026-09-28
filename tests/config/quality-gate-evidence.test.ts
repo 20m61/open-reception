@@ -175,6 +175,41 @@ describe('quality-gate: --full の証拠ファイル (#1195)', () => {
     expect(assessGateEvidence(evidence, head).passed).toBe(false);
   });
 
+  /**
+   * 🔴 **flaky を数える配線そのもの**を通す。集計の出力は playwright の実際の形に揃え、
+   * テスト名に "flaky" を含む行（数えてはいけない）も混ぜる。
+   */
+  it.each([
+    ['1 件', '  ✓  3 [chromium-ipad] › a.spec.ts:1:1 › flaky な描画を待つ (1.0s)\n  1 flaky\n    [chromium-ipad] › b.spec.ts:2:2 › x\n  606 passed (10.6m)\n', '1'],
+    ['0 件（集計に flaky が無い）', '  ✓  3 [chromium-ipad] › a.spec.ts:1:1 › flaky な描画を待つ (1.0s)\n  607 passed (10.6m)\n', null],
+  ] as const)('e2e が retry で通ったら FLAKY の行を書き、PASS と認めない（%s）', (_n, fixture, count) => {
+    const { dir, head } = makeRepo();
+    const file = join(dir, '..', `e2e-${Math.random().toString(36).slice(2)}.log`);
+    writeFileSync(file, fixture);
+    expect(runGate(dir, 'e2e-flaky', [], { QUALITY_GATE_E2E_FIXTURE: file })).toBe(0);
+
+    const evidence = parseGateEvidence(readFileSync(evidencePath(dir), 'utf8'));
+    expect(evidence.steps).toContainEqual(expect.objectContaining({ status: 'PASS', label: 'e2e (playwright)' }));
+    const flaky = evidence.steps.filter((s) => s.status === 'FLAKY');
+    if (count === null) {
+      expect(flaky).toEqual([]);
+    } else {
+      expect(flaky).toEqual([
+        { status: 'FLAKY', label: 'e2e (playwright)', detail: `${count} 件が retry で通った` },
+      ]);
+      expect(assessGateEvidence(evidence, head).reasons.join('\n')).toMatch(/^FLAKY: e2e/m);
+    }
+  });
+
+  it('🔴 flaky を数える包みは、e2e の失敗をそのまま失敗として返す', () => {
+    // 集計を tee で読むために包んでいる。包みが終了コードを握り潰すと、e2e の赤が緑になる。
+    const { dir } = makeRepo();
+    const missing = join(dir, '..', 'no-such-e2e-output.log');
+    expect(runGate(dir, 'e2e-flaky', [], { QUALITY_GATE_E2E_FIXTURE: missing })).toBe(1);
+    const evidence = parseGateEvidence(readFileSync(evidencePath(dir), 'utf8'));
+    expect(evidence.steps).toContainEqual(expect.objectContaining({ status: 'FAIL', label: 'e2e (playwright)' }));
+  });
+
   it('--no-build を付けた --full は、計画から build が落ちたことを書く', () => {
     const { dir, head } = makeRepo();
     expect(runGate(dir, 'pass', ['--no-build'])).toBe(0);
