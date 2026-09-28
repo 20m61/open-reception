@@ -28,6 +28,9 @@ import {
   POLICY_RESULT_PATH,
   PROVENANCE_DECISION_PATH,
   PROVENANCE_RESULT_CHECK_SCRIPT,
+  LEDGER_AUDIT_PROTECTED_ACTIONS,
+  LEDGER_AUDIT_RETENTION_DAYS,
+  LEDGER_AUDIT_TRAIL_NAME,
   LEDGER_DENY_COMMAND,
   LEDGER_LOCAL_DIR,
   LEDGER_MODULE_LOCAL_PATH,
@@ -195,7 +198,11 @@ const allowedActions = (roleName: string): string[] =>
     .filter((s) => s.Effect === 'Allow')
     .flatMap(actionsOf);
 
-const ARTIFACT_BUCKET = byType('AWS::S3::Bucket').map(([id]) => id);
+/** The pipeline's artifact store (the ledger audit bucket is the other bucket in the stack). */
+const ARTIFACT_BUCKET = [
+  ((byType('AWS::CodePipeline::Pipeline')[0]![1].Properties.ArtifactStore as Json).Location as { Ref: string }).Ref,
+];
+const artifactBucketEntry = () => byType('AWS::S3::Bucket').find(([id]) => id === ARTIFACT_BUCKET[0])!;
 
 const LEDGER_TABLES = byType('AWS::DynamoDB::Table').map(([id]) => id);
 
@@ -1128,10 +1135,11 @@ describe('deploy account pin (pre-arming blocker 3)', () => {
 });
 
 describe('artifact bucket lifecycle and physical names (pre-arming blockers 5 and 6)', () => {
-  const [bucketId, bucket] = byType('AWS::S3::Bucket')[0]!;
+  const [bucketId, bucket] = artifactBucketEntry();
 
   it('there is exactly one bucket and it is the pipeline artifact store', () => {
-    expect(byType('AWS::S3::Bucket')).toHaveLength(1);
+    // The artifact store and the ledger audit bucket (CloudTrail).
+    expect(byType('AWS::S3::Bucket')).toHaveLength(2);
     const [, pipeline] = byType('AWS::CodePipeline::Pipeline')[0]!;
     expect((pipeline.Properties.ArtifactStore as Json).Location).toEqual({ Ref: bucketId });
   });
@@ -1161,7 +1169,7 @@ describe('artifact bucket lifecycle and physical names (pre-arming blockers 5 an
       RestrictPublicBuckets: true,
     });
     expect(JSON.stringify(bucket.Properties.BucketEncryption)).toContain('AES256');
-    const [, policy] = byType('AWS::S3::BucketPolicy')[0]!;
+    const [, policy] = byType('AWS::S3::BucketPolicy').find(([, r]) => JSON.stringify(r.Properties.Bucket).includes(bucketId))!;
     const statements = (policy.Properties.PolicyDocument as { Statement: Statement[] }).Statement;
     expect(statements.filter((st) => st.Effect === 'Allow')).toEqual([]);
     expect(statements).toContainEqual(
@@ -1178,6 +1186,7 @@ describe('artifact bucket lifecycle and physical names (pre-arming blockers 5 an
       'AWS::Logs::LogGroup',
       'AWS::Logs::LogGroup',
       'AWS::S3::Bucket',
+      'AWS::S3::Bucket',
     ]);
     for (const [id, r] of retained) {
       const named = Object.keys(r.Properties ?? {}).filter((k) => /Name$/.test(k));
@@ -1187,7 +1196,7 @@ describe('artifact bucket lifecycle and physical names (pre-arming blockers 5 an
 });
 
 describe('execution provenance (pre-arming blockers 2 and 4)', () => {
-  const [bucketId, bucket] = byType('AWS::S3::Bucket')[0]!;
+  const [bucketId, bucket] = artifactBucketEntry();
 
   it('the artifact bucket keeps every version, and old versions still expire', () => {
     expect(bucket.Properties.VersioningConfiguration).toEqual({ Status: 'Enabled' });
@@ -1455,5 +1464,66 @@ describe('ledger wiring (#1153): delivery, pin and denial audit', () => {
     expect(request.Item.denialRule?.S).toBe('TRUSTED_POLICY_DENIED');
     expect(request.Item.SK?.S).toBe('ATTEMPT#OpenReceptionTrustedDevDeployBroker:0000-1111');
     expect(request.ConditionExpression).toBe('attribute_not_exists(#PK)');
+  });
+});
+
+describe('ledger audit: CloudTrail data events on the ledger table (#1153)', () => {
+  const [trailId, trail] = byType('AWS::CloudTrail::Trail')[0]!;
+  const [ledgerId] = byType('AWS::DynamoDB::Table')[0]!;
+  const auditBucketId = byType('AWS::S3::Bucket').map(([id]) => id).find((id) => id !== ARTIFACT_BUCKET[0])!;
+
+  it('is one trail recording only write data events of exactly the ledger table', () => {
+    expect(byType('AWS::CloudTrail::Trail')).toHaveLength(1);
+    expect(trail.Properties.AdvancedEventSelectors).toEqual([
+      {
+        Name: 'SparseLedgerWrites',
+        FieldSelectors: [
+          { Field: 'eventCategory', Equals: ['Data'] },
+          { Field: 'resources.type', Equals: ['AWS::DynamoDB::Table'] },
+          { Field: 'resources.ARN', Equals: [{ 'Fn::GetAtt': [ledgerId, 'Arn'] }] },
+          { Field: 'readOnly', Equals: ['false'] },
+        ],
+      },
+    ]);
+    // No classic selectors (which would add management events) and no extra regions.
+    expect(trail.Properties.EventSelectors).toBeUndefined();
+    expect(trail.Properties).toMatchObject({ IsLogging: true, EnableLogFileValidation: true, IsMultiRegionTrail: false, IncludeGlobalServiceEvents: false, TrailName: LEDGER_AUDIT_TRAIL_NAME });
+    expect(trail.Properties.S3BucketName).toEqual({ Ref: auditBucketId });
+    expect((trail as unknown as { DependsOn?: string[] }).DependsOn?.some((d) => byType('AWS::S3::BucketPolicy').some(([pid]) => pid === d))).toBe(true);
+    void trailId;
+  });
+
+  it('the audit bucket is private, versioned, retained and kept for the reviewed period', () => {
+    const [, bucket] = byType('AWS::S3::Bucket').find(([id]) => id === auditBucketId)!;
+    expect(bucket.Properties.VersioningConfiguration).toEqual({ Status: 'Enabled' });
+    expect(bucket.Properties.PublicAccessBlockConfiguration).toEqual({ BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true });
+    expect((bucket as unknown as { DeletionPolicy?: string }).DeletionPolicy).toBe('Retain');
+    const rules = (bucket.Properties.LifecycleConfiguration as Json).Rules as Json[];
+    expect(rules).toEqual([expect.objectContaining({ ExpirationInDays: LEDGER_AUDIT_RETENTION_DAYS, NoncurrentVersionExpiration: { NoncurrentDays: LEDGER_AUDIT_RETENTION_DAYS } })]);
+  });
+
+  it('only CloudTrail (for this trail) may write; nobody but the human deploy role may erase or unprotect', () => {
+    const [, policy] = byType('AWS::S3::BucketPolicy').find(([, r]) => JSON.stringify(r.Properties.Bucket).includes(auditBucketId))!;
+    const statements = (policy.Properties.PolicyDocument as { Statement: Statement[] }).Statement;
+    const allows = statements.filter((st) => st.Effect === 'Allow');
+    expect(allows.map((st) => JSON.stringify(st.Principal))).toEqual([JSON.stringify({ Service: 'cloudtrail.amazonaws.com' }), JSON.stringify({ Service: 'cloudtrail.amazonaws.com' })]);
+    expect(allows.flatMap(actionsOf).sort()).toEqual(['s3:getbucketacl', 's3:putobject']);
+    for (const st of allows) expect(JSON.stringify(st.Condition)).toContain(`trail/${LEDGER_AUDIT_TRAIL_NAME}`);
+    const protect = statements.find((st) => st.Effect === 'Deny' && actionsOf(st).includes('s3:deleteobjectversion'))!;
+    expect(actionsOf(protect).sort()).toEqual(LEDGER_AUDIT_PROTECTED_ACTIONS.map((a) => a.toLowerCase()).sort());
+    for (const a of ['s3:deleteobjectversion', 's3:putbucketpolicy', 's3:putbucketacl', 's3:putobjectacl', 's3:putbucketpublicaccessblock', 's3:putencryptionconfiguration', 's3:putbucketownershipcontrols']) {
+      expect(actionsOf(protect), a).toContain(a);
+    }
+    expect(protect.Principal).toEqual({ AWS: '*' });
+    expect(protect.Condition).toEqual({ ArnNotEquals: { 'aws:PrincipalArn': [{ Ref: 'SparseLedgerStackDeployRoleArn' }] } });
+  });
+
+  it('no build role has any authority over the trail or its bucket', () => {
+    for (const roleName of [VALIDATION_ROLE, BROKER_ROLE]) {
+      for (const st of statementsFor(roleLogicalId(roleName)).filter((s) => s.Effect === 'Allow')) {
+        expect(actionsOf(st).some((a) => a.startsWith('cloudtrail:'))).toBe(false);
+        expect(JSON.stringify(st.Resource ?? null)).not.toContain(auditBucketId);
+      }
+    }
   });
 });
