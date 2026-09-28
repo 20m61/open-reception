@@ -45,7 +45,7 @@ qualifier: `orcloud01`。
 **人間が Admin 権限を持つ IAM user（`user/CDK`）で実行する。**
 
 > 🔴 **`claude-boundary.json` は managed policy の 6,144 文字上限に近い。**
-> 2026-09-28 時点で **6,074 文字（空白を除いた実サイズ。残り 70 文字）**。
+> 2026-09-28 時点で **6,108 文字（空白を除いた実サイズ。残り 36 文字）**。
 > 変遷: carve-out で 5,148 → 5,682（+534）、`DenyBoundaryEscape` 分割で 5,876（+194）、
 > `PutRolePermissionsBoundary` の Allow で 5,909（+33）、Secrets Manager の
 > 読み取り許可で 6,240 相当まで膨らんだが、**Deny を削らずに詰めて** 6,037 まで戻した。
@@ -54,11 +54,15 @@ qualifier: `orcloud01`。
 > 1 ARN 追加し、`DenyForeignProjectStacks` に broker stack（`OpenReception-DevDeployBroker`）を
 > 追加して 5,946 → 6,074（+128）。新しいステートメントでは上限を超えるため既存の Deny に畳み、
 > account 部を `*` にして短くした（Deny なので覆う範囲が増える＝安全側）。
-> 2026-09-28 に arming 前ブロッカー 8（#1146）で次の 2 つを足した。
-> - `DenyBrokerControlPlane`: broker の log group・警報・SNS topic・bucket
+> 2026-09-28 に arming 前ブロッカー 8（#1146 / #1192）で次を足した。新しいステートメントは作らず、
+> すべて既存の Deny に畳んだ。
+> - `DenyForeignProjectData`: broker の log group・警報・SNS topic・bucket
 >   （`logs:*` / `cloudwatch:*` / `sns:*` / `s3:*`。bucket は小文字で stack 名ごと切られるので
->   `openreception-devdeploy*`）
-> - `DenyIamWriteOnForeignPrincipals` への `role/*DevDeploy*`（broker の role）
+>   `openreception-devdeploy*`）と、broker 専用 bootstrap の bucket `cdk-orbrkr01-*`
+> - `DenyIamWriteOnForeignPrincipals`: `role/*DevDeploy*`（broker の role）
+> - `DenySharedBootstrapRoles`: broker 専用 bootstrap の `role/cdk-orbrkr01-*`
+> - `DenyPrincipalCreationAndOrgChanges`（cfn-exec は `DenyDnsAndPrincipals`）:
+>   `logs:*AccountPolicy`・`s3:Create*AccessPoint*`（account 単位の経路）
 >
 > 余白を作るために、次の 2 つを行った。
 > - (a) すべての Deny の `Resource` の account 部を `*` にした（覆う範囲が増える＝安全側）。
@@ -66,7 +70,7 @@ qualifier: `orcloud01`。
 > - (b) `DenyForeignProjectData` から `nodi-*/*`・`salon-loop-*/*`・`cdk-staging-*/*` を外した
 >   （`*` は `/` を越えるので、bucket のパターンがオブジェクトも覆う。被覆はテストで固定）。
 >
-> その結果、boundary は 6,074 → 6,074（増減なし）。
+> その結果、boundary は 6,074 → 6,108（+34）。
 > 移行用の `claude-*-migration.json` は、移行が完了したので 2026-09-28 に廃止した（ステップ 9d）。
 >
 > 🔴 **詰め方の正解（2026-08-15）**: 「入らないから Deny を削る」ではなく
@@ -82,7 +86,7 @@ qualifier: `orcloud01`。
 > ポリシーになるので、`aws-policy-shape.test.ts` の「IAM の許すパスで始まる」テストで
 > 固定してある。2026-08-15 に実際にこれで `create-policy-version` が落ちた。
 >
-> **残りは 70 文字。**
+> **残りは 36 文字。**
 > 次にステートメントを足す人は、まず余白を測ること:
 >
 > ```bash
@@ -95,7 +99,7 @@ qualifier: `orcloud01`。
 > どちらも attach する**（IAM は 1 プリンシパルに boundary を 1 本しか付けられないので、
 > **分割はできない**）—— つまり実質的には**アクションの列挙を整理するしかない**。
 > 「入らないから Deny を削る」は境界の後退なので、必ず人間の承認を取ること。
-> `claude-cfn-exec.json` は 5,215 / 6,144（残り 929）で余裕がある。
+> `claude-cfn-exec.json` は 5,249 / 6,144（残り 895）で余裕がある。
 >
 > 🔴 **層 2（cfn-exec）と層 4（boundary）は同じ規則の 2 つの写しである。** 実効権限は
 > `identity ∩ boundary` なので、**片方だけ直しても効かない**。2026-08-15 にこれで 2 度落ちた

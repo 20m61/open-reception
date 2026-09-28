@@ -20,6 +20,7 @@ import {
   nodeEval,
   trustedPolicySha256,
 } from '../lib/stacks/dev-deploy-broker-stack';
+import { BROKER_BOOTSTRAP_QUALIFIER } from '../lib/config/broker-bootstrap';
 
 /**
  * Adversarial Phase 1 invariants for the dev deploy broker (#1146).
@@ -606,6 +607,29 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
     // The deny prefix is `<stackName>-*`, which is how CloudFormation names an unnamed table.
     const bin = readFileSync(resolve(__dirname, '../bin/dev-deploy-broker.ts'), 'utf8');
     expect(bin).toContain("stackName: 'OpenReception-DevDeployBroker'");
+  });
+
+  it('the broker app uses its own bootstrap, whose roles and buckets the Claude chain cannot reach (#1146 blocker 8)', () => {
+    const bin = readFileSync(resolve(__dirname, '../bin/dev-deploy-broker.ts'), 'utf8');
+    expect(bin).toContain('synthesizer: new cdk.DefaultStackSynthesizer({ qualifier: BROKER_BOOTSTRAP_QUALIFIER })');
+    expect(BROKER_BOOTSTRAP_QUALIFIER).toMatch(/^[a-z0-9]{1,10}$/);
+    // Not Claude's own bootstrap, and not the shared one.
+    expect(['orcloud01', 'hnb659fds']).not.toContain(BROKER_BOOTSTRAP_QUALIFIER);
+    for (const name of ['claude-boundary.json', 'claude-cfn-exec.json']) {
+      const doc = JSON.parse(readFileSync(resolve(__dirname, '../../scripts/aws-policies', name), 'utf8'));
+      const sids = (sid: string) => documentStatements(doc).find((st) => (st as { Sid?: string }).Sid === sid)!;
+      expect(sids('DenySharedBootstrapRoles').Resource, name).toContain(`arn:aws:iam::*:role/cdk-${BROKER_BOOTSTRAP_QUALIFIER}-*`);
+      expect(sids('DenyForeignProjectData').Resource, name).toContain(`arn:aws:s3:::cdk-${BROKER_BOOTSTRAP_QUALIFIER}-*`);
+    }
+    // The synthesized template asks for that bootstrap (version parameter and deploy / exec roles).
+    const app = new cdk.App();
+    const stack = new DevDeployBrokerStack(app, 'QualifiedBroker', {
+      stackName: 'OpenReception-DevDeployBroker',
+      env: { account: '822063948773', region: 'ap-northeast-1' },
+      synthesizer: new cdk.DefaultStackSynthesizer({ qualifier: BROKER_BOOTSTRAP_QUALIFIER }),
+    });
+    const template = Template.fromStack(stack).toJSON() as { Parameters: Record<string, { Default?: string }> };
+    expect(template.Parameters.BootstrapVersion?.Default).toBe(`/cdk-bootstrap/${BROKER_BOOTSTRAP_QUALIFIER}/version`);
   });
 
   it('the broker buildspec does not run the ledger yet; when wired it must be a sha256-pinned stack asset', () => {

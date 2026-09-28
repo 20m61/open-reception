@@ -158,7 +158,7 @@
     {
       "Sid": "DenyForeignProjectData",
       "Effect": "Deny",
-      "Action": ["dynamodb:*", "s3:*"],
+      "Action": ["dynamodb:*", "s3:*", "logs:*", "cloudwatch:*", "sns:*"],
       "Resource": [
         "arn:aws:dynamodb:*:*:table/nodi-*",
         "arn:aws:dynamodb:*:*:table/salon-loop-*",
@@ -167,18 +167,12 @@
         "arn:aws:s3:::salon-loop-*",
         "arn:aws:s3:::cdk-hnb659fds-*",
         "arn:aws:s3:::cdk-hnb659fds-*/*",
-        "arn:aws:s3:::cdk-staging-*"
-      ]
-    },
-    {
-      "Sid": "DenyBrokerControlPlane",
-      "Effect": "Deny",
-      "Action": ["logs:*", "cloudwatch:*", "sns:*", "s3:*"],
-      "Resource": [
+        "arn:aws:s3:::cdk-staging-*",
         "arn:aws:logs:*:*:log-group:OpenReception-DevDeployBroker-*",
         "arn:aws:cloudwatch:*:*:alarm:OpenReception-DevDeployBroker-*",
         "arn:aws:sns:*:*:OpenReception-DevDeployBroker-*",
-        "arn:aws:s3:::openreception-devdeploy*"
+        "arn:aws:s3:::openreception-devdeploy*",
+        "arn:aws:s3:::cdk-orbrkr01-*"
       ]
     },
     {
@@ -187,7 +181,8 @@
       "Action": ["sts:AssumeRole", "iam:PassRole"],
       "Resource": [
         "arn:aws:iam::*:role/cdk-hnb659fds-*",
-        "arn:aws:iam::*:role/cdk-staging-*"
+        "arn:aws:iam::*:role/cdk-staging-*",
+        "arn:aws:iam::*:role/cdk-orbrkr01-*"
       ]
     },
     {
@@ -210,7 +205,9 @@
         "iam:CreateUser",
         "iam:CreateAccessKey",
         "organizations:*",
-        "account:*"
+        "account:*",
+        "logs:*AccountPolicy",
+        "s3:Create*AccessPoint*"
       ],
       "Resource": "*"
     },

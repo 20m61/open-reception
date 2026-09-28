@@ -1318,7 +1318,8 @@ describe.each([
   'claude-cfn-exec.json',
 ])('%s: broker の制御面を Claude の chain から Deny する (#1146 blocker 8)', (name) => {
   const doc = load(name);
-  const deny = doc.Statement.find((s) => s.Sid === 'DenyBrokerControlPlane');
+  // 余白が無いので、broker の制御面は既存の DenyForeignProjectData に畳んである（Deny × Deny の直積は Deny を増やすだけ）。
+  const deny = doc.Statement.find((s) => s.Sid === 'DenyForeignProjectData');
   const unconditionalDenies = doc.Statement.filter(
     (s) => s.Effect === 'Deny' && s.Condition === undefined && s.NotAction === undefined && s.NotResource === undefined,
   );
@@ -1360,6 +1361,17 @@ describe.each([
     ['logs:DeleteMetricFilter', 'arn:aws:logs:ap-northeast-1:822063948773:log-group:OpenReception-DevDeployBroker-BrokerLogs003CD6FC-AbCdEf123456:*'],
     ['sns:SetSubscriptionAttributes', 'arn:aws:sns:ap-northeast-1:822063948773:OpenReception-DevDeployBroker-BrokerAlerts7ED7E89C-AbCdEf123456:0b8e2d6c-1111-2222-3333-444455556666'],
     ['s3:PutBucketPolicy', 'arn:aws:s3:::openreception-devdeployb-pipelineartifacts4a9b2621-abcdef123456'],
+    // broker 専用 bootstrap（qualifier orbrkr01。owner 決定 2026-09-28）: role を引き受けない・渡さない、bucket に触れない
+    ['sts:AssumeRole', 'arn:aws:iam::822063948773:role/cdk-orbrkr01-deploy-role-822063948773-ap-northeast-1'],
+    ['iam:PassRole', 'arn:aws:iam::822063948773:role/cdk-orbrkr01-cfn-exec-role-822063948773-ap-northeast-1'],
+    ['sts:AssumeRole', 'arn:aws:iam::822063948773:role/cdk-orbrkr01-file-publishing-role-822063948773-ap-northeast-1'],
+    ['s3:PutObject', 'arn:aws:s3:::cdk-orbrkr01-assets-822063948773-ap-northeast-1/abc.json'],
+    // broker の log group / bucket へ別経路で届く account 単位の操作
+    ['logs:PutAccountPolicy', '*'],
+    ['logs:DeleteAccountPolicy', '*'],
+    ['s3:CreateAccessPoint', 'arn:aws:s3:ap-northeast-1:822063948773:accesspoint/x'],
+    ['s3:CreateAccessPointForObjectLambda', 'arn:aws:s3-object-lambda:ap-northeast-1:822063948773:accesspoint/x'],
+    ['s3:CreateMultiRegionAccessPoint', 'arn:aws:s3::822063948773:accesspoint/x.mrap'],
   ])('%s on %s を Deny する', (action, arn) => {
     expect(denies(action, arn)).toBe(true);
   });
@@ -1372,6 +1384,10 @@ describe.each([
       ['sns:DeleteTopic', 'arn:aws:sns:ap-northeast-1:822063948773:OpenReception-Notification-dev-Alerts-AbCdEf123456'],
       ['s3:PutObject', 'arn:aws:s3:::openreception-web-dev-assets-abcdef123456/x.js'],
       ['iam:DeleteRolePolicy', 'arn:aws:iam::822063948773:role/OpenReception-Web-dev-CustomCDKBucketDeployment-AbCdEf123456'],
+      // Claude 自身の bootstrap（orcloud01）は引き続き使える
+      ['sts:AssumeRole', 'arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1'],
+      ['s3:PutObject', 'arn:aws:s3:::cdk-orcloud01-assets-822063948773-ap-northeast-1/abc.zip'],
+      ['logs:DescribeAccountPolicies', '*'],
     ];
     for (const [action, arn] of own) {
       expect(denies(action, arn), arn).toBe(false);
