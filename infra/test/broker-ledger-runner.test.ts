@@ -234,12 +234,26 @@ describe('runReserve / runOutcome without a ledger engine', () => {
     writeFileSync(join(dir, 'other.json'), JSON.stringify({ attemptId: 'b:other', day: '2026-09-28' }));
     expect((await R.runOutcome({ client, outcome: 'succeeded', env: env('b:7'), reservationPath: join(dir, 'other.json') })).line.why).toMatch(/another attempt/);
   });
+
+  it('an outcome is recorded for the reserved revision, never the one in the environment', async () => {
+    const dir = scratch();
+    const writes: J[] = [];
+    const client = { transactGetItems: () => ({}), putItem: () => ({}), transactWriteItems: (req: J) => (writes.push(req), {}) };
+    const reserved = 'e'.repeat(40);
+    writeFileSync(join(dir, 'r.json'), JSON.stringify({ attemptId: 'b:rev', day: '2026-09-28', revision: reserved }));
+    const r = await R.runOutcome({ client, outcome: 'failed', env: env('b:rev', undefined, { OR_TRUSTED_SOURCE_REVISION: 'f'.repeat(40) }), now: new Date('2026-09-28T03:00:00Z'), reservationPath: join(dir, 'r.json') });
+    expect(r.exitCode).toBe(0);
+    const text = JSON.stringify(writes);
+    expect(text).toContain(`REV#${reserved}`);
+    expect(text).not.toContain('f'.repeat(40));
+  });
 });
 
 describe('ambiguity, local record failure and invocation (review F1 / F5 / F6)', () => {
   const genesisOnly = (ledgerId: string, day: string) => ({
     Responses: [
       { Item: { PK: { S: 'PROJECT#open-reception' }, SK: { S: 'META#genesis' }, ledgerId: { S: ledgerId }, timezone: { S: 'Asia/Tokyo' }, totalAttempts: { N: '0' } } },
+      {},
       {},
       {},
     ],
@@ -382,12 +396,14 @@ describe.skipIf(!ENABLED)('ledger runner × real DynamoDB engine through the CLI
     const now = tokyoNoon(1);
     const dir = scratch();
     const attempt = 'OpenReceptionTrustedDevDeployBroker:dup';
-    const first = await R.runReserve({ client: R.cliClient(undefined, { dir: cliDir }), env: env(attempt, TABLE, { OR_SPARSE_LEDGER_ID: LEDGER_ID }), now, reservationPath: join(dir, 'a.json'), reserveStartedPath: join(dir, 'a.started') });
+    // Its own revision, so only the reused attempt id can refuse the second reservation.
+    const dupRev = { OR_SPARSE_LEDGER_ID: LEDGER_ID, OR_TRUSTED_SOURCE_REVISION: '7'.repeat(40) };
+    const first = await R.runReserve({ client: R.cliClient(undefined, { dir: cliDir }), env: env(attempt, TABLE, dupRev), now, reservationPath: join(dir, 'a.json'), reserveStartedPath: join(dir, 'a.started') });
     expect(first.exitCode).toBe(0);
-    const again = await R.runReserve({ client: R.cliClient(undefined, { dir: cliDir }), env: env(attempt, TABLE, { OR_SPARSE_LEDGER_ID: LEDGER_ID }), now, reservationPath: join(dir, 'b.json'), reserveStartedPath: join(dir, 'b.started') });
+    const again = await R.runReserve({ client: R.cliClient(undefined, { dir: cliDir }), env: env(attempt, TABLE, dupRev), now, reservationPath: join(dir, 'b.json'), reserveStartedPath: join(dir, 'b.started') });
     expect(again).toMatchObject({ exitCode: 44, line: { rule: 'SPARSE_LEDGER_CONFLICT' } });
-    expect((await R.runOutcome({ client: R.cliClient(undefined, { dir: cliDir }), outcome: 'failed', env: env(attempt, TABLE), now, reservationPath: join(dir, 'a.json') })).exitCode).toBe(0);
-    expect((await R.runOutcome({ client: R.cliClient(undefined, { dir: cliDir }), outcome: 'succeeded', env: env(attempt, TABLE), now, reservationPath: join(dir, 'a.json') })).exitCode).toBe(45);
+    expect((await R.runOutcome({ client: R.cliClient(undefined, { dir: cliDir }), outcome: 'failed', env: env(attempt, TABLE, dupRev), now, reservationPath: join(dir, 'a.json') })).exitCode).toBe(0);
+    expect((await R.runOutcome({ client: R.cliClient(undefined, { dir: cliDir }), outcome: 'succeeded', env: env(attempt, TABLE, dupRev), now, reservationPath: join(dir, 'a.json') })).exitCode).toBe(45);
   });
 
   it('a wrong ledger id pin denies as corrupt through the CLI path', async () => {
@@ -410,7 +426,7 @@ describe.skipIf(!ENABLED)('ledger runner × real DynamoDB engine through the CLI
       Array.from({ length: 6 }, (_, i) =>
         new Promise<{ exitCode: number; line: J }>((done) => {
           // Separate processes, so the engine (not this process) serializes the transactions.
-          const script = `import(${JSON.stringify(pathToFileURL(RUNNER).href)}).then(async (R) => { const r = await R.runReserve({ client: R.cliClient(undefined, { dir: ${JSON.stringify(cliDir)} }), env: ${JSON.stringify(env(`OpenReceptionTrustedDevDeployBroker:race-${i}`, TABLE, { OR_SPARSE_LEDGER_ID: LEDGER_ID }))}, now: new Date(${now.getTime()}), reservationPath: ${JSON.stringify(join(dir, `race-${i}.json`))}, reserveStartedPath: ${JSON.stringify(join(dir, `race-${i}.started`))} }); process.stdout.write(JSON.stringify(r)); })`;
+          const script = `import(${JSON.stringify(pathToFileURL(RUNNER).href)}).then(async (R) => { const r = await R.runReserve({ client: R.cliClient(undefined, { dir: ${JSON.stringify(cliDir)} }), env: ${JSON.stringify(env(`OpenReceptionTrustedDevDeployBroker:race-${i}`, TABLE, { OR_SPARSE_LEDGER_ID: LEDGER_ID, OR_TRUSTED_SOURCE_REVISION: 'c'.repeat(40) }))}, now: new Date(${now.getTime()}), reservationPath: ${JSON.stringify(join(dir, `race-${i}.json`))}, reserveStartedPath: ${JSON.stringify(join(dir, `race-${i}.started`))} }); process.stdout.write(JSON.stringify(r)); })`;
           const out = execFileSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', env: { ...process.env } });
           done(JSON.parse(out));
         }),

@@ -44,6 +44,7 @@ export const GATE_RULES = Object.freeze([
   'TRUSTED_PROVENANCE_DENIED',
   'TRUSTED_REVISION_MISMATCH',
   'TRUSTED_POLICY_DENIED',
+  'TARGET_STACK_NOT_STABLE',
   'BROKER_NOT_ARMED',
 ]);
 export const UNKNOWN_GATE_RULE = 'BROKER_GATE_UNKNOWN';
@@ -226,7 +227,7 @@ export async function runOutcome({ client, outcome, env = process.env, now = new
     return { exitCode: 45, line: { event: 'ledger.outcome_failed', why: 'reservation belongs to another attempt', attemptId: a.attemptId ?? null } };
   }
   try {
-    await recordOutcome({ client, table: a.table, attemptId: reservation.attemptId, day: reservation.day, outcome, now });
+    await recordOutcome({ client, table: a.table, attemptId: reservation.attemptId, day: reservation.day, outcome, now, revision: reservation.revision });
     return { exitCode: 0, line: { event: 'ledger.outcome_recorded', outcome, attemptId: reservation.attemptId, day: reservation.day, revision: reservation.revision } };
   } catch (error) {
     return { exitCode: 45, line: { event: 'ledger.outcome_failed', outcome, attemptId: reservation.attemptId, day: reservation.day, why: error instanceof Error ? error.name : 'unknown' } };
