@@ -180,8 +180,13 @@ describe('quality-gate: --full の証拠ファイル (#1195)', () => {
    * テスト名に "flaky" を含む行（数えてはいけない）も混ぜる。
    */
   it.each([
-    ['1 件', '  ✓  3 [chromium-ipad] › a.spec.ts:1:1 › flaky な描画を待つ (1.0s)\n  1 flaky\n    [chromium-ipad] › b.spec.ts:2:2 › x\n  606 passed (10.6m)\n', '1'],
-    ['0 件（集計に flaky が無い）', '  ✓  3 [chromium-ipad] › a.spec.ts:1:1 › flaky な描画を待つ (1.0s)\n  607 passed (10.6m)\n', null],
+    ['1 件', '  ✓  3 [chromium-ipad] › a.spec.ts:1:1 › flaky な描画を待つ (1.0s)\n  1 flaky\n    [chromium-ipad] › b.spec.ts:2:2 › x\n  606 passed (10.6m)\n', '1 件が retry で通った'],
+    // 🔴 テスト名の「2 flaky」を集計と取り違えない（行頭・行末の錨の下界）。
+    ['0 件（テスト名に「N flaky」を含む）', '  ✓  3 [chromium-ipad] › a.spec.ts:1:1 › retries 2 flaky tests (1.0s)\n  607 passed (10.6m)\n', null],
+    // 色付きの集計（FORCE_COLOR）も数える。
+    ['色付きの 2 件', '  \u001b[33m  2 flaky\u001b[39m\n  \u001b[32m  605 passed\u001b[39m\u001b[2m (10.6m)\u001b[22m\n', '2 件が retry で通った'],
+    // 🔴 集計行が無い（github reporter 等）なら「数えられなかった」として PASS と認めない。
+    ['集計が読めない', '::notice title=🎭 Playwright Run Summary::  2 flaky%0A  605 passed (10.6m)\n', '集計を読めず flaky を数えられなかった'],
   ] as const)('e2e が retry で通ったら FLAKY の行を書き、PASS と認めない（%s）', (_n, fixture, count) => {
     const { dir, head } = makeRepo();
     const file = join(dir, '..', `e2e-${Math.random().toString(36).slice(2)}.log`);
@@ -195,7 +200,7 @@ describe('quality-gate: --full の証拠ファイル (#1195)', () => {
       expect(flaky).toEqual([]);
     } else {
       expect(flaky).toEqual([
-        { status: 'FLAKY', label: 'e2e (playwright)', detail: `${count} 件が retry で通った` },
+        { status: 'FLAKY', label: 'e2e (playwright)', detail: count },
       ]);
       expect(assessGateEvidence(evidence, head).reasons.join('\n')).toMatch(/^FLAKY: e2e/m);
     }

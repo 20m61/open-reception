@@ -413,7 +413,9 @@ run_e2e_counting_flaky() {
   code=${PIPESTATUS[0]}
   flaky="$(gate_count_flaky < "${log}")"
   rm -f "${log}"
-  if [[ "${flaky}" != "0" ]]; then
+  if [[ "${code}" -eq 0 && "${flaky}" == "unknown" ]]; then
+    SUMMARY+=("FLAKY  e2e (playwright)  (集計を読めず flaky を数えられなかった)")
+  elif [[ "${flaky}" != "0" && "${flaky}" != "unknown" ]]; then
     SUMMARY+=("FLAKY  e2e (playwright)  (${flaky} 件が retry で通った)")
   fi
   return "${code}"

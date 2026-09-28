@@ -279,13 +279,23 @@ gate_evidence_finish() {
   } > "${file}.tmp" && mv "${file}.tmp" "${file}"
 }
 
-# gate_count_flaky — playwright の出力（標準入力）から flaky の件数を出す。無ければ 0。
+# gate_count_flaky — playwright の出力（標準入力）から flaky の件数を出す。
 #
 # 集計は `  2 flaky` のように**行単独**で出る。テスト名に "flaky" を含む行
-# （`✓ … flaky な …`）を拾わないよう、行全体が「数字 + flaky」の形のものだけを数える。
+# （`› retries 2 flaky tests`）を拾わないよう、行全体が「数字 + flaky」の形のものだけを数える。
+# 色付き出力（FORCE_COLOR）では集計が ANSI の色コードで包まれるので、先に落とす。
 # 複数あれば（再実行の集計が重なったとき）最後の 1 つを採る。
+#
+# 🔴 **集計行（`N passed` / `N failed`）そのものが見つからなければ `unknown` を出す。**
+# `reporter: 'github'`（CI=1 のとき）は集計を `::notice` 行へ埋めるので、flaky が在っても
+# 数えられない。「数えられなかった」を 0 件に倒さない（独立レビュー MINOR）。
 gate_count_flaky() {
-  local n
-  n="$(grep -E '^[[:space:]]*[0-9]+ flaky[[:space:]]*$' | tail -n 1 | grep -Eo '[0-9]+' || true)"
+  local plain n
+  plain="$(sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g')"
+  if ! printf '%s\n' "${plain}" | grep -Eq '^[[:space:]]*[0-9]+ (passed|failed)([[:space:]]|$)'; then
+    printf 'unknown\n'
+    return
+  fi
+  n="$(printf '%s\n' "${plain}" | grep -E '^[[:space:]]*[0-9]+ flaky[[:space:]]*$' | tail -n 1 | grep -Eo '[0-9]+' || true)"
   printf '%s\n' "${n:-0}"
 }
