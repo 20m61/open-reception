@@ -117,6 +117,19 @@ export const PROVENANCE_DECISION_PATH = `${BROKER_OUT_DIR}/provenance.json`;
 export const POLICY_RESULT_PATH = `${BROKER_OUT_DIR}/trusted-policy-result.json`;
 export const BROKER_RESULT_PATH = `${BROKER_OUT_DIR}/broker-result.json`;
 
+/**
+ * Sparse ledger modules (#1153 wiring). Published as stack assets and SHA-256 verified like the
+ * trusted policy; the runner imports `./sparse-ledger.mjs`, so both land in one broker-local dir.
+ */
+export const LEDGER_MODULE_SOURCE_PATH = path.join(__dirname, '../../broker/sparse-ledger.mjs');
+export const LEDGER_RUNNER_SOURCE_PATH = path.join(__dirname, '../../broker/ledger-runner.mjs');
+export const LEDGER_LOCAL_DIR = '/tmp/open-reception-ledger';
+export const LEDGER_MODULE_LOCAL_PATH = `${LEDGER_LOCAL_DIR}/sparse-ledger.mjs`;
+export const LEDGER_RUNNER_LOCAL_PATH = `${LEDGER_LOCAL_DIR}/ledger-runner.mjs`;
+export const LEDGER_GATE_FILE = `${LEDGER_LOCAL_DIR}/gate`;
+/** Same shape as `isLedgerId` in sparse-ledger.mjs (the genesis item must carry this value). */
+export const LEDGER_ID_PATTERN = '^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$';
+
 export const PIPELINE_NAME = 'OpenReceptionSparseDevDeploy';
 /** Stage/Action names the provenance check binds to (Source, Validate, BrokerBoundary). */
 export const PIPELINE_STAGES = Object.freeze({
@@ -214,6 +227,25 @@ export const BROKER_MODULE_HASH_CHECK_SCRIPT = [
   'const actual=crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");',
   'if(actual!==expected){throw new Error("module sha256 mismatch")}',
 ].join(' ');
+
+/** Name the gate the broker is about to evaluate; `deny` records it if the build stops there. */
+export const gateCommand = (rule: 'BROKER_MODULE_INTEGRITY' | 'TRUSTED_PROVENANCE_DENIED' | 'TRUSTED_REVISION_MISMATCH' | 'TRUSTED_POLICY_DENIED' | 'BROKER_NOT_ARMED') =>
+  `echo ${rule} > ${LEDGER_GATE_FILE}`;
+
+/**
+ * `finally`: audit the denial of whichever gate stopped the build (S6b: recorded, no budget).
+ * The ledger files are re-verified in the same shell line, so an unverified runner never runs
+ * (e.g. when the build failed at its own hash check). Never fails the phase.
+ */
+export const LEDGER_DENY_COMMAND =
+  // Only a failing build is a denial (a future successful path must never be recorded as one).
+  'if [ "$CODEBUILD_BUILD_SUCCEEDING" = 0 ]; then ' +
+  [
+    nodeEval(BROKER_MODULE_HASH_CHECK_SCRIPT, LEDGER_MODULE_LOCAL_PATH, 'OR_LEDGER_MODULE_SHA256'),
+    nodeEval(BROKER_MODULE_HASH_CHECK_SCRIPT, LEDGER_RUNNER_LOCAL_PATH, 'OR_LEDGER_RUNNER_SHA256'),
+    `node ${LEDGER_RUNNER_LOCAL_PATH} deny --gate-file ${LEDGER_GATE_FILE}`,
+  ].join(' && ') +
+  ' || echo "ledger denial audit skipped (modules unverified)" >&2; fi';
 
 /** The broker command that runs the verified provenance module (blockers 2 and 4). */
 export const PROVENANCE_COMMAND = [
@@ -361,6 +393,15 @@ export class DevDeployBrokerStack extends cdk.Stack {
       allowedPattern: HUMAN_ROLE_ARN_PATTERN,
     });
 
+    // The ledger instance the broker accepts (#1153). The human writes the genesis item with this
+    // exact id; a missing or different genesis (table emptied or replaced) is SPARSE_LEDGER_CORRUPT.
+    // Not a secret; chosen by the owner at deploy.
+    const sparseLedgerId = new cdk.CfnParameter(this, 'SparseLedgerId', {
+      type: 'String',
+      description: 'Ledger instance id pinned in the broker; the human-written genesis item must carry the same id.',
+      allowedPattern: LEDGER_ID_PATTERN,
+    });
+
     const validationRole = new iam.Role(this, 'ValidationRole', {
       roleName: 'OpenReceptionDevDeployValidationRole',
       assumedBy: new iam.ServicePrincipal('codebuild.amazonaws.com'),
@@ -388,6 +429,10 @@ export class DevDeployBrokerStack extends cdk.Stack {
       path: PROVENANCE_SOURCE_PATH,
     });
     provenanceAsset.grantRead(brokerRole);
+    const ledgerModuleAsset = new s3assets.Asset(this, 'LedgerModuleAsset', { path: LEDGER_MODULE_SOURCE_PATH });
+    const ledgerRunnerAsset = new s3assets.Asset(this, 'LedgerRunnerAsset', { path: LEDGER_RUNNER_SOURCE_PATH });
+    ledgerModuleAsset.grantRead(brokerRole);
+    ledgerRunnerAsset.grantRead(brokerRole);
 
     // Sparse dev-deploy attempt ledger (#1153, Foundation S6a): state in the trusted account,
     // writable only by the broker. The Validation role (candidate code) gets no statement on it.
@@ -586,6 +631,14 @@ export class DevDeployBrokerStack extends cdk.Stack {
           OR_PROVENANCE_MODULE_KEY: { value: provenanceAsset.s3ObjectKey },
           OR_PROVENANCE_MODULE_SHA256: { value: trustedPolicySha256(PROVENANCE_SOURCE_PATH) },
           OR_PIPELINE_ARTIFACT_BUCKET: { value: artifactBucket.bucketName },
+          OR_LEDGER_MODULE_BUCKET: { value: ledgerModuleAsset.s3BucketName },
+          OR_LEDGER_MODULE_KEY: { value: ledgerModuleAsset.s3ObjectKey },
+          OR_LEDGER_MODULE_SHA256: { value: trustedPolicySha256(LEDGER_MODULE_SOURCE_PATH) },
+          OR_LEDGER_RUNNER_BUCKET: { value: ledgerRunnerAsset.s3BucketName },
+          OR_LEDGER_RUNNER_KEY: { value: ledgerRunnerAsset.s3ObjectKey },
+          OR_LEDGER_RUNNER_SHA256: { value: trustedPolicySha256(LEDGER_RUNNER_SOURCE_PATH) },
+          OR_SPARSE_LEDGER_TABLE: { value: sparseLedger.tableName },
+          OR_SPARSE_LEDGER_ID: { value: sparseLedgerId.valueAsString },
         },
       },
       logging: {
@@ -600,27 +653,44 @@ export class DevDeployBrokerStack extends cdk.Stack {
               nodeEval(BROKER_ACCOUNT_PIN_CHECK_SCRIPT),
               // Broker-owned output dir; fails if anything already exists there.
               `mkdir -m 700 ${BROKER_OUT_DIR}`,
+              // Ledger modules first, so every later gate's denial can be audited (see finally).
+              `mkdir -p ${LEDGER_LOCAL_DIR}`,
+              `aws s3 cp "s3://$OR_LEDGER_MODULE_BUCKET/$OR_LEDGER_MODULE_KEY" ${LEDGER_MODULE_LOCAL_PATH} --only-show-errors`,
+              nodeEval(BROKER_MODULE_HASH_CHECK_SCRIPT, LEDGER_MODULE_LOCAL_PATH, 'OR_LEDGER_MODULE_SHA256'),
+              `aws s3 cp "s3://$OR_LEDGER_RUNNER_BUCKET/$OR_LEDGER_RUNNER_KEY" ${LEDGER_RUNNER_LOCAL_PATH} --only-show-errors`,
+              nodeEval(BROKER_MODULE_HASH_CHECK_SCRIPT, LEDGER_RUNNER_LOCAL_PATH, 'OR_LEDGER_RUNNER_SHA256'),
+              // A failed download / hash check of a trusted module is an integrity event, not a denial
+              // of the candidate by that gate.
+              gateCommand('BROKER_MODULE_INTEGRITY'),
               // Blockers 2 / 4: prove the input artifacts are the single versions this execution's
               // own actions wrote, and that this execution is the newest and fresh, before any
               // candidate file is read.
               `aws s3 cp "s3://$OR_PROVENANCE_MODULE_BUCKET/$OR_PROVENANCE_MODULE_KEY" ${PROVENANCE_LOCAL_PATH} --only-show-errors`,
               nodeEval(BROKER_MODULE_HASH_CHECK_SCRIPT, PROVENANCE_LOCAL_PATH, 'OR_PROVENANCE_MODULE_SHA256'),
+              gateCommand('TRUSTED_PROVENANCE_DENIED'),
               PROVENANCE_COMMAND,
               nodeEval(PROVENANCE_RESULT_CHECK_SCRIPT, PROVENANCE_DECISION_PATH),
+              gateCommand('TRUSTED_REVISION_MISMATCH'),
               // From here on, only the materialized, provenance-bound artifact is read.
               `test -f ${BROKER_EVIDENCE_PATH}`,
               `test -f ${BROKER_ASSEMBLY_DIR}/manifest.json`,
               nodeEval(BROKER_REVISION_CHECK_SCRIPT, BROKER_EVIDENCE_PATH),
+              gateCommand('BROKER_MODULE_INTEGRITY'),
               // Download policy by the S3 location injected by this stack, then verify the pinned
               // content SHA-256 before executing it (fail closed on any mismatch).
               `aws s3 cp "s3://$OR_TRUSTED_POLICY_BUCKET/$OR_TRUSTED_POLICY_KEY" ${TRUSTED_POLICY_LOCAL_PATH} --only-show-errors`,
               nodeEval(BROKER_POLICY_HASH_CHECK_SCRIPT, TRUSTED_POLICY_LOCAL_PATH),
+              gateCommand('TRUSTED_POLICY_DENIED'),
               `node ${TRUSTED_POLICY_LOCAL_PATH} --assembly ${BROKER_ASSEMBLY_DIR} --account "$OR_BROKER_TARGET_ACCOUNT" > ${POLICY_RESULT_PATH}`,
-              // Even an allowed static assembly cannot mutate yet.
+              // Even an allowed static assembly cannot mutate yet. When armed, the live ChangeSet
+              // gate and then `ledger-runner.mjs reserve` (the last deny-capable step) go here,
+              // and `outcome` after the mutation.
+              gateCommand('BROKER_NOT_ARMED'),
               nodeEval(BROKER_NOT_ARMED_RESULT_SCRIPT, POLICY_RESULT_PATH, BROKER_RESULT_PATH),
               'echo "Trusted broker is intentionally unarmed." >&2',
               'exit 42',
             ],
+            finally: [LEDGER_DENY_COMMAND],
           },
         },
       }),

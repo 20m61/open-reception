@@ -562,7 +562,10 @@ export async function reserveAttempt({ client, table, ledgerId, revision, attemp
       const context = { revision, attemptId, day: decision.day, timezone: LEDGER_TIMEZONE };
       decision = isConditionFailure(error)
         ? deny(RULES.LEDGER_CONFLICT, 'sparse deploy ledger refused the reservation (state changed, attempt id reused, or override no longer valid); not retried automatically', context)
-        : deny(RULES.LEDGER_UNAVAILABLE, 'sparse deploy ledger reservation could not be written', context);
+        : // Ambiguous: the write may have committed before the error (e.g. a lost response), so an
+          // in_progress attempt may now hold budget. Flagged for the stuck-attempt alarm.
+          // A client that knows the call never reached the service says so (`maybeCommitted: false`).
+          deny(RULES.LEDGER_UNAVAILABLE, 'sparse deploy ledger reservation could not be written', { ...context, ambiguous: error?.maybeCommitted !== false });
     }
   }
   if (isValidDate(now) && isAttemptId(attemptId)) {

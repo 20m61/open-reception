@@ -28,6 +28,15 @@ import {
   POLICY_RESULT_PATH,
   PROVENANCE_DECISION_PATH,
   PROVENANCE_RESULT_CHECK_SCRIPT,
+  LEDGER_DENY_COMMAND,
+  LEDGER_LOCAL_DIR,
+  LEDGER_MODULE_LOCAL_PATH,
+  LEDGER_MODULE_SOURCE_PATH,
+  LEDGER_RUNNER_LOCAL_PATH,
+  LEDGER_RUNNER_SOURCE_PATH,
+  gateCommand,
+  LEDGER_GATE_FILE,
+  LEDGER_ID_PATTERN,
   PROVENANCE_COMMAND,
   PROVENANCE_LOCAL_PATH,
   PROVENANCE_READ_ACTIONS,
@@ -106,8 +115,12 @@ const buildSpec = (name: string) =>
     artifacts?: unknown;
   };
 
+/** Every command the project runs, including `finally` blocks. */
 const allCommands = (name: string): string[] =>
-  Object.values(buildSpec(name).phases).flatMap((phase) => phase.commands);
+  Object.values(buildSpec(name).phases).flatMap((phase) => [
+    ...phase.commands,
+    ...((phase as { finally?: string[] }).finally ?? []),
+  ]);
 
 const roleLogicalId = (roleName: string): string => {
   const found = byType('AWS::IAM::Role').find(([, r]) => r.Properties.RoleName === roleName);
@@ -292,7 +305,15 @@ describe('dev deploy broker invariants: build environment allowlist', () => {
     expect(projectEnvNames(BROKER_PROJECT)).toEqual(
       [
         'OR_BROKER_TARGET_ACCOUNT',
+        'OR_LEDGER_MODULE_BUCKET',
+        'OR_LEDGER_MODULE_KEY',
+        'OR_LEDGER_MODULE_SHA256',
+        'OR_LEDGER_RUNNER_BUCKET',
+        'OR_LEDGER_RUNNER_KEY',
+        'OR_LEDGER_RUNNER_SHA256',
         'OR_PIPELINE_ARTIFACT_BUCKET',
+        'OR_SPARSE_LEDGER_ID',
+        'OR_SPARSE_LEDGER_TABLE',
         'OR_PROVENANCE_MODULE_BUCKET',
         'OR_PROVENANCE_MODULE_KEY',
         'OR_PROVENANCE_MODULE_SHA256',
@@ -383,6 +404,11 @@ describe('dev deploy broker invariants: trusted broker (stack-owned buildspec, u
       /^aws s3 cp "s3:\/\/\$OR_TRUSTED_POLICY_BUCKET\/\$OR_TRUSTED_POLICY_KEY" \/tmp\/open-reception-trusted-policy\.mjs --only-show-errors$/,
       /^node -e '[^']*' \/tmp\/open-reception-trusted-policy\.mjs$/,
       /^node -e '[^']*'( \/tmp\/open-reception-broker-(work\/validated|out)\/[A-Za-z0-9_.-]+\.json)+$/,
+      /^mkdir -p \/tmp\/open-reception-ledger$/,
+      /^aws s3 cp "s3:\/\/\$OR_LEDGER_(MODULE|RUNNER)_BUCKET\/\$OR_LEDGER_\1_KEY" \/tmp\/open-reception-ledger\/(sparse-ledger|ledger-runner)\.mjs --only-show-errors$/,
+      /^node -e '[^']*' \/tmp\/open-reception-ledger\/(sparse-ledger|ledger-runner)\.mjs OR_LEDGER_(MODULE|RUNNER)_SHA256$/,
+      /^echo (BROKER_MODULE_INTEGRITY|TRUSTED_PROVENANCE_DENIED|TRUSTED_REVISION_MISMATCH|TRUSTED_POLICY_DENIED|BROKER_NOT_ARMED) > \/tmp\/open-reception-ledger\/gate$/,
+      new RegExp(`^${LEDGER_DENY_COMMAND.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}$`),
       /^node \/tmp\/open-reception-trusted-policy\.mjs --assembly \/tmp\/open-reception-broker-work\/validated\/infra\/cdk\.out --account "\$OR_BROKER_TARGET_ACCOUNT" > \/tmp\/open-reception-broker-out\/trusted-policy-result\.json$/,
       /^aws s3 cp "s3:\/\/\$OR_PROVENANCE_MODULE_BUCKET\/\$OR_PROVENANCE_MODULE_KEY" \/tmp\/open-reception-run-provenance\.mjs --only-show-errors$/,
       /^node -e '[^']*' \/tmp\/open-reception-run-provenance\.mjs OR_PROVENANCE_MODULE_SHA256$/,
@@ -412,7 +438,7 @@ describe('dev deploy broker invariants: trusted broker (stack-owned buildspec, u
       expect(command).not.toContain('require("./');
       expect(command).not.toMatch(/\bimport\(/);
     }
-    expect(commands.at(-1)).toBe('exit 42');
+    expect(buildSpec(BROKER_PROJECT).phases.build!.commands.at(-1)).toBe('exit 42');
   });
 
   it('holds no sts:AssumeRole or mutation authority; no role in the stack can reach a deploy role', () => {
@@ -484,7 +510,9 @@ describe('dev deploy broker invariants: trusted broker (stack-owned buildspec, u
     const execute = commands.findIndex((c) => c.startsWith(`node ${TRUSTED_POLICY_LOCAL_PATH} `));
     expect(download).toBeGreaterThanOrEqual(0);
     expect(verify).toBe(download + 1);
-    expect(execute).toBe(verify + 1);
+    // Only the gate marker sits between verification and execution.
+    expect(commands[verify + 1]).toBe(gateCommand('TRUSTED_POLICY_DENIED'));
+    expect(execute).toBe(verify + 2);
     // Exactly one download and one execution of the policy file.
     expect(commands.filter((c) => c.includes(TRUSTED_POLICY_LOCAL_PATH))).toHaveLength(3);
   });
@@ -660,10 +688,23 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
     expect(bin).toContain("stackName: 'OpenReception-DevDeployBroker'");
   });
 
-  it('the broker buildspec does not run the ledger yet; when wired it must be a sha256-pinned stack asset', () => {
-    // Arming work: the ledger module must be delivered like the trusted policy (stack-published,
-    // content-hash verified before execution), never read from the candidate artifact.
-    expect(allCommands(BROKER_PROJECT).some((c) => c.includes('sparse-ledger'))).toBe(false);
+  it('the broker runs the ledger only from sha256-verified stack assets, and does not reserve while unarmed', () => {
+    const commands = allCommands(BROKER_PROJECT);
+    const ledgerUses = commands.filter((c) => c.includes('ledger-runner') || c.includes('sparse-ledger'));
+    // Downloads + verifications in the build phase, one verified deny in finally; nothing else.
+    expect(ledgerUses).toEqual([
+      `aws s3 cp "s3://$OR_LEDGER_MODULE_BUCKET/$OR_LEDGER_MODULE_KEY" ${LEDGER_MODULE_LOCAL_PATH} --only-show-errors`,
+      nodeEval(BROKER_MODULE_HASH_CHECK_SCRIPT, LEDGER_MODULE_LOCAL_PATH, 'OR_LEDGER_MODULE_SHA256'),
+      `aws s3 cp "s3://$OR_LEDGER_RUNNER_BUCKET/$OR_LEDGER_RUNNER_KEY" ${LEDGER_RUNNER_LOCAL_PATH} --only-show-errors`,
+      nodeEval(BROKER_MODULE_HASH_CHECK_SCRIPT, LEDGER_RUNNER_LOCAL_PATH, 'OR_LEDGER_RUNNER_SHA256'),
+      LEDGER_DENY_COMMAND,
+    ]);
+    expect(commands.some((c) => / reserve\b| outcome\b/.test(c))).toBe(false);
+    expect(buildSpec(BROKER_PROJECT).phases.build).toHaveProperty('finally', [LEDGER_DENY_COMMAND]);
+    // The ledger files are verified before the first gate, i.e. before any denial can happen.
+    expect(commands.indexOf(nodeEval(BROKER_MODULE_HASH_CHECK_SCRIPT, LEDGER_RUNNER_LOCAL_PATH, 'OR_LEDGER_RUNNER_SHA256'))).toBeLessThan(
+      commands.indexOf(gateCommand('TRUSTED_PROVENANCE_DENIED')),
+    );
   });
 
   it('the stack pins the same partition key the ledger module writes', async () => {
@@ -961,8 +1002,10 @@ describe('trusted policy hash pin (shared bootstrap asset bucket substitution)',
     // over the exact synthesized verify -> execute -> result sequence, with the path redirected.
     const commands = allCommands(BROKER_PROJECT);
     const start = commands.indexOf(nodeEval(BROKER_POLICY_HASH_CHECK_SCRIPT, TRUSTED_POLICY_LOCAL_PATH));
-    const sequence = commands.slice(start, start + 3);
-    expect(sequence[2]).toBe(nodeEval(BROKER_NOT_ARMED_RESULT_SCRIPT, POLICY_RESULT_PATH, BROKER_RESULT_PATH));
+    const sequence = commands.slice(start, start + 5);
+    expect(sequence[1]).toBe(gateCommand('TRUSTED_POLICY_DENIED'));
+    expect(sequence[3]).toBe(gateCommand('BROKER_NOT_ARMED'));
+    expect(sequence[4]).toBe(nodeEval(BROKER_NOT_ARMED_RESULT_SCRIPT, POLICY_RESULT_PATH, BROKER_RESULT_PATH));
     const file = copyOfPolicy((t) => `${t}\n// tampered\n`);
     const dir = dirname(file);
     const script = ['set -e', ...sequence.map((c) => localize(c.split(TRUSTED_POLICY_LOCAL_PATH).join(file)))].join('\n');
@@ -1173,16 +1216,25 @@ describe('execution provenance (pre-arming blockers 2 and 4)', () => {
 
   it('runs the pinned module right after the account check, before any candidate file is read', () => {
     const commands = allCommands(BROKER_PROJECT);
-    expect(commands.slice(0, 6)).toEqual([
+    expect(commands.slice(0, 13)).toEqual([
       nodeEval(BROKER_ACCOUNT_PIN_CHECK_SCRIPT),
       `mkdir -m 700 ${BROKER_OUT_DIR}`,
+      // Ledger files verified before the first gate, so every later denial can be audited.
+      `mkdir -p ${LEDGER_LOCAL_DIR}`,
+      `aws s3 cp "s3://$OR_LEDGER_MODULE_BUCKET/$OR_LEDGER_MODULE_KEY" ${LEDGER_MODULE_LOCAL_PATH} --only-show-errors`,
+      nodeEval(BROKER_MODULE_HASH_CHECK_SCRIPT, LEDGER_MODULE_LOCAL_PATH, 'OR_LEDGER_MODULE_SHA256'),
+      `aws s3 cp "s3://$OR_LEDGER_RUNNER_BUCKET/$OR_LEDGER_RUNNER_KEY" ${LEDGER_RUNNER_LOCAL_PATH} --only-show-errors`,
+      nodeEval(BROKER_MODULE_HASH_CHECK_SCRIPT, LEDGER_RUNNER_LOCAL_PATH, 'OR_LEDGER_RUNNER_SHA256'),
+      gateCommand('BROKER_MODULE_INTEGRITY'),
       `aws s3 cp "s3://$OR_PROVENANCE_MODULE_BUCKET/$OR_PROVENANCE_MODULE_KEY" ${PROVENANCE_LOCAL_PATH} --only-show-errors`,
       nodeEval(BROKER_MODULE_HASH_CHECK_SCRIPT, PROVENANCE_LOCAL_PATH, 'OR_PROVENANCE_MODULE_SHA256'),
+      gateCommand('TRUSTED_PROVENANCE_DENIED'),
       PROVENANCE_COMMAND,
       nodeEval(PROVENANCE_RESULT_CHECK_SCRIPT, PROVENANCE_DECISION_PATH),
     ]);
+    expect(commands[13]).toBe(gateCommand('TRUSTED_REVISION_MISMATCH'));
     const firstCandidateRead = commands.findIndex((c) => c.includes('broker-evidence.json') || c.includes('cdk.out'));
-    expect(firstCandidateRead).toBeGreaterThan(5);
+    expect(firstCandidateRead).toBeGreaterThan(13);
     // The module is executed exactly once, from the verified local path.
     expect(commands.filter((c) => c.startsWith('node ') && !c.startsWith('node -e') && c.includes(PROVENANCE_LOCAL_PATH))).toEqual([PROVENANCE_COMMAND]);
   });
@@ -1223,10 +1275,11 @@ describe('the broker never reads or writes the candidate tree CodeBuild extracte
   it('every file path a broker command names is broker-owned or a verified module under /tmp', () => {
     for (const command of allCommands(BROKER_PROJECT)) {
       if (command.startsWith('echo ') && !command.includes(' > ')) continue; // log line only
-      const shell = command.startsWith("node -e '") ? command.slice(command.lastIndexOf("'") + 1) : command;
+      // Drop inline scripts and quoted strings; what remains are the paths and flags the shell sees.
+      const shell = command.replace(/node -e '[^']*'/g, 'node').replace(/"[^"]*"/g, '');
       for (const token of shell.split(/\s+/).filter(Boolean)) {
-        if (/^(node|test|-f|-e|mkdir|-m|700|aws|s3|cp|--only-show-errors|echo|exit|42|>|>&2|--assembly|--account|--pipeline|--validation-project|--artifact-bucket-env|--stages)$/.test(token)) continue;
-        if (/^"\$[A-Z_]+"$|^"s3:\/\/\$[A-Z_]+\/\$[A-Z_]+"$|^OR_[A-Z0-9_]+$|^[A-Z][A-Za-z]+$|^Source\/PromotionBranch,Validate\/UnprivilegedValidation,BrokerBoundary\/TrustedBrokerUnarmed$/.test(token)) continue;
+        if (/^(node|test|-f|-e|mkdir|-m|-p|700|aws|s3|cp|deny|--gate-file|&&|\|\||if|then|fi|\[|=|0|\];|>&2;|--only-show-errors|echo|exit|42|>|>&2|--assembly|--account|--pipeline|--validation-project|--artifact-bucket-env|--stages)$/.test(token)) continue;
+        if (/^"\$[A-Z_]+"$|^"s3:\/\/\$[A-Z_]+\/\$[A-Z_]+"$|^OR_[A-Z0-9_]+$|^[A-Z][A-Za-z]+$|^[A-Z_]+$|^Source\/PromotionBranch,Validate\/UnprivilegedValidation,BrokerBoundary\/TrustedBrokerUnarmed$/.test(token)) continue;
         expect(token.startsWith('/tmp/open-reception-'), `${token} in: ${command}`).toBe(true);
       }
     }
@@ -1269,8 +1322,9 @@ describe('the broker never reads or writes the candidate tree CodeBuild extracte
       expect(shell, command).not.toMatch(/\btee\b/);
       for (const m of shell.matchAll(/\d?>>?\s*(\S+)/g)) {
         const target = m[1]!;
-        if (target === '&2') continue;
-        expect(target.startsWith(`${BROKER_OUT_DIR}/`), command).toBe(true);
+        if (target === '&2' || target === '&2;') continue;
+        // The broker-owned output dir, or the ledger gate marker (both under /tmp, broker-created).
+        expect(target.startsWith(`${BROKER_OUT_DIR}/`) || target === LEDGER_GATE_FILE, command).toBe(true);
       }
     }
   });
@@ -1287,5 +1341,119 @@ describe('freshness vs retention (review C5)', () => {
   it('an execution can only be accepted well before its artifacts or old versions can expire', async () => {
     const m = (await import(pathToFileURL(resolve(__dirname, '../broker/run-provenance.mjs')).href)) as { MAX_EXECUTION_AGE_MS: number };
     expect(m.MAX_EXECUTION_AGE_MS * 4).toBeLessThanOrEqual(PIPELINE_ARTIFACT_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+  });
+});
+
+describe('ledger wiring (#1153): delivery, pin and denial audit', () => {
+  const env = () =>
+    Object.fromEntries(
+      ((project(BROKER_PROJECT).Environment as Json).EnvironmentVariables as Array<{ Name: string; Value: unknown }>).map((v) => [v.Name, v.Value]),
+    );
+
+  it('pins the real content SHA-256 of both ledger files', () => {
+    expect(env().OR_LEDGER_MODULE_SHA256).toBe(createHash('sha256').update(readFileSync(LEDGER_MODULE_SOURCE_PATH)).digest('hex'));
+    expect(env().OR_LEDGER_RUNNER_SHA256).toBe(createHash('sha256').update(readFileSync(LEDGER_RUNNER_SOURCE_PATH)).digest('hex'));
+  });
+
+  it('passes the ledger table and the human-chosen ledger id parameter, nothing candidate-controlled', () => {
+    const [tableId] = byType('AWS::DynamoDB::Table')[0]!;
+    expect(env().OR_SPARSE_LEDGER_TABLE).toEqual({ Ref: tableId });
+    expect(env().OR_SPARSE_LEDGER_ID).toEqual({ Ref: 'SparseLedgerId' });
+    const params = template.toJSON().Parameters as Record<string, { AllowedPattern?: string; Default?: unknown }>;
+    expect(params.SparseLedgerId?.AllowedPattern).toBe(LEDGER_ID_PATTERN);
+    expect(params.SparseLedgerId?.Default).toBeUndefined();
+  });
+
+  it('the stack ledger id pattern accepts exactly what the ledger module accepts', async () => {
+    const ledger = (await import(pathToFileURL(LEDGER_MODULE_SOURCE_PATH).href)) as { isLedgerId: (v: unknown) => boolean };
+    const re = new RegExp(LEDGER_ID_PATTERN);
+    for (const id of ['ledger-2026-09-28', 'a1234567', 'x'.repeat(128), 'short', 'x'.repeat(129), '-leading', 'has space', 'ok.id_v1-x']) {
+      expect(re.test(id), id).toBe(ledger.isLedgerId(id));
+    }
+  });
+
+  it('names each gate before evaluating it, in order, ending at BROKER_NOT_ARMED', () => {
+    const gates = allCommands(BROKER_PROJECT).filter((c) => c.startsWith('echo ') && c.endsWith(`> ${LEDGER_GATE_FILE}`));
+    expect(gates).toEqual([
+      gateCommand('BROKER_MODULE_INTEGRITY'),
+      gateCommand('TRUSTED_PROVENANCE_DENIED'),
+      gateCommand('TRUSTED_REVISION_MISMATCH'),
+      gateCommand('BROKER_MODULE_INTEGRITY'),
+      gateCommand('TRUSTED_POLICY_DENIED'),
+      gateCommand('BROKER_NOT_ARMED'),
+    ]);
+    // Every trusted-module download / hash check runs under the integrity marker.
+    const commands2 = allCommands(BROKER_PROJECT);
+    for (const i of commands2.map((c, i) => (c.startsWith('aws s3 cp ') && !c.includes('OR_LEDGER_') ? i : -1)).filter((i) => i >= 0)) {
+      const lastGate = commands2.slice(0, i).reverse().find((c) => c.endsWith(`> ${LEDGER_GATE_FILE}`));
+      expect(lastGate, commands2[i]).toBe(gateCommand('BROKER_MODULE_INTEGRITY'));
+    }
+    const commands = allCommands(BROKER_PROJECT);
+    expect(commands.indexOf(gateCommand('TRUSTED_REVISION_MISMATCH'))).toBeLessThan(commands.indexOf(nodeEval(BROKER_REVISION_CHECK_SCRIPT, BROKER_EVIDENCE_PATH)));
+    expect(commands.indexOf(gateCommand('TRUSTED_POLICY_DENIED'))).toBeLessThan(commands.findIndex((c) => c.startsWith(`node ${TRUSTED_POLICY_LOCAL_PATH}`)));
+  });
+
+  it('the finally line never runs an unverified runner (tampered file or missing pin)', () => {
+    const dir = workspace();
+    const fakeDir = join(dir, 'ledger');
+    execFileSync('mkdir', ['-p', fakeDir]);
+    // Rewrite the local paths into the scratch dir and plant a runner that would leave a marker.
+    const line = LEDGER_DENY_COMMAND.split(LEDGER_LOCAL_DIR).join(fakeDir);
+    writeFileSync(join(fakeDir, 'sparse-ledger.mjs'), readFileSync(LEDGER_MODULE_SOURCE_PATH));
+    writeFileSync(join(fakeDir, 'ledger-runner.mjs'), 'require("fs").writeFileSync("ran", "x")');
+    const pins = {
+      OR_LEDGER_MODULE_SHA256: createHash('sha256').update(readFileSync(LEDGER_MODULE_SOURCE_PATH)).digest('hex'),
+      OR_LEDGER_RUNNER_SHA256: createHash('sha256').update(readFileSync(LEDGER_RUNNER_SOURCE_PATH)).digest('hex'),
+    };
+    const r = run(line, dir, { ...pins, CODEBUILD_BUILD_SUCCEEDING: '0' });
+    expect(r.ok).toBe(true); // finally never fails the phase
+    expect(existsSync(join(dir, 'ran'))).toBe(false);
+  });
+
+  it('the finally line does nothing for a succeeding build (only a failing build is a denial)', () => {
+    const dir = workspace();
+    const ledgerDir = join(dir, 'ledger');
+    execFileSync('mkdir', ['-p', ledgerDir]);
+    writeFileSync(join(ledgerDir, 'sparse-ledger.mjs'), readFileSync(LEDGER_MODULE_SOURCE_PATH));
+    writeFileSync(join(ledgerDir, 'ledger-runner.mjs'), 'require("fs").writeFileSync("ran", "x")');
+    const line = LEDGER_DENY_COMMAND.split(LEDGER_LOCAL_DIR).join(ledgerDir);
+    for (const succeeding of ['1', undefined]) {
+      expect(run(line, dir, { CODEBUILD_BUILD_SUCCEEDING: succeeding }).ok).toBe(true);
+    }
+    expect(existsSync(join(dir, 'ran'))).toBe(false);
+    expect(LEDGER_DENY_COMMAND.startsWith('if [ "$CODEBUILD_BUILD_SUCCEEDING" = 0 ]; then ')).toBe(true);
+  });
+
+  it('the finally line audits the gate that stopped the build through the verified runner', () => {
+    const dir = workspace();
+    const ledgerDir = join(dir, 'ledger');
+    const binDir = join(dir, 'bin');
+    execFileSync('mkdir', ['-p', ledgerDir, binDir]);
+    writeFileSync(join(ledgerDir, 'sparse-ledger.mjs'), readFileSync(LEDGER_MODULE_SOURCE_PATH));
+    writeFileSync(join(ledgerDir, 'ledger-runner.mjs'), readFileSync(LEDGER_RUNNER_SOURCE_PATH));
+    writeFileSync(join(ledgerDir, 'gate'), 'TRUSTED_POLICY_DENIED\n');
+    // A fake CLI that records the call (the real one is only present in CodeBuild).
+    writeFileSync(join(binDir, 'aws'), `#!/bin/sh\nprintf '%s\\n' "$@" > ${join(dir, 'aws-call.txt')}\ncat "\${4#file://}" > ${join(dir, 'aws-request.json')}\necho '{}'\n`);
+    execFileSync('chmod', ['+x', join(binDir, 'aws')]);
+    const line = LEDGER_DENY_COMMAND.split(LEDGER_LOCAL_DIR).join(ledgerDir);
+    const r = run(line, dir, {
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      OR_LEDGER_MODULE_SHA256: createHash('sha256').update(readFileSync(LEDGER_MODULE_SOURCE_PATH)).digest('hex'),
+      OR_LEDGER_RUNNER_SHA256: createHash('sha256').update(readFileSync(LEDGER_RUNNER_SOURCE_PATH)).digest('hex'),
+      OR_SPARSE_LEDGER_TABLE: 'OpenReception-DevDeployBroker-SparseDeployLedgerX-1',
+      OR_TRUSTED_SOURCE_REVISION: REV_A,
+      CODEBUILD_BUILD_ID: 'OpenReceptionTrustedDevDeployBroker:0000-1111',
+      CODEBUILD_BUILD_SUCCEEDING: '0',
+    });
+    expect(r.ok).toBe(true);
+    expect(JSON.parse(r.stdout.trim().split('\n').at(-1)!)).toMatchObject({ event: 'ledger.denial_recorded', rule: 'TRUSTED_POLICY_DENIED' });
+    const call = readFileSync(join(dir, 'aws-call.txt'), 'utf8').trim().split('\n');
+    expect(call.slice(0, 3)).toEqual(['dynamodb', 'put-item', '--cli-input-json']);
+    expect(call[3]).toMatch(/^file:\/\//);
+    const request = JSON.parse(readFileSync(join(dir, 'aws-request.json'), 'utf8')) as { Item: Record<string, { S?: string }>; ConditionExpression: string };
+    expect(request.Item.status?.S).toBe('denied_before_mutation');
+    expect(request.Item.denialRule?.S).toBe('TRUSTED_POLICY_DENIED');
+    expect(request.Item.SK?.S).toBe('ATTEMPT#OpenReceptionTrustedDevDeployBroker:0000-1111');
+    expect(request.ConditionExpression).toBe('attribute_not_exists(#PK)');
   });
 });
