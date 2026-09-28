@@ -169,6 +169,10 @@ Delivering this result to GitHub is not implemented yet.
 
 ### Known residual risk (must be closed before arming)
 
+**Status: addressed by blocker 2 below** (broker-side provenance of the exact S3 object versions);
+what remains is that the Validation build itself runs candidate code, so the assembly is whatever the
+promoted revision's code produced in that one build. The original analysis:
+
 The revision check compares candidate-written evidence with the trusted `CommitId`. It rejects
 stale/honest mismatches, but it is **not** a cryptographic binding of the cloud assembly to that
 revision: candidate code in Validation can read `OR_TRUSTED_SOURCE_REVISION` and write matching
@@ -197,6 +201,32 @@ tested before the broker may assume any deploy role:
 2. **Artifact bucket write/delete by the Validation role.** The CDK default grant lets candidate
    code of one execution overwrite or delete another execution's artifacts (cross-execution
    substitution). Needs per-execution write scope or broker-side content binding.
+   **Status: closed in code (broker-side binding).** The artifact bucket is versioned; both build roles
+   are explicitly denied deleting versions and changing versioning / lifecycle / bucket policy /
+   replication. Before reading any candidate file, the broker runs `infra/broker/run-provenance.mjs`
+   (stack asset, content SHA-256 verified like the policy) with read-only CodePipeline / CodeBuild / S3
+   calls, and proceeds only if, for its own pipeline execution (`#{codepipeline.PipelineExecutionId}`):
+   the Source action succeeded and recorded the trusted CommitId; exactly one Validate action succeeded in
+   a succeeded build of the validation project; each action read exactly the object its predecessor wrote;
+   and the source archive and the cloud assembly each have exactly one version, no delete marker, written
+   while the producing action / build ran; and the build running the check is the broker action's own build.
+   An overwrite by candidate code of another execution therefore leaves a second version and denies. The
+   module then fetches **exactly that version** (`get-object --version-id`) into a fresh broker-owned
+   directory, refuses unsafe archive entries (absolute, `..`, duplicate names) and anything but plain files
+   and directories after extraction (no symlinks), and records its decision (with the archive's SHA-256)
+   under a broker-owned output directory that must not exist beforehand. Every later gate reads only that
+   materialized copy and writes only to that output directory; the broker never reads from or writes into
+   the tree CodeBuild extracted (a candidate symlink there could otherwise redirect a write onto a verified
+   module — found in adversarial review). Archive entry names must use the characters the real assembly
+   uses, and the extracted files must be exactly the listed ones. Residual: CodeBuild's own download and
+   extraction of the broker's input still happens before any broker command (so before this check); if that
+   agent step were vulnerable to a crafted archive, it would run before provenance. Needs live verification
+   at arming: that agent behaviour; the exact CodePipeline / CodeBuild response fields the check relies on
+   (the in-progress broker action's `externalExecutionId` — if CodePipeline fills it only on completion, every
+   run is denied and `GetPipelineState` is the fallback —, source `outputVariables.CommitId`, V1
+   `sourceRevisions`); that the source zip's `LastModified` falls inside the source action's window; and the
+   entry count of a real validated artifact (the synthesized assembly alone has about 4,600 entries; the
+   limit is 50,000).
 3. **No deploy-account pinning.** The target account is the stack's own `AWS::AccountId`; there is
    no independent, human-reviewed pin of the one dev account the broker may deploy to.
    **Status: pin established in code.** `DEV_DEPLOY_TARGET_ACCOUNT` is a reviewed constant equal to the account
@@ -209,6 +239,12 @@ tested before the broker may assume any deploy role:
 4. **Stale retry reuses an old CommitId.** Retrying an old failed `BrokerBoundary` stage re-runs
    with that execution's original CommitId and artifacts, which may be long superseded; arming
    needs freshness (e.g. `dev-deploy` pointer / ledger check) before mutation.
+   **Status: closed in code.** The same check requires the execution to be the newest of the pipeline
+   (no other run has started since, which is how a moved promotion pointer shows up), still `InProgress`,
+   recorded with the trusted revision, and started less than 12 hours ago (a test keeps this well inside
+   the artifact retention). It does not read the branch head itself: if the pointer moved but no execution
+   was triggered, a retry within 12 hours is still accepted. A retry inside the window is a new attempt
+   (new build id) for the ledger, not the same one.
 5. **Artifact bucket has no lifecycle rule.** Candidate artifacts accumulate indefinitely (cost and
    stale-artifact reuse surface).
    **Status: closed in code.** The pipeline uses an explicit artifact bucket (same protections as the CDK
