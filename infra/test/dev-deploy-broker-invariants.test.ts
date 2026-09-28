@@ -28,6 +28,8 @@ import {
   POLICY_RESULT_PATH,
   PROVENANCE_DECISION_PATH,
   PROVENANCE_RESULT_CHECK_SCRIPT,
+  BROKER_ABORT_STATES,
+  LEDGER_ATTENTION_EVENTS,
   LEDGER_AUDIT_PROTECTED_ACTIONS,
   LEDGER_AUDIT_RETENTION_DAYS,
   LEDGER_AUDIT_TRAIL_NAME,
@@ -1549,5 +1551,66 @@ describe('ledger audit: CloudTrail data events on the ledger table (#1153)', () 
         expect(JSON.stringify(st.Resource ?? null)).not.toContain(auditBucketId);
       }
     }
+  });
+});
+
+describe('alerts for attempts that may stay in_progress (#1153)', () => {
+  const [topicId] = byType('AWS::SNS::Topic')[0]!;
+
+  it('one alert topic, without any subscription in the stack (the owner subscribes a human endpoint)', () => {
+    expect(byType('AWS::SNS::Topic')).toHaveLength(1);
+    expect(byType('AWS::SNS::Subscription')).toHaveLength(0);
+  });
+
+  it('every runner event that can leave an attempt in_progress or a denial unaudited raises the alarm', () => {
+    const runner = readFileSync(LEDGER_RUNNER_SOURCE_PATH, 'utf8');
+    const emitted = new Set([...runner.matchAll(/event: (?:[^']*\? )?'(ledger\.[a-z_]+)'/g)].map((m) => m[1]));
+    for (const e of LEDGER_ATTENTION_EVENTS) expect(emitted, e).toContain(e);
+    const [, filter] = byType('AWS::Logs::MetricFilter')[0]!;
+    const pattern = filter.Properties.FilterPattern as string;
+    for (const e of LEDGER_ATTENTION_EVENTS) expect(pattern).toContain(`($.event = "${e}")`);
+    expect(pattern).toContain('($.audited IS FALSE)');
+    expect(filter.Properties.LogGroupName).toEqual({ Ref: byType('AWS::Logs::LogGroup').find(([id]) => id.startsWith('BrokerLogs'))![0] });
+    const [, alarm] = byType('AWS::CloudWatch::Alarm')[0]!;
+    expect(alarm.Properties).toMatchObject({
+      MetricName: (filter.Properties.MetricTransformations as Json[])[0]!.MetricName,
+      Statistic: 'Sum',
+      Period: 300,
+      Threshold: 1,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      TreatMissingData: 'notBreaching',
+      AlarmActions: [{ Ref: topicId }],
+    });
+  });
+
+  it('a broker build that times out, is stopped or faults is reported (its bookkeeping never ran)', () => {
+    // Literal values: a timeout / fault is a phase status, not a documented build-status value.
+    expect([...BROKER_ABORT_STATES]).toEqual(['TIMED_OUT', 'STOPPED', 'FAULT']);
+    const patterns = byType('AWS::Events::Rule').map(([, r]) => r.Properties.EventPattern);
+    expect(patterns).toEqual([
+      {
+        source: ['aws.codebuild'],
+        'detail-type': ['CodeBuild Build State Change'],
+        detail: { 'project-name': [BROKER_PROJECT], 'build-status': ['TIMED_OUT', 'STOPPED', 'FAULT'] },
+      },
+      {
+        source: ['aws.codebuild'],
+        'detail-type': ['CodeBuild Build Phase Change'],
+        detail: { 'project-name': [BROKER_PROJECT], 'completed-phase-status': ['TIMED_OUT', 'STOPPED', 'FAULT'] },
+      },
+    ]);
+    for (const [, rule] of byType('AWS::Events::Rule')) {
+      expect(rule.Properties.Targets).toEqual([expect.objectContaining({ Arn: { Ref: topicId } })]);
+    }
+  });
+
+  it('CloudWatch may publish the alarm to the topic (the topic policy replaces the default one)', () => {
+    const [, policy] = byType('AWS::SNS::TopicPolicy')[0]!;
+    const statements = (policy.Properties.PolicyDocument as { Statement: Statement[] }).Statement;
+    const cw = statements.filter((s) => JSON.stringify(s.Principal) === JSON.stringify({ Service: 'cloudwatch.amazonaws.com' }));
+    expect(cw).toHaveLength(1);
+    expect(cw[0]).toMatchObject({ Effect: 'Allow', Action: 'sns:Publish', Resource: { Ref: topicId } });
+    const [alarmId] = byType('AWS::CloudWatch::Alarm')[0]!;
+    expect(cw[0]!.Condition).toEqual({ ArnEquals: { 'aws:SourceArn': { 'Fn::GetAtt': [alarmId, 'Arn'] } }, StringEquals: { 'aws:SourceAccount': { Ref: 'AWS::AccountId' } } });
   });
 });
