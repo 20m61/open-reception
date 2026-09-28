@@ -69,9 +69,14 @@ const evaluate = (assembly: string): { result: string; violations: Array<{ rule:
 
 const rules = (assembly: string): string[] => evaluate(assembly).violations.map((v) => v.rule);
 
-/** Copy the pinned provider code directories of the real fixture (byte-exact) into a mutated copy. */
+/** The AWS CLI layer zip of the real assembly is `@aws-cdk/asset-awscli-v1`'s `lib/layer.zip` (21 MB, not committed). */
+const AWSCLI_LAYER_ASSET = 'asset.a72522445441e9b66c2f16956c54d4786af8c61c156b80c48a6e7c32fcc49023.zip';
+const AWSCLI_LAYER_ZIP = resolve(__dirname, '../node_modules/@aws-cdk/asset-awscli-v1/lib/layer.zip');
+
+/** Copy the pinned provider code directories of the real fixture (byte-exact) and the layer zip into a copy. */
 const copyAssetDirs = (from: string, to: string) => {
   for (const name of readdirSync(from).filter((n) => n.startsWith('asset.'))) cpSync(join(from, name), join(to, name), { recursive: true });
+  cpSync(AWSCLI_LAYER_ZIP, join(to, AWSCLI_LAYER_ASSET));
 };
 
 /** A role with exactly the reviewed shape: Lambda trust, this account's boundary, basic execution. */
@@ -606,14 +611,16 @@ describe('trusted policy v2: pre-arming blocker 1 (#1146)', () => {
     Properties: { PolicyDocument: { Statement: statements }, Roles: [{ Ref: roleId }] },
   });
 
-  it('the real dev assembly (credential-free synth, main 78bdb01) trips none of the new rules', () => {
-    const result = evaluate(REAL) as { result: string; policyVersion: number; violations: Array<{ rule: string; resource: string }> };
-    expect(result.policyVersion).toBe(2);
-    // The one remaining violation is recorded separately (CDK BucketDeployment's AwsCliLayer is not a
-    // reviewed type). It is not widened here.
-    expect(result.violations.map((v) => `${v.rule}:${v.resource}`)).toEqual([
-      'RESOURCE_TYPE_NOT_APPROVED:AssetDeploymentAwsCliLayerC0B4D779',
-    ]);
+  it('the real dev assembly (credential-free synth, main 78bdb01) is allowed once its layer zip is present', () => {
+    const copy = mkdtempSync(join(tmpdir(), 'or-broker-real0-'));
+    roots.push(copy);
+    cpSync(REAL, copy, { recursive: true });
+    // Without the layer zip (it is not committed), the pinned layer cannot be verified: denied.
+    const without = evaluate(copy) as { result: string; policyVersion: number; violations: Array<{ rule: string; resource: string }> };
+    expect(without.policyVersion).toBe(2);
+    expect(without.violations.map((v) => `${v.rule}:${v.resource}`)).toEqual(['LAYER_NOT_REVIEWED:AssetDeploymentAwsCliLayerC0B4D779']);
+    cpSync(AWSCLI_LAYER_ZIP, join(copy, AWSCLI_LAYER_ASSET));
+    expect(evaluate(copy)).toMatchObject({ result: 'allowed', violations: [] });
   });
 
   it('the real dev assembly aimed at another account is denied on every account-bound field', () => {
@@ -1078,7 +1085,7 @@ describe('trusted policy v2: bypasses of the real dev assembly', () => {
   const webResources = (f: Record<string, J>) => f[`${WEB}.template.json`]!.Resources as Record<string, J>;
   const templateAsset = (f: Record<string, J>) => Object.values(webAssets(f)).find((a) => a.source.path === `${WEB}.template.json`)!;
 
-  it('the untouched copy trips only the known layer violation', () => {
+  it('the untouched copy (with the layer zip) is allowed', () => {
     expect(realRules(realWith(() => {}))).toEqual([]);
   });
 
@@ -1325,7 +1332,7 @@ describe('trusted policy v2: second review', () => {
   const anyAsset = (f: Record<string, J>) => Object.values(assets(f)).find((a) => a.source.packaging === 'zip')!;
   const firstDest = (a: J) => Object.values(a.destinations as Record<string, J>)[0]!;
 
-  it('the untouched copy (with metadata files) trips only the known layer violation', () => {
+  it('the untouched copy (with metadata files and the layer zip) is allowed', () => {
     expect(realRules(realWith(() => {}))).toEqual([]);
   });
 
@@ -1790,6 +1797,75 @@ describe('trusted policy v2: second review', () => {
       it('S3 reads of other buckets and writes to local buckets stay allowed', () => {
         expect(realRules(grant('s3:GetObject', 'arn:aws:s3:::other-project-bucket/*'))).toEqual([]);
         expect(realRules(grant('s3:PutObject', { 'Fn::Join': ['', [BUCKET, '/*']] }))).toEqual([]);
+      });
+    });
+
+    describe('the pinned AWS CLI layer (owner decision 2026-09-28)', () => {
+      const LAYER = 'AssetDeploymentAwsCliLayerC0B4D779';
+      it.each([
+        ['modified layer content', (_f: Record<string, J>, root: string) => writeFileSync(join(root, AWSCLI_LAYER_ASSET), 'not the reviewed zip')],
+        ['a missing layer zip', (_f: Record<string, J>, root: string) => rmSync(join(root, AWSCLI_LAYER_ASSET))],
+      ])('denies %s', (_label, change) => {
+        const root = realWith(() => {});
+        change({}, root);
+        expect(rules(root)).toContain('LAYER_NOT_REVIEWED');
+      });
+
+      it.each([
+        ['another description', (p: J) => (p.Description = 'x')],
+        ['an extra property', (p: J) => (p.CompatibleRuntimes = ['nodejs20.x'])],
+        ['content from another key', (p: J) => (p.Content.S3Key = '7d4121075d2726b8cc35a71c83c4395cb12fcee9dcbf37c890012827fe95c5dd.zip')],
+        ['content from another bucket', (p: J) => (p.Content.S3Bucket = 'cdk-orcloud01-assets-123456789012-us-east-1')],
+        ['an extra content key', (p: J) => (p.Content.S3ObjectVersion = 'v1')],
+      ])('denies the pinned layer with %s', (_label, change) => {
+        expect(rules(realWith((f) => change(web(f)[LAYER]!.Properties)))).toContain('LAYER_NOT_REVIEWED');
+      });
+
+      it('the layer key must be published to the layer\'s own region', () => {
+        const a = realWith((f) => {
+          const [, original] = Object.entries(assets(f)).find(([, x]) => x.source.path === AWSCLI_LAYER_ASSET)!;
+          for (const d of Object.values(original.destinations as Record<string, J>)) {
+            d.region = 'us-east-1';
+            d.bucketName = String(d.bucketName).replace('ap-northeast-1', 'us-east-1');
+            d.assumeRoleArn = String(d.assumeRoleArn).replace('ap-northeast-1', 'us-east-1');
+          }
+        });
+        expect(rules(a)).toContain('LAYER_NOT_REVIEWED');
+      });
+
+      it('denies the reviewed bytes published as a zip packaging or through a symlink', () => {
+        const zipped = realWith((f) => {
+          for (const a of Object.values(assets(f))) if (a.source.path === AWSCLI_LAYER_ASSET) a.source.packaging = 'zip';
+        });
+        expect(rules(zipped)).toContain('LAYER_NOT_REVIEWED');
+        const linked = realWith(() => {});
+        rmSync(join(linked, AWSCLI_LAYER_ASSET));
+        execFileSync('ln', ['-s', AWSCLI_LAYER_ZIP, join(linked, AWSCLI_LAYER_ASSET)]);
+        expect(rules(linked)).toContain('LAYER_NOT_REVIEWED');
+      });
+
+      it('at most one layer, even if a second one were pinned', () => {
+        const a = realWith((f) => {
+          const monitoring = f['OpenReception-WebMonitoring-dev.template.json']!.Resources as Record<string, J>;
+          monitoring.AssetDeploymentAwsCliLayerC0B4D779 = JSON.parse(JSON.stringify(web(f).AssetDeploymentAwsCliLayerC0B4D779));
+        });
+        expect(rules(a)).toContain('RESOURCE_COUNT_EXCEEDED');
+      });
+
+      it('denies any other layer, even with the reviewed content', () => {
+        const a = realWith((f) => {
+          web(f).OtherLayer = JSON.parse(JSON.stringify(web(f)[LAYER]));
+        });
+        expect(rules(a)).toContain('LAYER_NOT_REVIEWED');
+      });
+
+      it('denies the reviewed key when a second source publishes different bytes to it', () => {
+        const a = realWith((f, r) => {
+          const [, original] = Object.entries(assets(f)).find(([, x]) => x.source.path === AWSCLI_LAYER_ASSET)!;
+          assets(f).dup = { ...original, source: { path: 'asset.dup.zip', packaging: 'file' } };
+          writeFileSync(join(r, 'asset.dup.zip'), 'other bytes');
+        });
+        expect(rules(a)).toContain('LAYER_NOT_REVIEWED');
       });
     });
 
