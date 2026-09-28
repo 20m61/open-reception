@@ -256,6 +256,16 @@ tested before the broker may assume any deploy role:
    that no retained resource (ledger table, log groups, artifact bucket) has a fixed physical name. Role,
    project and pipeline names stay fixed: they are deleted with the stack, so they cannot collide, and the
    future ADR 0009 trust needs a stable broker role ARN.
+7. **The real promotion assembly is still denied.** (a) CDK's `BucketDeployment` adds an
+   `AWS::Lambda::LayerVersion` (AwsCliLayer) that the trusted policy does not approve; (b) the Validation
+   synth did not use the ADR 0009 bootstrap qualifier; (c) `cdk synth <names>` still writes every stack of
+   the app into the assembly, and the policy denies any stack outside the three.
+   **Status: (b) and (c) closed in code.** The Validation synth passes `-c promotionStacksOnly=true` (the
+   app then builds only Web / WebMonitoring / CfMon) and `-c @aws-cdk/core:bootstrapQualifier=orcloud01`,
+   and pins `AWS_REGION` as well as `CDK_DEFAULT_REGION` to the target region (the CLI derives the latter
+   from the former). A synth with exactly these flags for the dev account, evaluated with trusted policy
+   v2, is denied only by the layer. (a) owner decision (2026-09-28): approve the layer in the trusted
+   policy with its content pinned like the privileged provider code — a separate trusted-policy change.
 
 ## Before mutation can be armed
 

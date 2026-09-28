@@ -776,9 +776,11 @@ export class DevDeployBrokerStack extends cdk.Stack {
               'npm run aws:local:test',
               'npm --prefix infra run typecheck',
               'npm --prefix infra test',
-              // Only the three stacks already admitted by ADR 0009 are synthesized.
+              // Only the three stacks already admitted by ADR 0009 are synthesized (and written to
+              // the assembly: promotionStacksOnly), with the ADR 0009 bootstrap qualifier the trusted
+              // policy requires (blocker 7).
               // Context is non-secret; originVerifySecretName reuses the app secret NAME.
-              'cd infra && CDK_DEFAULT_ACCOUNT="$OR_BROKER_TARGET_ACCOUNT" CDK_DEFAULT_REGION="$OR_BROKER_TARGET_REGION" npx cdk synth OpenReception-Web-dev OpenReception-WebMonitoring-dev OpenReception-CfMon-dev --output cdk.out -c env=dev -c claudeBoundary=OpenReceptionClaudeBoundary -c appSecretsName="$OR_APP_SECRETS_NAME" -c originVerifySecretName="$OR_APP_SECRETS_NAME" -c publicOriginOverride="$OR_PUBLIC_ORIGIN_OVERRIDE" -c providerSecretBackend="$OR_PROVIDER_SECRET_BACKEND" && cd ..',
+              'cd infra && AWS_REGION="$OR_BROKER_TARGET_REGION" CDK_DEFAULT_ACCOUNT="$OR_BROKER_TARGET_ACCOUNT" CDK_DEFAULT_REGION="$OR_BROKER_TARGET_REGION" npx cdk synth OpenReception-Web-dev OpenReception-WebMonitoring-dev OpenReception-CfMon-dev --output cdk.out -c env=dev -c promotionStacksOnly=true -c @aws-cdk/core:bootstrapQualifier=orcloud01 -c claudeBoundary=OpenReceptionClaudeBoundary -c appSecretsName="$OR_APP_SECRETS_NAME" -c originVerifySecretName="$OR_APP_SECRETS_NAME" -c publicOriginOverride="$OR_PUBLIC_ORIGIN_OVERRIDE" -c providerSecretBackend="$OR_PROVIDER_SECRET_BACKEND" && cd ..',
               nodeEval(VALIDATION_EVIDENCE_SCRIPT),
             ],
           },
