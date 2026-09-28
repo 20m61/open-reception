@@ -230,7 +230,7 @@ export class DevDeployBrokerStack extends cdk.Stack {
     const stackDeployRoleArn = new cdk.CfnParameter(this, 'SparseLedgerStackDeployRoleArn', {
       type: 'String',
       description:
-        'IAM role ARN (this account) CloudFormation uses when a human deploys this stack (e.g. the admin CDK bootstrap cfn-exec role). Never a Claude/candidate role.',
+        'IAM role ARN (this account) CloudFormation uses when a human deploys this stack: a dedicated role used for no other stack (not a shared CDK bootstrap cfn-exec role). Never a Claude/candidate role.',
       allowedPattern: HUMAN_ROLE_ARN_PATTERN,
     });
 

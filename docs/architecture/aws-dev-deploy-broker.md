@@ -206,6 +206,42 @@ tested before the broker may assume any deploy role:
    stale-artifact reuse surface).
 6. **Fixed physical names + `RETAIN`.** Fixed role/project/log-group names with retained log
    groups cause name conflicts when the stack is deleted and recreated.
+8. **The broker's evidence and alerting are reachable from the Claude chain.** The Claude boundary
+   and cfn-exec policies allow `logs:*` / `cloudwatch:*` / `sns:*` / `s3:*` on `*` and denied only the
+   ledger table and the broker stack. So the deploy chain, or a candidate workload role under the
+   boundary, could:
+   - delete the broker's log groups (audit evidence; `RETAIN` only survives a stack deletion);
+   - delete the metric filter, or disable / delete the alarm;
+   - unsubscribe or re-policy the alert topic;
+   - write the artifact / audit buckets.
+
+   Any of these silently disables the escalation alarms (S10a, stuck attempts).
+   The broker's IAM roles carry `Project=open-reception`, so the tag-based role-write Deny did not
+   protect them either: the chain could delete a role, or its inline policy (including an explicit
+   Deny such as the artifact-history one).
+   **Status: closed in the policy files; applying them is a Human Gate.**
+   - `DenyBrokerControlPlane` (both layers, both migration variants) denies those four services on
+     `log-group:` / `alarm:` / SNS `OpenReception-DevDeployBroker-*` and on `s3:::openreception-devdeploy*`.
+     CloudFormation generates the bucket names in lowercase and cuts them to 63 characters,
+     stack name included, which is why the bucket pattern is shorter.
+   - `DenyIamWriteOnForeignPrincipals` adds `role/*DevDeploy*`: the named broker / validation roles, and
+     the generated pipeline roles whose stack part is cut to `OpenReception-DevDeployBr`.
+   - Coverage is fixed by `src/domain/governance/aws-policy-shape.test.ts`. It derives the generated
+     names from the synthesized logical IDs and the repo's measured truncation model
+     (`cfnGeneratedNamePrefix`), not from hand-written ARNs. To make room under the 6,144-character limit,
+   Deny `Resource` accounts became `*` (broader, so safe) and the S3 `…/*` duplicates of bucket globs
+   were dropped (`*` crosses `/`). Needs live verification after the owner applies the versions and deploys the stack: take the
+   **real** physical names from `describe-stack-resources`, then run `simulate-principal-policy` with
+   `logs:DeleteLogGroup`, `cloudwatch:DisableAlarmActions`, `sns:Unsubscribe`,
+   `s3:DeleteObjectVersion` (artifact bucket) and `iam:DeleteRolePolicy` (broker role).
+   Each must return `explicitDeny`.
+
+   Open (no room left in the migration boundary; unverified, so they stay open before arming):
+   - account-level CloudWatch Logs policies (`logs:PutAccountPolicy` authorizes on `*`, and a
+     transformer or subscription policy may apply to the broker log group by prefix);
+   - S3 access points on a broker bucket (`s3:CreateAccessPoint`).
+
+   A side effect: the Claude chain can no longer read the broker's logs and artifacts either.
 
 ## Before mutation can be armed
 

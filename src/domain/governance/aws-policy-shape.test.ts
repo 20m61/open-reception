@@ -15,7 +15,12 @@ import {
   type PolicyDocument,
   type PolicyStatement,
 } from './aws-policy-shape';
-import { CARVE_OUT_ROLE_ARN_PATTERN, iamArnGlobMatches } from './cfn-generated-name';
+import {
+  CARVE_OUT_ROLE_ARN_PATTERN,
+  cfnGeneratedNamePrefix,
+  iamArnGlobMatches,
+  iamArnGlobMatchesGeneratedName,
+} from './cfn-generated-name';
 import {
   CARVE_OUT_ALLOWED_ACTIONS,
   CARVE_OUT_ALLOWED_RESOURCE_PREFIX,
@@ -1275,5 +1280,103 @@ describe('claude-deploy-entry-trust.json', () => {
     const raw = JSON.stringify(doc);
     expect(raw).not.toContain('"Principal":"*"');
     expect(raw).not.toContain('"AWS":"*"');
+  });
+});
+
+/**
+ * arming 前ブロッカー 8（#1146）: broker の監査 log・警報・通知先・bucket・role は、
+ * Claude の chain（`logs:*` / `cloudwatch:*` / `sns:*` / `s3:*` on `*`、role の削除など）から
+ * 消せない・止められない。層 2（cfn-exec）と層 4（boundary）の両方、移行用も同じ。
+ *
+ * 物理名は CloudFormation が付ける。手書きの ARN ではなく、合成した broker stack の論理 ID と
+ * `cfnGeneratedNamePrefix`（stack 名も切られる実測モデル）から、型ごとの上限で導く。
+ * 🔴 S3 は上限 63・小文字で、stack 名が `openreception-devdeployb` まで切られうる
+ * （`openreception-devdeploybroker-*` では覆えなかった。独立レビューで判明）。
+ */
+const BROKER_STACK = 'OpenReception-DevDeployBroker';
+/** `infra/bin/dev-deploy-broker.ts` を合成した template の論理 ID（名前を付けない資源だけ）。 */
+const BROKER_GENERATED: ReadonlyArray<{ service: string; logicalId: string; maxLength: number; arn: (name: string) => string }> = [
+  { service: 's3', logicalId: 'PipelineArtifacts4A9B2621', maxLength: 63, arn: (n) => `arn:aws:s3:::${n}` },
+  { service: 's3', logicalId: 'LedgerAuditLogsB7808091', maxLength: 63, arn: (n) => `arn:aws:s3:::${n}` },
+  { service: 'logs', logicalId: 'BrokerLogs003CD6FC', maxLength: 512, arn: (n) => `arn:aws:logs:ap-northeast-1:822063948773:log-group:${n}` },
+  { service: 'logs', logicalId: 'ValidationLogsD682AFC4', maxLength: 512, arn: (n) => `arn:aws:logs:ap-northeast-1:822063948773:log-group:${n}` },
+  { service: 'cloudwatch', logicalId: 'LedgerAttentionAlarm1D6EBF56', maxLength: 255, arn: (n) => `arn:aws:cloudwatch:ap-northeast-1:822063948773:alarm:${n}` },
+  { service: 'sns', logicalId: 'BrokerAlerts7ED7E89C', maxLength: 256, arn: (n) => `arn:aws:sns:ap-northeast-1:822063948773:${n}` },
+  { service: 'iam', logicalId: 'PipelineRoleD68726F7', maxLength: 64, arn: (n) => `arn:aws:iam::822063948773:role/${n}` },
+  { service: 'iam', logicalId: 'PipelineBrokerBoundaryTrustedBrokerUnarmedCodePipelineActionRole04E6F052', maxLength: 64, arn: (n) => `arn:aws:iam::822063948773:role/${n}` },
+];
+const TAMPER_ACTION: Readonly<Record<string, string>> = {
+  s3: 's3:DeleteObjectVersion',
+  logs: 'logs:DeleteLogGroup',
+  cloudwatch: 'cloudwatch:DisableAlarmActions',
+  sns: 'sns:Unsubscribe',
+  iam: 'iam:DeleteRolePolicy',
+};
+
+describe.each([
+  'claude-boundary.json',
+  'claude-boundary-migration.json',
+  'claude-cfn-exec.json',
+  'claude-cfn-exec-migration.json',
+])('%s: broker の制御面を Claude の chain から Deny する (#1146 blocker 8)', (name) => {
+  const doc = load(name);
+  const deny = doc.Statement.find((s) => s.Sid === 'DenyBrokerControlPlane');
+  const unconditionalDenies = doc.Statement.filter(
+    (s) => s.Effect === 'Deny' && s.Condition === undefined && s.NotAction === undefined && s.NotResource === undefined,
+  );
+  const actionDenied = (s: PolicyStatement, action: string): boolean =>
+    [s.Action ?? []].flat().some((a) => iamArnGlobMatches(a, action));
+  const denies = (action: string, arn: string): boolean =>
+    unconditionalDenies.some((s) => actionDenied(s, action) && [s.Resource ?? []].flat().some((r) => iamArnGlobMatches(r, arn)));
+  /** 乱数サフィックス（12 / 13 文字）が未確定の生成名でも Deny に覆われるか。 */
+  const deniesGenerated = (action: string, arnPrefix: string, suffixLength: number): boolean =>
+    unconditionalDenies.some(
+      (s) =>
+        actionDenied(s, action) &&
+        [s.Resource ?? []].flat().some((r) => iamArnGlobMatchesGeneratedName(r, arnPrefix, suffixLength)),
+    );
+
+  it('無条件の Deny である', () => {
+    expect(deny?.Effect).toBe('Deny');
+    expect(deny?.Condition).toBeUndefined();
+    expect(deny?.NotAction).toBeUndefined();
+    expect(deny?.NotResource).toBeUndefined();
+  });
+
+  it.each(BROKER_GENERATED.flatMap((r) => [12, 13].map((len) => [r.service, r.logicalId, len] as const)))(
+    '%s %s（サフィックス %d 文字）の生成名を Deny する',
+    (service, logicalId, suffixLength) => {
+      const r = BROKER_GENERATED.find((x) => x.logicalId === logicalId)!;
+      const lower = service === 's3';
+      const prefix = cfnGeneratedNamePrefix(lower ? BROKER_STACK.toLowerCase() : BROKER_STACK, lower ? logicalId.toLowerCase() : logicalId, {
+        maxLength: r.maxLength,
+        suffixLength,
+      });
+      expect(deniesGenerated(TAMPER_ACTION[service]!, r.arn(prefix), suffixLength), r.arn(prefix)).toBe(true);
+    },
+  );
+
+  it.each([
+    ['iam:DeleteRolePolicy', 'arn:aws:iam::822063948773:role/OpenReceptionTrustedDevDeployBrokerRole'],
+    ['iam:DeleteRole', 'arn:aws:iam::822063948773:role/OpenReceptionDevDeployValidationRole'],
+    ['logs:DeleteMetricFilter', 'arn:aws:logs:ap-northeast-1:822063948773:log-group:OpenReception-DevDeployBroker-BrokerLogs003CD6FC-AbCdEf123456:*'],
+    ['sns:SetSubscriptionAttributes', 'arn:aws:sns:ap-northeast-1:822063948773:OpenReception-DevDeployBroker-BrokerAlerts7ED7E89C-AbCdEf123456:0b8e2d6c-1111-2222-3333-444455556666'],
+    ['s3:PutBucketPolicy', 'arn:aws:s3:::openreception-devdeployb-pipelineartifacts4a9b2621-abcdef123456'],
+  ])('%s on %s を Deny する', (action, arn) => {
+    expect(denies(action, arn)).toBe(true);
+  });
+
+  it('Claude の dev stack の log・警報・topic・bucket・role には掛からない', () => {
+    const own: ReadonlyArray<readonly [string, string]> = [
+      ['logs:DeleteLogGroup', 'arn:aws:logs:ap-northeast-1:822063948773:log-group:/aws/lambda/OpenReception-Web-dev-Server-AbCdEf123456'],
+      ['logs:DeleteLogGroup', 'arn:aws:logs:ap-northeast-1:822063948773:log-group:OpenReception-Web-dev-AccessLogs-AbCdEf123456'],
+      ['cloudwatch:DeleteAlarms', 'arn:aws:cloudwatch:ap-northeast-1:822063948773:alarm:OpenReception-WebMonitoring-dev-Errors-AbCdEf123456'],
+      ['sns:DeleteTopic', 'arn:aws:sns:ap-northeast-1:822063948773:OpenReception-Notification-dev-Alerts-AbCdEf123456'],
+      ['s3:PutObject', 'arn:aws:s3:::openreception-web-dev-assets-abcdef123456/x.js'],
+      ['iam:DeleteRolePolicy', 'arn:aws:iam::822063948773:role/OpenReception-Web-dev-CustomCDKBucketDeployment-AbCdEf123456'],
+    ];
+    for (const [action, arn] of own) {
+      expect(denies(action, arn), arn).toBe(false);
+    }
   });
 });

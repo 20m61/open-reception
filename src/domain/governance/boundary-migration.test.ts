@@ -20,6 +20,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { PolicyDocument, PolicyStatement } from './aws-policy-shape';
+import { iamArnGlobMatches } from './cfn-generated-name';
 
 const load = (name: string): PolicyDocument =>
   JSON.parse(readFileSync(resolve(process.cwd(), 'scripts/aws-policies', name), 'utf8'));
@@ -99,15 +100,20 @@ describe.each(POLICY_PAIRS)('%s → %s', (normalName, migrationName) => {
 
   it('🔴 他プロジェクトのデータは移行中も一切通さない', () => {
     const migrated = listOf(bySid(MIGRATION, 'DenyForeignProjectData')?.Resource);
-    for (const r of [
-      'arn:aws:s3:::nodi-*',
-      'arn:aws:s3:::nodi-*/*',
-      'arn:aws:s3:::salon-loop-*',
-      'arn:aws:s3:::salon-loop-*/*',
-      'arn:aws:s3:::cdk-staging-*',
-      'arn:aws:s3:::cdk-staging-*/*',
-    ]) {
+    for (const r of ['arn:aws:s3:::nodi-*', 'arn:aws:s3:::salon-loop-*', 'arn:aws:s3:::cdk-staging-*']) {
       expect(migrated, `${r} が Deny から外れている`).toContain(r);
+    }
+    // bucket のパターンだけでオブジェクトも覆う（`*` は `/` を越える）。`/*` の列挙は要らない。
+    for (const arn of [
+      'arn:aws:s3:::nodi-data',
+      'arn:aws:s3:::nodi-data/obj/key.json',
+      'arn:aws:s3:::salon-loop-x/obj',
+      'arn:aws:s3:::cdk-staging-assets/a.zip',
+    ]) {
+      expect(
+        migrated.some((r) => iamArnGlobMatches(r, arn)),
+        `${arn} が Deny に覆われていない`,
+      ).toBe(true);
     }
   });
 
