@@ -115,7 +115,7 @@ Candidate code is allowed to execute only in **Validation CodeBuild**. That role
 
 The GitHub App connection terminates in **CodePipeline Source**, so package lifecycle scripts or tests cannot request the GitHub connection token.
 
-The **Trusted Broker CodeBuild** consumes the validation artifact as **untrusted input**. Its buildspec is embedded into the broker stack with CDK. The trusted cloud-assembly policy is an S3 asset published when the human-managed broker stack is deployed. It lives in the **shared CDK bootstrap asset bucket** (`cdk-*-assets-<account>-<region>`), so the broker role is *not* the only principal that can read it, and any principal with write access to that bucket (e.g. CDK file-publishing roles, other stacks' deploy pipelines) could replace the object. Bucket access is therefore not the control. The control is a **content hash pin**: at synth the stack computes the SHA-256 of `infra/broker/trusted-policy.mjs` and injects it as `OR_TRUSTED_POLICY_SHA256`; the broker recomputes the SHA-256 of the downloaded file and fails closed (non-zero exit, no result file) on a missing/malformed pin or any mismatch **before** executing it. (The CDK asset fingerprint used in the object key is not a content hash of the file and is not used as the pin.)
+The **Trusted Broker CodeBuild** consumes the validation artifact as **untrusted input**. Its buildspec is embedded into the broker stack with CDK. The trusted cloud-assembly policy is an S3 asset published when the human-managed broker stack is deployed. It lives in the CDK bootstrap asset bucket (`cdk-<qualifier>-assets-<account>-<region>`). Since blocker 8 the broker has a bootstrap of its own (`orbrkr01`): its publishing role trusts only the owner, and the Claude chain is denied that bucket. Still, the broker role is *not* the only principal that can read the bucket, and an account admin could replace the object. Bucket access is therefore not the control. The control is a **content hash pin**: at synth the stack computes the SHA-256 of `infra/broker/trusted-policy.mjs` and injects it as `OR_TRUSTED_POLICY_SHA256`; the broker recomputes the SHA-256 of the downloaded file and fails closed (non-zero exit, no result file) on a missing/malformed pin or any mismatch **before** executing it. (The CDK asset fingerprint used in the object key is not a content hash of the file and is not used as the pin.)
 
 A candidate commit can edit the TypeScript/policy source that proposes a future broker configuration, but that edit does not change the already-deployed broker. Updating the broker stack is bootstrap/human work. The broker never executes repository scripts with its privileged identity.
 
@@ -270,22 +270,6 @@ tested before the broker may assume any deploy role:
    asset publishing or `cdk deploy` over options this policy did not review. Product finding (not changed
    here): the admin OAuth client enables the implicit flow with the admin scope and CDK's default
    callback `https://example.com`.
-7. **The real dev assembly is still denied** (found while testing blocker 1 against a real synth; not
-   widened here). (a) CDK `BucketDeployment` brings an `AWS::Lambda::LayerVersion` (its CLI layer), which
-   is not a reviewed type; approving it is a policy decision. (b) The Validation synth does not pass
-   `@aws-cdk/core:bootstrapQualifier=orcloud01`, so its manifest names the default `hnb659fds` bootstrap
-   roles, which ADR 0009 denies and policy v2 rejects. (c) `cdk synth` writes every stack of the app into
-   the assembly, so `OpenReception-Notification-dev` / `OpenReception-Monitoring-dev` appear and are
-   `STACK_NOT_APPROVED`.
-   **Status (a): closed in code** (owner decision on #1146, 2026-09-28: approve the layer). The policy
-   accepts exactly one layer, `AssetDeploymentAwsCliLayerC0B4D779`, with its reviewed description, only
-   `Content.{S3Bucket, S3Key}` in the stack region's bootstrap bucket, and content equal to
-   `@aws-cdk/asset-awscli-v1` 2.2.282 `lib/layer.zip` (SHA-256 pinned in `PINNED_LAYERS`; every source
-   published under the key must be that plain file, in the layer's region). Any other layer, property or
-   content is `LAYER_NOT_REVIEWED`; a CDK upgrade that changes the file is a policy change. The zip is
-   21 MB and not committed: tests copy it from `node_modules`. As with the provider code, the armed broker
-   must upload the reviewed zip itself rather than rely on the CLI's skip-if-present. (b) / (c) are closed
-   on the broker-stack side (Validation synth flags). With both, a synth for the dev account is `allowed`.
 2. **Artifact bucket write/delete by the Validation role.** The CDK default grant lets candidate
    code of one execution overwrite or delete another execution's artifacts (cross-execution
    substitution). Needs per-execution write scope or broker-side content binding.
@@ -352,8 +336,98 @@ tested before the broker may assume any deploy role:
    app then builds only Web / WebMonitoring / CfMon) and `-c @aws-cdk/core:bootstrapQualifier=orcloud01`,
    and pins `AWS_REGION` as well as `CDK_DEFAULT_REGION` to the target region (the CLI derives the latter
    from the former). A synth with exactly these flags for the dev account, evaluated with trusted policy
-   v2, is denied only by the layer. (a) owner decision (2026-09-28): approve the layer in the trusted
-   policy with its content pinned like the privileged provider code — a separate trusted-policy change.
+   v2, is denied only by the layer.
+   **Status (a): closed in code** (owner decision on #1146, 2026-09-28: approve the layer). The policy
+   accepts exactly one layer, `AssetDeploymentAwsCliLayerC0B4D779`, with its reviewed description, only
+   `Content.{S3Bucket, S3Key}` in the stack region's bootstrap bucket, and content equal to
+   `@aws-cdk/asset-awscli-v1` 2.2.282 `lib/layer.zip` (SHA-256 pinned in `PINNED_LAYERS`; every source
+   published under the key must be that plain file, in the layer's region). Any other layer, property or
+   content is `LAYER_NOT_REVIEWED`; a CDK upgrade that changes the file is a policy change. The zip is
+   21 MB and not committed: tests copy it from `node_modules`. As with the provider code, the armed broker
+   must upload the reviewed zip itself rather than rely on the CLI's skip-if-present. With (a), (b) and (c)
+   closed, a synth for the dev account is `allowed`.
+8. **The broker's evidence and alerting are reachable from the Claude chain.** The Claude boundary
+   and cfn-exec policies allow `logs:*` / `cloudwatch:*` / `sns:*` / `s3:*` on `*` and denied only the
+   ledger table and the broker stack. So the deploy chain, or a candidate workload role under the
+   boundary, could:
+   - delete the broker's log groups (audit evidence; `RETAIN` only survives a stack deletion);
+   - delete the metric filter, or disable / delete the alarm;
+   - unsubscribe or re-policy the alert topic;
+   - write the artifact / audit buckets.
+
+   Any of these silently disables the escalation alarms (S10a, stuck attempts).
+   The broker's IAM roles carry `Project=open-reception`, so the tag-based role-write Deny did not
+   protect them either: the chain could delete a role, or its inline policy (including an explicit
+   Deny such as the artifact-history one).
+   **Status: closed in the policy files and the broker app.** Owner decisions, 2026-09-28 (#1146).
+
+   Still Human Gates:
+   - applying the policy versions;
+   - the broker-only bootstrap with owner-only trust. That trust comes from a custom bootstrap template
+     (runbook #1181, step 4), not from code. A plain `cdk bootstrap --qualifier orbrkr01` would create
+     an account-trusted deploy role and an `AdministratorAccess` cfn-exec role; the Claude chain would
+     still be denied them.
+   - `DenyForeignProjectData` (both layers) denies `logs:*` / `cloudwatch:*` / `sns:*` / `s3:*`
+     (next to the existing `dynamodb:*`) on the following. The broker entries were folded into the
+     existing Deny for lack of room; a Deny × Deny cross product only adds denies.
+     - `log-group:` / `alarm:` / SNS `OpenReception-DevDeployBroker-*`;
+     - `s3:::openreception-devdeploy*`. CloudFormation generates bucket names in lowercase and cuts
+       them to 63 characters, stack name included, which is why this pattern is shorter.
+   - `DenyIamWriteOnForeignPrincipals` adds `role/*DevDeploy*`: the named broker / validation roles,
+     and the generated pipeline roles whose stack part is cut to `OpenReception-DevDeployBr`.
+   - Account-wide paths to the same log groups / buckets are denied on `*`:
+     - `logs:*AccountPolicy` (transformer / subscription / data-protection account policies);
+     - `logs:PutResourcePolicy` and `logs:*Deliver*` (vended-log delivery, e.g. an API Gateway or
+       CloudFront log pointed at a broker log group, which would write lines Claude largely controls);
+     - `s3:Create*AccessPoint*` (access points on a broker bucket).
+
+     They are folded into `DenyPrincipalCreationAndOrgChanges` (boundary) / `DenyDnsAndPrincipals`
+     (cfn-exec). No dev stack uses them.
+   - **Broker-only bootstrap.** `bin/dev-deploy-broker.ts` synthesizes with its own qualifier
+     (`lib/config/broker-bootstrap.ts`, `orbrkr01`).
+     - Its cfn-exec role is the stack-deploy role that the ledger table and the audit bucket exempt,
+       so no other stack can run with it.
+     - Its deploy / publishing roles trust only the owner, through a custom bootstrap template
+       (runbook `docs/runbook-sparse-ledger-activation.md`, step 4).
+     - Its assets bucket holds the stack template and the trusted modules.
+     - The Claude chain may not assume or pass `role/cdk-orbrkr01-*`: `DenySharedBootstrapRoles` in the
+       boundary and cfn-exec, and the same Deny in the deploy role and the entry role.
+     - It may not touch `s3:::cdk-orbrkr01-*`. Otherwise it could swap the template between publish
+       and deploy.
+     - It may not act on the bootstrap stack or its version parameter. `stack/CDKToolkit*/*` also
+       covers Claude's own `CDKToolkit-orcloud01` for boundaried principals, and only the
+       non-boundaried deploy role reads that one. `ssm:*` is denied on
+       `parameter/cdk-bootstrap/orbrkr01/*`.
+     - `SparseLedgerStackDeployRoleArn` only accepts `cdk-orbrkr01-cfn-exec-role-<account>-<region>`,
+       the role the synthesizer hands CloudFormation. A test ties the pattern to the synthesized
+       manifest.
+   - The #680 migration policies (`claude-*-migration.json`) were retired to make room; the migration
+     is complete.
+   - Coverage is fixed by `src/domain/governance/aws-policy-shape.test.ts` and
+     `infra/test/dev-deploy-broker-invariants.test.ts`. The tests derive the generated names from the
+     synthesized logical IDs and the repo's measured truncation model (`cfnGeneratedNamePrefix`),
+     not from hand-written ARNs.
+   - Other room was made under the 6,144-character limit. Deny `Resource` accounts became `*`
+     (broader, so safe). The S3 `…/*` duplicates of bucket globs were dropped (`*` crosses `/`).
+     `CDKToolkit` and `CDKToolkit-staging` were folded into `CDKToolkit*`.
+   - Needs live verification after the owner applies the policy versions and deploys the stack.
+     Take the **real** physical names from `describe-stack-resources`, then run
+     `simulate-principal-policy` with each of the following. Each must return `explicitDeny`.
+     - `logs:DeleteLogGroup`
+     - `cloudwatch:DisableAlarmActions`
+     - `sns:Unsubscribe`
+     - `s3:DeleteObjectVersion` (artifact bucket)
+     - `iam:DeleteRolePolicy` (broker role)
+     - `sts:AssumeRole` (`cdk-orbrkr01-deploy-role-*`)
+     - `iam:PassRole` (`cdk-orbrkr01-cfn-exec-role-*`)
+     - `s3:PutObject` (`cdk-orbrkr01-assets-*`)
+     - `cloudformation:UpdateStack` (`CDKToolkit-orbrkr01`)
+     - `ssm:PutParameter` (`/cdk-bootstrap/orbrkr01/version`)
+     - `logs:PutAccountPolicy`, `logs:PutResourcePolicy`
+     - `s3:CreateAccessPoint`
+
+   A side effect, accepted by the owner: the Claude chain can no longer read the broker's logs and
+   artifacts either.
 
 ## Before mutation can be armed
 
