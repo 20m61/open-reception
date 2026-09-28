@@ -1,0 +1,333 @@
+{
+  "/OpenReception-WebMonitoring-dev": [
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:139:23)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    },
+    {
+      "type": "aws:cdk:stack-tags",
+      "data": [
+        {
+          "key": "Component",
+          "value": "web-monitoring"
+        },
+        {
+          "key": "Environment",
+          "value": "dev"
+        },
+        {
+          "key": "ManagedBy",
+          "value": "cdk"
+        },
+        {
+          "key": "Owner",
+          "value": "open-reception-team"
+        },
+        {
+          "key": "Project",
+          "value": "open-reception"
+        }
+      ]
+    }
+  ],
+  "/OpenReception-WebMonitoring-dev/BootstrapVersion": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "BootstrapVersion"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...aws-cdk-lib...",
+        "(no user code in 10 frames, use --stack-trace-limit to capture more)"
+      ]
+    }
+  ],
+  "/OpenReception-WebMonitoring-dev/CheckBootstrapVersion": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "CheckBootstrapVersion"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...aws-cdk-lib...",
+        "(no user code in 10 frames, use --stack-trace-limit to capture more)"
+      ]
+    }
+  ],
+  "/OpenReception-WebMonitoring-dev/AlarmTopic/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "AlarmTopicD01E77F9"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new Topic2 in aws-cdk-lib...",
+        "new WebMonitoringStack (/home/user/open-reception/infra/lib/stacks/web-monitoring-stack.ts:92:18)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:139:23)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-WebMonitoring-dev/ServerErrors/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ServerErrors4EF9A950"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...Metric.createAlarm in aws-cdk-lib...",
+        "new WebMonitoringStack (/home/user/open-reception/infra/lib/stacks/web-monitoring-stack.ts:106:8)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:139:23)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-WebMonitoring-dev/ServerThrottles/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ServerThrottlesE939091D"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...Metric.createAlarm in aws-cdk-lib...",
+        "new WebMonitoringStack (/home/user/open-reception/infra/lib/stacks/web-monitoring-stack.ts:117:8)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:139:23)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-WebMonitoring-dev/ServerDurationP95/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ServerDurationP95B0C97837"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...Metric.createAlarm in aws-cdk-lib...",
+        "new WebMonitoringStack (/home/user/open-reception/infra/lib/stacks/web-monitoring-stack.ts:128:8)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:139:23)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-WebMonitoring-dev/ServerConcurrentExecutions/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ServerConcurrentExecutions3110DE12"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...Metric.createAlarm in aws-cdk-lib...",
+        "new WebMonitoringStack (/home/user/open-reception/infra/lib/stacks/web-monitoring-stack.ts:139:8)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:139:23)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-WebMonitoring-dev/AccountConcurrentExecutions/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "AccountConcurrentExecutions39EDA9B8"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...Metric.createAlarm in aws-cdk-lib...",
+        "new WebMonitoringStack (/home/user/open-reception/infra/lib/stacks/web-monitoring-stack.ts:158:8)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:139:23)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-WebMonitoring-dev/ImageErrors/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ImageErrors2505B932"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...Metric.createAlarm in aws-cdk-lib...",
+        "new WebMonitoringStack (/home/user/open-reception/infra/lib/stacks/web-monitoring-stack.ts:171:8)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:139:23)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-WebMonitoring-dev/ImageDurationP95/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ImageDurationP95E655B61C"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...Metric.createAlarm in aws-cdk-lib...",
+        "new WebMonitoringStack (/home/user/open-reception/infra/lib/stacks/web-monitoring-stack.ts:182:8)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:139:23)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-WebMonitoring-dev/DdbReadThrottles/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "DdbReadThrottles03C936E2"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new Alarm2 in aws-cdk-lib...",
+        "new WebMonitoringStack (/home/user/open-reception/infra/lib/stacks/web-monitoring-stack.ts:198:30)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:139:23)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-WebMonitoring-dev/DdbWriteThrottles/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "DdbWriteThrottles371065AC"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new Alarm2 in aws-cdk-lib...",
+        "new WebMonitoringStack (/home/user/open-reception/infra/lib/stacks/web-monitoring-stack.ts:212:31)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:139:23)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-WebMonitoring-dev/OriginVerifyMissingSecretFilter/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "OriginVerifyMissingSecretFilterF07C03DC"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new MetricFilter2 in aws-cdk-lib...",
+        "originVerifyMetric (/home/user/open-reception/infra/lib/stacks/web-monitoring-stack.ts:241:7)",
+        "new WebMonitoringStack (/home/user/open-reception/infra/lib/stacks/web-monitoring-stack.ts:252:15)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:139:23)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-WebMonitoring-dev/OriginVerifyMissingSecret/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "OriginVerifyMissingSecret5F5C8CA0"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new Alarm2 in aws-cdk-lib...",
+        "new WebMonitoringStack (/home/user/open-reception/infra/lib/stacks/web-monitoring-stack.ts:251:32)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:139:23)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-WebMonitoring-dev/OriginVerifyMismatchFilter/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "OriginVerifyMismatchFilterA7F5972D"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new MetricFilter2 in aws-cdk-lib...",
+        "originVerifyMetric (/home/user/open-reception/infra/lib/stacks/web-monitoring-stack.ts:241:7)",
+        "new WebMonitoringStack (/home/user/open-reception/infra/lib/stacks/web-monitoring-stack.ts:270:15)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:139:23)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-WebMonitoring-dev/OriginVerifyMismatch/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "OriginVerifyMismatch68C16A8C"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new Alarm2 in aws-cdk-lib...",
+        "new WebMonitoringStack (/home/user/open-reception/infra/lib/stacks/web-monitoring-stack.ts:269:27)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:139:23)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-WebMonitoring-dev/KioskRealDialingUnavailableFilter/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "KioskRealDialingUnavailableFilter3950C7C3"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new MetricFilter2 in aws-cdk-lib...",
+        "new WebMonitoringStack (/home/user/open-reception/infra/lib/stacks/web-monitoring-stack.ts:295:15)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:139:23)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-WebMonitoring-dev/KioskRealDialingUnavailable/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "KioskRealDialingUnavailable96F08725"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new Alarm2 in aws-cdk-lib...",
+        "new WebMonitoringStack (/home/user/open-reception/infra/lib/stacks/web-monitoring-stack.ts:294:34)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:139:23)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-WebMonitoring-dev/Dashboard/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "Dashboard9E4231ED"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new Dashboard2 in aws-cdk-lib...",
+        "new WebMonitoringStack (/home/user/open-reception/infra/lib/stacks/web-monitoring-stack.ts:327:23)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:139:23)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-WebMonitoring-dev/CDKMetadata/Default": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "CDKMetadata"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...App.synth in aws-cdk-lib...",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:219:5)",
+        "...node internals..."
+      ]
+    }
+  ]
+}
