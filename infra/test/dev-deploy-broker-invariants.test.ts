@@ -1192,7 +1192,15 @@ describe('deploy account pin (pre-arming blocker 3)', () => {
 
   it('is the same account every ADR 0009 policy pins', () => {
     const files = readdirSync(policiesDir).filter((f) => f.endsWith('.json'));
-    expect(files.length).toBeGreaterThanOrEqual(7);
+    // The exact set, so a policy that disappears or appears unreviewed fails here (the migration
+    // policies were retired by the owner decision of 2026-09-28).
+    expect([...files].sort()).toEqual([
+      'claude-boundary.json',
+      'claude-cfn-exec.json',
+      'claude-deploy-entry-trust.json',
+      'claude-deploy-entry.json',
+      'claude-deploy-role-restriction.json',
+    ]);
     for (const file of files) {
       const accounts = new Set(readFileSync(join(policiesDir, file), 'utf8').match(/(?<![0-9])[0-9]{12}(?![0-9])/g) ?? []);
       expect([...accounts], file).toEqual([DEV_DEPLOY_TARGET_ACCOUNT]);
