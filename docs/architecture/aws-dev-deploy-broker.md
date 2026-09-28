@@ -220,7 +220,7 @@ tested before the broker may assume any deploy role:
    protect them either: the chain could delete a role, or its inline policy (including an explicit
    Deny such as the artifact-history one).
    **Status: closed in the policy files; applying them is a Human Gate.**
-   - `DenyBrokerControlPlane` (both layers, both migration variants) denies those four services on
+   - `DenyBrokerControlPlane` (both layers) denies those four services on
      `log-group:` / `alarm:` / SNS `OpenReception-DevDeployBroker-*` and on `s3:::openreception-devdeploy*`.
      CloudFormation generates the bucket names in lowercase and cuts them to 63 characters,
      stack name included, which is why the bucket pattern is shorter.

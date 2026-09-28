@@ -1286,7 +1286,7 @@ describe('claude-deploy-entry-trust.json', () => {
 /**
  * arming 前ブロッカー 8（#1146）: broker の監査 log・警報・通知先・bucket・role は、
  * Claude の chain（`logs:*` / `cloudwatch:*` / `sns:*` / `s3:*` on `*`、role の削除など）から
- * 消せない・止められない。層 2（cfn-exec）と層 4（boundary）の両方、移行用も同じ。
+ * 消せない・止められない。層 2（cfn-exec）と層 4（boundary）の両方。
  *
  * 物理名は CloudFormation が付ける。手書きの ARN ではなく、合成した broker stack の論理 ID と
  * `cfnGeneratedNamePrefix`（stack 名も切られる実測モデル）から、型ごとの上限で導く。
@@ -1315,9 +1315,7 @@ const TAMPER_ACTION: Readonly<Record<string, string>> = {
 
 describe.each([
   'claude-boundary.json',
-  'claude-boundary-migration.json',
   'claude-cfn-exec.json',
-  'claude-cfn-exec-migration.json',
 ])('%s: broker の制御面を Claude の chain から Deny する (#1146 blocker 8)', (name) => {
   const doc = load(name);
   const deny = doc.Statement.find((s) => s.Sid === 'DenyBrokerControlPlane');

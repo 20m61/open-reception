@@ -67,8 +67,7 @@ qualifier: `orcloud01`。
 >   （`*` は `/` を越えるので、bucket のパターンがオブジェクトも覆う。被覆はテストで固定）。
 >
 > その結果、boundary は 6,074 → 6,074（増減なし）。
-> 移行用の `claude-boundary-migration.json` は **6,142 / 6,144（残り 2 文字）**。次に足すときは
-> 移行用ファイルを廃止するか整理が要る。
+> 移行用の `claude-*-migration.json` は、移行が完了したので 2026-09-28 に廃止した（ステップ 9d）。
 >
 > 🔴 **詰め方の正解（2026-08-15）**: 「入らないから Deny を削る」ではなく
 > **(a) 実効的に重複している列挙を外す**（`iam:UpdateAssumeRolePolicy` は
@@ -232,9 +231,9 @@ done
 ```
 
 > **同じ規則の写しが複数ある所は、必ず片方だけ直る。** 今日だけで 3 度起きた ――
-> 層 2 と層 4（identity ∩ boundary）、移行用ポリシーの対、そしてこのリージョン別ロール。
+> 層 2 と層 4（identity ∩ boundary）、移行用ポリシーの対（2026-09-28 廃止）、そしてこのリージョン別ロール。
 > 「両方に同じ性質を要求する」テスト（`policy-parity.test.ts` /
-> `boundary-migration.test.ts`）が効くのは repo 内の写しだけで、**実 IAM 側の写しは
+> 廃止前の `boundary-migration.test.ts`）が効くのは repo 内の写しだけで、**実 IAM 側の写しは
 > 人間の手順が守るしかない**。だからここに書いてある。
 
 ---
@@ -1599,61 +1598,28 @@ Your access has been denied by S3 ... permission to GetObject for cdk-hnb659fds-
 スタック」前提だった。2026-08-15 にこれを踏み、`UPDATE_ROLLBACK_FAILED` から
 抜けられなくなった。
 
-### 手順（移行の間だけ穴を開け、成功したら閉じる）
+### ✅ 完了。移行用ポリシーは廃止した（2026-09-28）
 
-`scripts/aws-policies/claude-boundary-migration.json` は**通常の境界と 1 箇所だけ違う**
-一時ポリシー。共有 assets の**オブジェクト読み取りだけ**を通し、書き込み・削除・
-他プロジェクトのデータは通常どおり Deny する（`NotAction: s3:GetObject` の Deny で塞ぐ）。
-差分が 1 箇所であることは `src/domain/governance/boundary-migration.test.ts` が固定している。
+この移行は完了している。根拠は次の 2 つ。
+- 2026-08-15 の初回デプロイが成功した（本書の「実施記録」）。
+- 2026-09-09 に、chain が扱う 3 スタックが `orcloud01` の chain で `UPDATE_COMPLETE` になった
+  （`describe-stacks` の実測。ステップ 9 の実施記録）。
 
-🔴 **境界と cfn-exec の両方を差し替える。** 同じ Deny が両方にあり、**片方だけ開けても
-`explicitDeny` のまま**通らない（2026-08-15 に境界だけ開けて実際に踏んだ）。
+成功したデプロイ以降、スタックは `orcloud01` の assets を参照するので、次からのロールバックは
+共有バケットを見ない。
 
-```bash
-# 1) 一時ポリシーを適用（ここから窓が開く）。**2 本とも**必要。
-aws iam create-policy-version \
-  --policy-arn arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary \
-  --policy-document file://scripts/aws-policies/claude-boundary-migration.json \
-  --set-as-default
-aws iam create-policy-version \
-  --policy-arn arn:aws:iam::822063948773:policy/OpenReceptionClaudeCfnExec-dev \
-  --policy-document file://scripts/aws-policies/claude-cfn-exec-migration.json \
-  --set-as-default
+そのため、移行の窓を開けるための一時ポリシーを廃止した。
+- 廃止したもの: `scripts/aws-policies/claude-boundary-migration.json` / `claude-cfn-exec-migration.json` と、
+  その差分を固定していた `src/domain/governance/boundary-migration.test.ts`
+- 理由: 移行用 boundary が 6,144 文字の上限に達し、arming 前ブロッカー 8（#1146 / #1192）の Deny を
+  足せなくなった。
 
-# 窓が開いたことを必ず確認する（開いていないまま deploy して二度手間になる）
-aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
-  --action-names s3:GetObject \
-  --resource-arns "arn:aws:s3:::cdk-hnb659fds-assets-822063948773-ap-northeast-1/x.zip" \
-  --query 'EvaluationResults[0].EvalDecision' --output text   # → allowed
-
-# 2) 移行デプロイ（必須 context はステップ 8b）
-bash scripts/aws-cloud-deploy.sh diff
-OR_APPROVED_DIFF="..." bash scripts/aws-cloud-deploy.sh deploy
-
-# 3) 🔴 成功したら必ず通常へ戻す（窓を閉じる）。**2 本とも**戻す。
-aws iam create-policy-version \
-  --policy-arn arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary \
-  --policy-document file://scripts/aws-policies/claude-boundary.json \
-  --set-as-default
-aws iam create-policy-version \
-  --policy-arn arn:aws:iam::822063948773:policy/OpenReceptionClaudeCfnExec-dev \
-  --policy-document file://scripts/aws-policies/claude-cfn-exec.json \
-  --set-as-default
-
-# 閉じたことを確認する（上と同じ simulate が explicitDeny に戻る）
-```
-
-⚠️ managed policy は**バージョンを 5 個までしか保持できない**。窓の開閉を繰り返すと
-`LimitExceeded` になるので、古いバージョンは `aws iam delete-policy-version` で掃除する。
-
-**窓の間に何が起きうるか**: サンドボックスが侵害されていた場合、他プロジェクト
-（nodi / salon-loop）の Lambda バンドルや CFN テンプレートを**読める**。書き込みはできない。
-だから**移行が終わったら即座に閉じる**。閉じたことは `simulate-principal-policy` で
-`s3:GetObject` on `cdk-hnb659fds-assets-*/*` が `explicitDeny` に戻ることで確かめる。
-
-**なぜ一度きりで済むか**: 成功したデプロイ以降、スタックは `orcloud01` の assets を参照する
-ので、次からのロールバックは共有バケットを見ない。
+🔴 **共有 bootstrap（`hnb659fds`）で作った別のスタックを、将来また chain へ移す場合**は、
+そのときの通常ポリシーから同じ「1 箇所だけ違う」一時ポリシーを作り直し、差分のテストも一緒に戻す。
+- 廃止前の版は git の履歴にある（`git log --diff-filter=D -- scripts/aws-policies/claude-boundary-migration.json`）。
+- 廃止前の版をそのまま適用しない。それ以降に通常ポリシーへ足した Deny が落ちる。
+- 窓の開閉（2 本とも差し替える、`simulate` で確かめる、成功したら即座に閉じる、古い version を掃除する）は、
+  廃止前の本節の手順（git の履歴）に従う。
 
 ---
 

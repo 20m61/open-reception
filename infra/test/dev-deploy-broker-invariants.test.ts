@@ -583,8 +583,6 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
     for (const name of [
       'claude-boundary.json',
       'claude-cfn-exec.json',
-      'claude-boundary-migration.json',
-      'claude-cfn-exec-migration.json',
     ]) {
       const doc = JSON.parse(readFileSync(resolve(__dirname, '../../scripts/aws-policies', name), 'utf8'));
       // Folded into the existing foreign-data Deny: the boundary is close to IAM's 6,144-char
