@@ -395,6 +395,33 @@ describe('buildDelegationPrompt', () => {
         expect(pr()).toContain('--no-skip-docs');
       });
 
+      it('証拠投稿の手順はちょうど 1 回だけ出る（重複しても indexOf は先頭しか見ない）', () => {
+        const count = pr().split(EVIDENCE).length - 1;
+        expect(count).toBe(1);
+      });
+
+      it("'merge' の手順は従来のまま（証拠投稿を足さない。明示指定は owner の意図で任せる経路）", () => {
+        expect(buildDelegationPrompt({ ...BASE, stopAfter: 'merge' })).not.toContain(EVIDENCE);
+      });
+
+      it('PR 番号は固定値ではなくプレースホルダで渡す（委譲先が実際の番号へ置き換える）', () => {
+        expect(pr()).toContain(`${EVIDENCE} <PR 番号>`);
+      });
+
+      it('証拠の結果は終了コードと見出し（✅ か）をそのまま報告させ、gh を使わせない', () => {
+        const p = pr();
+        const step = p.slice(p.indexOf(EVIDENCE), p.indexOf('ここで止める'));
+        for (const phrase of ['終了コード', '✅', 'REST のみ']) {
+          expect(step, `証拠の手順に「${phrase}」が無い`).toContain(phrase);
+        }
+        expect(step).not.toContain('gh pr comment');
+      });
+
+      it('冒頭の目標に証拠投稿まで含める', () => {
+        const p = pr();
+        expect(p.slice(0, p.indexOf('## 背景'))).toContain('証拠投稿');
+      });
+
       it('最終報告に証拠の結果とマージしていないことを含める', () => {
         const p = pr();
         const report = p.slice(p.indexOf('最後に次を'), p.indexOf('## 環境の既知の制約'));

@@ -79,6 +79,28 @@ describe('loop-round スキルと委譲プロンプトの整合', () => {
       expect(skill).toMatch(/Claude[^\n]*merge しない/);
     });
 
+    it('§6 は --full → gate:evidence をこの順で書き、merge の前に止まる', () => {
+      const from = skill.indexOf('## 6.');
+      const to = skill.indexOf('## 7.');
+      expect(from, '## 6. が見つからない').toBeGreaterThan(-1);
+      expect(to, '## 7. が ## 6. より後ろに無い').toBeGreaterThan(from);
+      const section = skill.slice(from, to);
+      const gate = section.indexOf('quality-gate.sh --full');
+      const evidence = section.indexOf('npm run gate:evidence -- --number');
+      expect(gate, '§6 に --full が無い').toBeGreaterThan(-1);
+      expect(evidence, '§6 に gate:evidence が無い（表の行だけでは手順にならない）').toBeGreaterThan(gate);
+      // 証拠は PASS でなければ PASS と言わせない。散文でも縛る（生成器側と同じ保証）。
+      expect(section).toContain('PASS でなければ PASS と言わない');
+      expect(section).toContain("stopAfter: 'pr'");
+    });
+
+    it('表のマージ行は Claude がしないことと owner の経路を書いている', () => {
+      const row = skill.split('\n').find((l) => l.startsWith('| マージ'));
+      expect(row, '表にマージ行が無い').toBeDefined();
+      expect(row).toContain('Claude はしない');
+      expect(row).toContain('owner');
+    });
+
     it('委譲プロンプトの既定は merge を配らない', () => {
       expect(prompt).not.toContain('scripts/merge-pull-request.ts');
     });
