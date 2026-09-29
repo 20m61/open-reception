@@ -1,0 +1,1996 @@
+{
+ "Description": "open-reception Next.js hosting (dev)",
+ "Resources": {
+  "AssetBucket1D025086": {
+   "Type": "AWS::S3::Bucket",
+   "Properties": {
+    "BucketEncryption": {
+     "ServerSideEncryptionConfiguration": [
+      {
+       "ServerSideEncryptionByDefault": {
+        "SSEAlgorithm": "AES256"
+       }
+      }
+     ]
+    },
+    "LifecycleConfiguration": {
+     "Rules": [
+      {
+       "AbortIncompleteMultipartUpload": {
+        "DaysAfterInitiation": 7
+       },
+       "Status": "Enabled"
+      }
+     ]
+    },
+    "PublicAccessBlockConfiguration": {
+     "BlockPublicAcls": true,
+     "BlockPublicPolicy": true,
+     "IgnorePublicAcls": true,
+     "RestrictPublicBuckets": true
+    },
+    "Tags": [
+     {
+      "Key": "aws-cdk:auto-delete-objects",
+      "Value": "true"
+     },
+     {
+      "Key": "aws-cdk:cr-owned:_assets:baf4a1dd",
+      "Value": "true"
+     },
+     {
+      "Key": "Component",
+      "Value": "web"
+     },
+     {
+      "Key": "Environment",
+      "Value": "dev"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Owner",
+      "Value": "open-reception-team"
+     },
+     {
+      "Key": "Project",
+      "Value": "open-reception"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/AssetBucket/Resource"
+   }
+  },
+  "AssetBucketPolicy6A11ED41": {
+   "Type": "AWS::S3::BucketPolicy",
+   "Properties": {
+    "Bucket": {
+     "Ref": "AssetBucket1D025086"
+    },
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": "s3:*",
+       "Condition": {
+        "Bool": {
+         "aws:SecureTransport": "false"
+        }
+       },
+       "Effect": "Deny",
+       "Principal": {
+        "AWS": "*"
+       },
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "AssetBucket1D025086",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "AssetBucket1D025086",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "s3:DeleteObject*",
+        "s3:GetBucket*",
+        "s3:List*",
+        "s3:PutBucketPolicy"
+       ],
+       "Effect": "Allow",
+       "Principal": {
+        "AWS": {
+         "Fn::GetAtt": [
+          "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092",
+          "Arn"
+         ]
+        }
+       },
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "AssetBucket1D025086",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "AssetBucket1D025086",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": "s3:GetObject",
+       "Condition": {
+        "StringEquals": {
+         "AWS:SourceArn": {
+          "Fn::Join": [
+           "",
+           [
+            "arn:",
+            {
+             "Ref": "AWS::Partition"
+            },
+            ":cloudfront::",
+            {
+             "Ref": "AWS::AccountId"
+            },
+            ":distribution/",
+            {
+             "Ref": "Distribution830FAC52"
+            }
+           ]
+          ]
+         }
+        }
+       },
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "cloudfront.amazonaws.com"
+       },
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          {
+           "Fn::GetAtt": [
+            "AssetBucket1D025086",
+            "Arn"
+           ]
+          },
+          "/*"
+         ]
+        ]
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/AssetBucket/Policy/Resource"
+   }
+  },
+  "AssetBucketAutoDeleteObjectsCustomResource5FFEAE83": {
+   "Type": "Custom::S3AutoDeleteObjects",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F",
+      "Arn"
+     ]
+    },
+    "BucketName": {
+     "Ref": "AssetBucket1D025086"
+    }
+   },
+   "DependsOn": [
+    "AssetBucketPolicy6A11ED41"
+   ],
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/AssetBucket/AutoDeleteObjectsCustomResource/Default"
+   }
+  },
+  "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Version": "2012-10-17",
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ]
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+     }
+    ],
+    "PermissionsBoundary": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":iam::123456789012:policy/OpenReceptionClaudeBoundary"
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/Custom::S3AutoDeleteObjectsCustomResourceProvider/Role"
+   }
+  },
+  "CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-orcloud01-assets-123456789012-ap-northeast-1",
+     "S3Key": "faa95a81ae7d7373f3e1f242268f904eb748d8d0fdd306e8a6fe515a1905a7d6.zip"
+    },
+    "Timeout": 900,
+    "MemorySize": 128,
+    "Handler": "index.handler",
+    "Role": {
+     "Fn::GetAtt": [
+      "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs24.x",
+    "Description": {
+     "Fn::Join": [
+      "",
+      [
+       "Lambda function for auto-deleting objects in ",
+       {
+        "Ref": "AssetBucket1D025086"
+       },
+       " S3 bucket."
+      ]
+     ]
+    }
+   },
+   "DependsOn": [
+    "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/Custom::S3AutoDeleteObjectsCustomResourceProvider/Handler",
+    "aws:asset:path": "asset.faa95a81ae7d7373f3e1f242268f904eb748d8d0fdd306e8a6fe515a1905a7d6",
+    "aws:asset:property": "Code"
+   }
+  },
+  "AssetDeploymentAwsCliLayerC0B4D779": {
+   "Type": "AWS::Lambda::LayerVersion",
+   "Properties": {
+    "Content": {
+     "S3Bucket": "cdk-orcloud01-assets-123456789012-ap-northeast-1",
+     "S3Key": "a72522445441e9b66c2f16956c54d4786af8c61c156b80c48a6e7c32fcc49023.zip"
+    },
+    "Description": "/opt/awscli/aws"
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/AssetDeployment/AwsCliLayer/Resource",
+    "aws:asset:path": "asset.a72522445441e9b66c2f16956c54d4786af8c61c156b80c48a6e7c32fcc49023.zip",
+    "aws:asset:is-bundled": false,
+    "aws:asset:property": "Content"
+   }
+  },
+  "AssetDeploymentCustomResource810D2826": {
+   "Type": "Custom::CDKBucketDeployment",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C81C01536",
+      "Arn"
+     ]
+    },
+    "SourceBucketNames": [
+     "cdk-orcloud01-assets-123456789012-ap-northeast-1"
+    ],
+    "SourceObjectKeys": [
+     "506e1127c6958e4be52c40a07e737a073ca4da4a75070cadec3f3e65436a1cdc.zip"
+    ],
+    "DestinationBucketName": {
+     "Ref": "AssetBucket1D025086"
+    },
+    "DestinationBucketKeyPrefix": "_assets",
+    "WaitForDistributionInvalidation": true,
+    "Prune": false,
+    "SystemMetadata": {
+     "cache-control": "public,max-age=31536000,immutable"
+    },
+    "OutputObjectKeys": true
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/AssetDeployment/CustomResource/Default"
+   }
+  },
+  "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRole89A01265": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "PermissionsBoundary": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":iam::123456789012:policy/OpenReceptionClaudeBoundary"
+      ]
+     ]
+    },
+    "Tags": [
+     {
+      "Key": "Component",
+      "Value": "web"
+     },
+     {
+      "Key": "Environment",
+      "Value": "dev"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Owner",
+      "Value": "open-reception-team"
+     },
+     {
+      "Key": "Project",
+      "Value": "open-reception"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/Custom::CDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C/ServiceRole/Resource"
+   }
+  },
+  "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRoleDefaultPolicy88902FDF": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "s3:GetBucket*",
+        "s3:GetObject*",
+        "s3:List*"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":s3:::cdk-orcloud01-assets-123456789012-ap-northeast-1"
+          ]
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           "arn:",
+           {
+            "Ref": "AWS::Partition"
+           },
+           ":s3:::cdk-orcloud01-assets-123456789012-ap-northeast-1/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "s3:Abort*",
+        "s3:DeleteObject*",
+        "s3:GetBucket*",
+        "s3:GetObject*",
+        "s3:List*",
+        "s3:PutObject",
+        "s3:PutObjectLegalHold",
+        "s3:PutObjectRetention",
+        "s3:PutObjectTagging",
+        "s3:PutObjectVersionTagging"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "AssetBucket1D025086",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "AssetBucket1D025086",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRoleDefaultPolicy88902FDF",
+    "Roles": [
+     {
+      "Ref": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRole89A01265"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/Custom::CDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C81C01536": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-orcloud01-assets-123456789012-ap-northeast-1",
+     "S3Key": "97e9ebf0b174a5c8f7faa505739022b7f509edddffcab9211dcd08b759944c4f.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "AWS_CA_BUNDLE": "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
+     }
+    },
+    "Handler": "index.handler",
+    "Layers": [
+     {
+      "Ref": "AssetDeploymentAwsCliLayerC0B4D779"
+     }
+    ],
+    "Role": {
+     "Fn::GetAtt": [
+      "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRole89A01265",
+      "Arn"
+     ]
+    },
+    "Runtime": "python3.13",
+    "Tags": [
+     {
+      "Key": "Component",
+      "Value": "web"
+     },
+     {
+      "Key": "Environment",
+      "Value": "dev"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Owner",
+      "Value": "open-reception-team"
+     },
+     {
+      "Key": "Project",
+      "Value": "open-reception"
+     }
+    ],
+    "Timeout": 900
+   },
+   "DependsOn": [
+    "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRoleDefaultPolicy88902FDF",
+    "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRole89A01265"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/Custom::CDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C/Resource",
+    "aws:asset:path": "asset.97e9ebf0b174a5c8f7faa505739022b7f509edddffcab9211dcd08b759944c4f",
+    "aws:asset:is-bundled": false,
+    "aws:asset:property": "Code"
+   }
+  },
+  "DataTable447BC44E": {
+   "Type": "AWS::DynamoDB::Table",
+   "Properties": {
+    "AttributeDefinitions": [
+     {
+      "AttributeName": "PK",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "SK",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "GSI1PK",
+      "AttributeType": "S"
+     },
+     {
+      "AttributeName": "GSI1SK",
+      "AttributeType": "S"
+     }
+    ],
+    "BillingMode": "PAY_PER_REQUEST",
+    "DeletionProtectionEnabled": false,
+    "GlobalSecondaryIndexes": [
+     {
+      "IndexName": "GSI1",
+      "KeySchema": [
+       {
+        "AttributeName": "GSI1PK",
+        "KeyType": "HASH"
+       },
+       {
+        "AttributeName": "GSI1SK",
+        "KeyType": "RANGE"
+       }
+      ],
+      "Projection": {
+       "ProjectionType": "ALL"
+      }
+     }
+    ],
+    "KeySchema": [
+     {
+      "AttributeName": "PK",
+      "KeyType": "HASH"
+     },
+     {
+      "AttributeName": "SK",
+      "KeyType": "RANGE"
+     }
+    ],
+    "PointInTimeRecoverySpecification": {
+     "PointInTimeRecoveryEnabled": false
+    },
+    "SSESpecification": {
+     "SSEEnabled": true
+    },
+    "Tags": [
+     {
+      "Key": "Component",
+      "Value": "web"
+     },
+     {
+      "Key": "Environment",
+      "Value": "dev"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Owner",
+      "Value": "open-reception-team"
+     },
+     {
+      "Key": "Project",
+      "Value": "open-reception"
+     }
+    ],
+    "TimeToLiveSpecification": {
+     "AttributeName": "ttl",
+     "Enabled": true
+    }
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/DataTable/Resource"
+   }
+  },
+  "ServerFnLogs851AA923": {
+   "Type": "AWS::Logs::LogGroup",
+   "Properties": {
+    "RetentionInDays": 14,
+    "Tags": [
+     {
+      "Key": "Component",
+      "Value": "web"
+     },
+     {
+      "Key": "Environment",
+      "Value": "dev"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Owner",
+      "Value": "open-reception-team"
+     },
+     {
+      "Key": "Project",
+      "Value": "open-reception"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/ServerFnLogs/Resource"
+   }
+  },
+  "ServerFnServiceRole282D3E61": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "PermissionsBoundary": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":iam::123456789012:policy/OpenReceptionClaudeBoundary"
+      ]
+     ]
+    },
+    "Tags": [
+     {
+      "Key": "Component",
+      "Value": "web"
+     },
+     {
+      "Key": "Environment",
+      "Value": "dev"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Owner",
+      "Value": "open-reception-team"
+     },
+     {
+      "Key": "Project",
+      "Value": "open-reception"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/ServerFn/ServiceRole/Resource"
+   }
+  },
+  "ServerFnServiceRoleDefaultPolicyBF3298B4": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:DescribeTable",
+        "dynamodb:GetItem",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator",
+        "dynamodb:PutItem",
+        "dynamodb:Query",
+        "dynamodb:Scan",
+        "dynamodb:UpdateItem"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "DataTable447BC44E",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "DataTable447BC44E",
+             "Arn"
+            ]
+           },
+           "/index/*"
+          ]
+         ]
+        }
+       ]
+      },
+      {
+       "Action": [
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:GetSecretValue"
+       ],
+       "Effect": "Allow",
+       "Resource": {
+        "Fn::Join": [
+         "",
+         [
+          "arn:",
+          {
+           "Ref": "AWS::Partition"
+          },
+          ":secretsmanager:ap-northeast-1:123456789012:secret:open-reception/dev/app-v2-??????"
+         ]
+        ]
+       }
+      },
+      {
+       "Action": [
+        "secretsmanager:CreateSecret",
+        "secretsmanager:DeleteSecret",
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:PutSecretValue"
+       ],
+       "Effect": "Allow",
+       "Resource": "arn:aws:secretsmanager:ap-northeast-1:123456789012:secret:open-reception/dev/tenants/*"
+      },
+      {
+       "Action": [
+        "ce:GetCostAndUsage",
+        "ce:GetCostForecast"
+       ],
+       "Effect": "Allow",
+       "Resource": "*"
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "ServerFnServiceRoleDefaultPolicyBF3298B4",
+    "Roles": [
+     {
+      "Ref": "ServerFnServiceRole282D3E61"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/ServerFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "ServerFn4F3A536E": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Architectures": [
+     "arm64"
+    ],
+    "Code": {
+     "S3Bucket": "cdk-orcloud01-assets-123456789012-ap-northeast-1",
+     "S3Key": "7d4121075d2726b8cc35a71c83c4395cb12fcee9dcbf37c890012827fe95c5dd.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "NODE_ENV": "production",
+      "ADMIN_AUTH_PROVIDER": "cognito",
+      "DATA_BACKEND": "dynamodb",
+      "TABLE_NAME": {
+       "Ref": "DataTable447BC44E"
+      },
+      "APP_SECRETS_ARN": {
+       "Fn::Join": [
+        "",
+        [
+         "arn:",
+         {
+          "Ref": "AWS::Partition"
+         },
+         ":secretsmanager:ap-northeast-1:123456789012:secret:open-reception/dev/app-v2"
+        ]
+       ]
+      },
+      "PROVIDER_SECRET_BACKEND": "secrets-manager",
+      "PROVIDER_SECRET_PREFIX": "open-reception/dev",
+      "ORIGIN_VERIFY_REQUIRED": "1",
+      "ORIGIN_VERIFY_SECRET": "{{resolve:secretsmanager:open-reception/dev/app-v2:SecretString:ORIGIN_VERIFY_SECRET::}}",
+      "COGNITO_USER_POOL_ID": {
+       "Ref": "AdminUserPoolD0AF18CF"
+      },
+      "COGNITO_CLIENT_ID": {
+       "Ref": "AdminUserPoolAdminAppClient43C1FAD5"
+      },
+      "COGNITO_REGION": "ap-northeast-1",
+      "COGNITO_ISSUER": {
+       "Fn::Join": [
+        "",
+        [
+         "https://cognito-idp.ap-northeast-1.amazonaws.com/",
+         {
+          "Ref": "AdminUserPoolD0AF18CF"
+         }
+        ]
+       ]
+      },
+      "OPEN_RECEPTION_ENTRA_UNREGISTERED": "env_roles",
+      "NEXT_PUBLIC_APP_URL": "https://example.cloudfront.net",
+      "AWS_COST_EXPLORER_ENABLED": "true",
+      "AWS_COST_PROJECT_TAG_VALUE": "open-reception",
+      "AWS_COST_ENVIRONMENT_TAG_VALUE": "dev"
+     }
+    },
+    "Handler": "index.handler",
+    "LoggingConfig": {
+     "LogGroup": {
+      "Ref": "ServerFnLogs851AA923"
+     }
+    },
+    "MemorySize": 1024,
+    "ReservedConcurrentExecutions": 5,
+    "Role": {
+     "Fn::GetAtt": [
+      "ServerFnServiceRole282D3E61",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "Component",
+      "Value": "web"
+     },
+     {
+      "Key": "Environment",
+      "Value": "dev"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Owner",
+      "Value": "open-reception-team"
+     },
+     {
+      "Key": "Project",
+      "Value": "open-reception"
+     }
+    ],
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "ServerFnServiceRoleDefaultPolicyBF3298B4",
+    "ServerFnServiceRole282D3E61"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/ServerFn/Resource",
+    "aws:asset:path": "asset.7d4121075d2726b8cc35a71c83c4395cb12fcee9dcbf37c890012827fe95c5dd",
+    "aws:asset:is-bundled": false,
+    "aws:asset:property": "Code"
+   }
+  },
+  "ServerFnFunctionUrlFFF9E3E1": {
+   "Type": "AWS::Lambda::Url",
+   "Properties": {
+    "AuthType": "NONE",
+    "InvokeMode": "BUFFERED",
+    "TargetFunctionArn": {
+     "Fn::GetAtt": [
+      "ServerFn4F3A536E",
+      "Arn"
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/ServerFn/FunctionUrl/Resource"
+   }
+  },
+  "ServerFninvokefunctionurl715820CF": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunctionUrl",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ServerFn4F3A536E",
+      "Arn"
+     ]
+    },
+    "FunctionUrlAuthType": "NONE",
+    "Principal": "*"
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/ServerFn/invoke-function-url"
+   }
+  },
+  "ServerFninvokefunctionA3A7399A": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ServerFn4F3A536E",
+      "Arn"
+     ]
+    },
+    "InvokedViaFunctionUrl": true,
+    "Principal": "*"
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/ServerFn/invoke-function"
+   }
+  },
+  "AdminUserPoolD0AF18CF": {
+   "Type": "AWS::Cognito::UserPool",
+   "Properties": {
+    "AccountRecoverySetting": {
+     "RecoveryMechanisms": [
+      {
+       "Name": "verified_email",
+       "Priority": 1
+      }
+     ]
+    },
+    "AdminCreateUserConfig": {
+     "AllowAdminCreateUserOnly": true
+    },
+    "AliasAttributes": [
+     "email"
+    ],
+    "AutoVerifiedAttributes": [
+     "email"
+    ],
+    "EmailVerificationMessage": "The verification code to your new account is {####}",
+    "EmailVerificationSubject": "Verify your new account",
+    "Policies": {
+     "PasswordPolicy": {
+      "MinimumLength": 12,
+      "RequireLowercase": true,
+      "RequireNumbers": true,
+      "RequireSymbols": true,
+      "RequireUppercase": true
+     }
+    },
+    "SmsVerificationMessage": "The verification code to your new account is {####}",
+    "UserPoolTags": {
+     "Component": "web",
+     "Environment": "dev",
+     "ManagedBy": "cdk",
+     "Owner": "open-reception-team",
+     "Project": "open-reception"
+    },
+    "VerificationMessageTemplate": {
+     "DefaultEmailOption": "CONFIRM_WITH_CODE",
+     "EmailMessage": "The verification code to your new account is {####}",
+     "EmailSubject": "Verify your new account",
+     "SmsMessage": "The verification code to your new account is {####}"
+    }
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/AdminUserPool/Resource"
+   }
+  },
+  "AdminUserPoolAdminAppClient43C1FAD5": {
+   "Type": "AWS::Cognito::UserPoolClient",
+   "Properties": {
+    "AccessTokenValidity": 480,
+    "AllowedOAuthFlows": [
+     "implicit",
+     "code"
+    ],
+    "AllowedOAuthFlowsUserPoolClient": true,
+    "AllowedOAuthScopes": [
+     "profile",
+     "phone",
+     "email",
+     "openid",
+     "aws.cognito.signin.user.admin"
+    ],
+    "CallbackURLs": [
+     "https://example.com"
+    ],
+    "ExplicitAuthFlows": [
+     "ALLOW_USER_SRP_AUTH",
+     "ALLOW_REFRESH_TOKEN_AUTH"
+    ],
+    "GenerateSecret": false,
+    "IdTokenValidity": 480,
+    "PreventUserExistenceErrors": "ENABLED",
+    "SupportedIdentityProviders": [
+     "COGNITO"
+    ],
+    "TokenValidityUnits": {
+     "AccessToken": "minutes",
+     "IdToken": "minutes"
+    },
+    "UserPoolId": {
+     "Ref": "AdminUserPoolD0AF18CF"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/AdminUserPool/AdminAppClient/Resource"
+   }
+  },
+  "ImageFnLogs6F804F98": {
+   "Type": "AWS::Logs::LogGroup",
+   "Properties": {
+    "RetentionInDays": 14,
+    "Tags": [
+     {
+      "Key": "Component",
+      "Value": "web"
+     },
+     {
+      "Key": "Environment",
+      "Value": "dev"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Owner",
+      "Value": "open-reception-team"
+     },
+     {
+      "Key": "Project",
+      "Value": "open-reception"
+     }
+    ]
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/ImageFnLogs/Resource"
+   }
+  },
+  "ImageFnServiceRoleCD4FF0E0": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Join": [
+       "",
+       [
+        "arn:",
+        {
+         "Ref": "AWS::Partition"
+        },
+        ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+       ]
+      ]
+     }
+    ],
+    "PermissionsBoundary": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":iam::123456789012:policy/OpenReceptionClaudeBoundary"
+      ]
+     ]
+    },
+    "Tags": [
+     {
+      "Key": "Component",
+      "Value": "web"
+     },
+     {
+      "Key": "Environment",
+      "Value": "dev"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Owner",
+      "Value": "open-reception-team"
+     },
+     {
+      "Key": "Project",
+      "Value": "open-reception"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/ImageFn/ServiceRole/Resource"
+   }
+  },
+  "ImageFnServiceRoleDefaultPolicyAC508253": {
+   "Type": "AWS::IAM::Policy",
+   "Properties": {
+    "PolicyDocument": {
+     "Statement": [
+      {
+       "Action": [
+        "s3:GetBucket*",
+        "s3:GetObject*",
+        "s3:List*"
+       ],
+       "Effect": "Allow",
+       "Resource": [
+        {
+         "Fn::GetAtt": [
+          "AssetBucket1D025086",
+          "Arn"
+         ]
+        },
+        {
+         "Fn::Join": [
+          "",
+          [
+           {
+            "Fn::GetAtt": [
+             "AssetBucket1D025086",
+             "Arn"
+            ]
+           },
+           "/*"
+          ]
+         ]
+        }
+       ]
+      }
+     ],
+     "Version": "2012-10-17"
+    },
+    "PolicyName": "ImageFnServiceRoleDefaultPolicyAC508253",
+    "Roles": [
+     {
+      "Ref": "ImageFnServiceRoleCD4FF0E0"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/ImageFn/ServiceRole/DefaultPolicy/Resource"
+   }
+  },
+  "ImageFnCD541B83": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Architectures": [
+     "arm64"
+    ],
+    "Code": {
+     "S3Bucket": "cdk-orcloud01-assets-123456789012-ap-northeast-1",
+     "S3Key": "1cb7ef7b6fcbcb7cd7b2f4df1fd742d36a79123c260ebfa1e7f1843ff4a33fe7.zip"
+    },
+    "Environment": {
+     "Variables": {
+      "BUCKET_NAME": {
+       "Ref": "AssetBucket1D025086"
+      },
+      "BUCKET_KEY_PREFIX": "_assets"
+     }
+    },
+    "Handler": "index.handler",
+    "LoggingConfig": {
+     "LogGroup": {
+      "Ref": "ImageFnLogs6F804F98"
+     }
+    },
+    "MemorySize": 1536,
+    "ReservedConcurrentExecutions": 2,
+    "Role": {
+     "Fn::GetAtt": [
+      "ImageFnServiceRoleCD4FF0E0",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs22.x",
+    "Tags": [
+     {
+      "Key": "Component",
+      "Value": "web"
+     },
+     {
+      "Key": "Environment",
+      "Value": "dev"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Owner",
+      "Value": "open-reception-team"
+     },
+     {
+      "Key": "Project",
+      "Value": "open-reception"
+     }
+    ],
+    "Timeout": 30
+   },
+   "DependsOn": [
+    "ImageFnServiceRoleDefaultPolicyAC508253",
+    "ImageFnServiceRoleCD4FF0E0"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/ImageFn/Resource",
+    "aws:asset:path": "asset.1cb7ef7b6fcbcb7cd7b2f4df1fd742d36a79123c260ebfa1e7f1843ff4a33fe7",
+    "aws:asset:is-bundled": false,
+    "aws:asset:property": "Code"
+   }
+  },
+  "ImageFnFunctionUrlBBD47D3E": {
+   "Type": "AWS::Lambda::Url",
+   "Properties": {
+    "AuthType": "AWS_IAM",
+    "InvokeMode": "BUFFERED",
+    "TargetFunctionArn": {
+     "Fn::GetAtt": [
+      "ImageFnCD541B83",
+      "Arn"
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/ImageFn/FunctionUrl/Resource"
+   }
+  },
+  "ImageFnCloudFrontOacInvokeFunctionE7C31E3A": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunction",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ImageFnCD541B83",
+      "Arn"
+     ]
+    },
+    "Principal": "cloudfront.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:aws:cloudfront::123456789012:distribution/",
+       {
+        "Ref": "Distribution830FAC52"
+       }
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/ImageFn/CloudFrontOacInvokeFunction"
+   }
+  },
+  "ImageCachePolicy3A3980AA": {
+   "Type": "AWS::CloudFront::CachePolicy",
+   "Properties": {
+    "CachePolicyConfig": {
+     "DefaultTTL": 86400,
+     "MaxTTL": 31536000,
+     "MinTTL": 0,
+     "Name": "OpenReceptionWebdevImageCachePolicy3D7724E9-ap-northeast-1",
+     "ParametersInCacheKeyAndForwardedToOrigin": {
+      "CookiesConfig": {
+       "CookieBehavior": "none"
+      },
+      "EnableAcceptEncodingBrotli": true,
+      "EnableAcceptEncodingGzip": true,
+      "HeadersConfig": {
+       "HeaderBehavior": "whitelist",
+       "Headers": [
+        "Accept"
+       ]
+      },
+      "QueryStringsConfig": {
+       "QueryStringBehavior": "all"
+      }
+     }
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/ImageCachePolicy/Resource"
+   }
+  },
+  "StaticSecurityHeaders1016F314": {
+   "Type": "AWS::CloudFront::ResponseHeadersPolicy",
+   "Properties": {
+    "ResponseHeadersPolicyConfig": {
+     "Comment": "open-reception-dev static asset security headers",
+     "CustomHeadersConfig": {
+      "Items": [
+       {
+        "Header": "Permissions-Policy",
+        "Override": true,
+        "Value": "camera=(self), microphone=(self), geolocation=()"
+       },
+       {
+        "Header": "Cross-Origin-Resource-Policy",
+        "Override": true,
+        "Value": "same-origin"
+       },
+       {
+        "Header": "Cross-Origin-Embedder-Policy",
+        "Override": true,
+        "Value": "require-corp"
+       },
+       {
+        "Header": "Cross-Origin-Opener-Policy",
+        "Override": true,
+        "Value": "same-origin"
+       }
+      ]
+     },
+     "Name": "OpenReceptionWebdevStaticSecurityHeadersD4292590",
+     "SecurityHeadersConfig": {
+      "ContentTypeOptions": {
+       "Override": true
+      },
+      "FrameOptions": {
+       "FrameOption": "DENY",
+       "Override": true
+      },
+      "ReferrerPolicy": {
+       "Override": true,
+       "ReferrerPolicy": "strict-origin-when-cross-origin"
+      },
+      "StrictTransportSecurity": {
+       "AccessControlMaxAgeSec": 63072000,
+       "IncludeSubdomains": true,
+       "Override": true
+      }
+     }
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/StaticSecurityHeaders/Resource"
+   }
+  },
+  "DistributionOrigin2FunctionUrlOriginAccessControlAC8EE0B1": {
+   "Type": "AWS::CloudFront::OriginAccessControl",
+   "Properties": {
+    "OriginAccessControlConfig": {
+     "Name": "OpenReceptionWebdevDistributnctionUrlOriginAccessControl95666820",
+     "OriginAccessControlOriginType": "lambda",
+     "SigningBehavior": "always",
+     "SigningProtocol": "sigv4"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/Distribution/Origin2/FunctionUrlOriginAccessControl/Resource"
+   }
+  },
+  "DistributionOrigin2InvokeFromApiForOpenReceptionWebdevDistributionOrigin20C7BB5724FCA73E7": {
+   "Type": "AWS::Lambda::Permission",
+   "Properties": {
+    "Action": "lambda:InvokeFunctionUrl",
+    "FunctionName": {
+     "Fn::GetAtt": [
+      "ImageFnFunctionUrlBBD47D3E",
+      "FunctionArn"
+     ]
+    },
+    "Principal": "cloudfront.amazonaws.com",
+    "SourceArn": {
+     "Fn::Join": [
+      "",
+      [
+       "arn:",
+       {
+        "Ref": "AWS::Partition"
+       },
+       ":cloudfront::",
+       {
+        "Ref": "AWS::AccountId"
+       },
+       ":distribution/",
+       {
+        "Ref": "Distribution830FAC52"
+       }
+      ]
+     ]
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/Distribution/Origin2/InvokeFromApiForOpenReceptionWebdevDistributionOrigin20C7BB572"
+   }
+  },
+  "DistributionOrigin3S3OriginAccessControl9DA31435": {
+   "Type": "AWS::CloudFront::OriginAccessControl",
+   "Properties": {
+    "OriginAccessControlConfig": {
+     "Name": "OpenReceptionWebdevDistributOrigin3S3OriginAccessControlC35375A6",
+     "OriginAccessControlOriginType": "s3",
+     "SigningBehavior": "always",
+     "SigningProtocol": "sigv4"
+    }
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/Distribution/Origin3/S3OriginAccessControl/Resource"
+   }
+  },
+  "Distribution830FAC52": {
+   "Type": "AWS::CloudFront::Distribution",
+   "Properties": {
+    "DistributionConfig": {
+     "CacheBehaviors": [
+      {
+       "AllowedMethods": [
+        "GET",
+        "HEAD",
+        "OPTIONS"
+       ],
+       "CachePolicyId": {
+        "Ref": "ImageCachePolicy3A3980AA"
+       },
+       "Compress": true,
+       "OriginRequestPolicyId": "59781a5b-3903-41f3-afcb-af62929ccde1",
+       "PathPattern": "/_next/image*",
+       "ResponseHeadersPolicyId": {
+        "Ref": "StaticSecurityHeaders1016F314"
+       },
+       "TargetOriginId": "OpenReceptionWebdevDistributionOrigin20C7BB572",
+       "ViewerProtocolPolicy": "redirect-to-https"
+      },
+      {
+       "AllowedMethods": [
+        "GET",
+        "HEAD",
+        "OPTIONS",
+        "PUT",
+        "PATCH",
+        "POST",
+        "DELETE"
+       ],
+       "CachePolicyId": "4135ea2d-6df8-44a3-9df3-4b5a84be39ad",
+       "Compress": true,
+       "OriginRequestPolicyId": "b689b0a8-53d0-40ab-baf2-68738e2966ac",
+       "PathPattern": "/_next/data/*",
+       "ResponseHeadersPolicyId": "67f7725c-6f97-4210-82d7-5512b31e9d03",
+       "TargetOriginId": "OpenReceptionWebdevDistributionOrigin140360EC9",
+       "ViewerProtocolPolicy": "redirect-to-https"
+      },
+      {
+       "AllowedMethods": [
+        "GET",
+        "HEAD",
+        "OPTIONS"
+       ],
+       "CachePolicyId": "658327ea-f89d-4fab-a63d-7e88639e58f6",
+       "Compress": true,
+       "PathPattern": "/_next/*",
+       "ResponseHeadersPolicyId": {
+        "Ref": "StaticSecurityHeaders1016F314"
+       },
+       "TargetOriginId": "OpenReceptionWebdevDistributionOrigin3CDAB7D1E",
+       "ViewerProtocolPolicy": "redirect-to-https"
+      },
+      {
+       "AllowedMethods": [
+        "GET",
+        "HEAD",
+        "OPTIONS"
+       ],
+       "CachePolicyId": "658327ea-f89d-4fab-a63d-7e88639e58f6",
+       "Compress": true,
+       "PathPattern": "/BUILD_ID",
+       "ResponseHeadersPolicyId": {
+        "Ref": "StaticSecurityHeaders1016F314"
+       },
+       "TargetOriginId": "OpenReceptionWebdevDistributionOrigin3CDAB7D1E",
+       "ViewerProtocolPolicy": "redirect-to-https"
+      },
+      {
+       "AllowedMethods": [
+        "GET",
+        "HEAD",
+        "OPTIONS"
+       ],
+       "CachePolicyId": "658327ea-f89d-4fab-a63d-7e88639e58f6",
+       "Compress": true,
+       "PathPattern": "/avatar/*",
+       "ResponseHeadersPolicyId": {
+        "Ref": "StaticSecurityHeaders1016F314"
+       },
+       "TargetOriginId": "OpenReceptionWebdevDistributionOrigin3CDAB7D1E",
+       "ViewerProtocolPolicy": "redirect-to-https"
+      },
+      {
+       "AllowedMethods": [
+        "GET",
+        "HEAD",
+        "OPTIONS"
+       ],
+       "CachePolicyId": "658327ea-f89d-4fab-a63d-7e88639e58f6",
+       "Compress": true,
+       "PathPattern": "/assets/*",
+       "ResponseHeadersPolicyId": {
+        "Ref": "StaticSecurityHeaders1016F314"
+       },
+       "TargetOriginId": "OpenReceptionWebdevDistributionOrigin3CDAB7D1E",
+       "ViewerProtocolPolicy": "redirect-to-https"
+      }
+     ],
+     "Comment": "open-reception-dev Next.js (OpenNext)",
+     "CustomErrorResponses": [
+      {
+       "ErrorCachingMinTTL": 10,
+       "ErrorCode": 502,
+       "ResponseCode": 502,
+       "ResponsePagePath": "/assets/service-hold.html"
+      },
+      {
+       "ErrorCachingMinTTL": 10,
+       "ErrorCode": 504,
+       "ResponseCode": 504,
+       "ResponsePagePath": "/assets/service-hold.html"
+      }
+     ],
+     "DefaultCacheBehavior": {
+      "AllowedMethods": [
+       "GET",
+       "HEAD",
+       "OPTIONS",
+       "PUT",
+       "PATCH",
+       "POST",
+       "DELETE"
+      ],
+      "CachePolicyId": "4135ea2d-6df8-44a3-9df3-4b5a84be39ad",
+      "Compress": true,
+      "OriginRequestPolicyId": "b689b0a8-53d0-40ab-baf2-68738e2966ac",
+      "ResponseHeadersPolicyId": "67f7725c-6f97-4210-82d7-5512b31e9d03",
+      "TargetOriginId": "OpenReceptionWebdevDistributionOrigin140360EC9",
+      "ViewerProtocolPolicy": "redirect-to-https"
+     },
+     "Enabled": true,
+     "HttpVersion": "http2and3",
+     "IPV6Enabled": true,
+     "Origins": [
+      {
+       "CustomOriginConfig": {
+        "OriginProtocolPolicy": "https-only",
+        "OriginSSLProtocols": [
+         "TLSv1.2"
+        ]
+       },
+       "DomainName": {
+        "Fn::Select": [
+         2,
+         {
+          "Fn::Split": [
+           "/",
+           {
+            "Fn::GetAtt": [
+             "ServerFnFunctionUrlFFF9E3E1",
+             "FunctionUrl"
+            ]
+           }
+          ]
+         }
+        ]
+       },
+       "Id": "OpenReceptionWebdevDistributionOrigin140360EC9",
+       "OriginCustomHeaders": [
+        {
+         "HeaderName": "x-origin-verify",
+         "HeaderValue": "{{resolve:secretsmanager:open-reception/dev/app-v2:SecretString:ORIGIN_VERIFY_SECRET::}}"
+        }
+       ]
+      },
+      {
+       "CustomOriginConfig": {
+        "OriginProtocolPolicy": "https-only",
+        "OriginSSLProtocols": [
+         "TLSv1.2"
+        ]
+       },
+       "DomainName": {
+        "Fn::Select": [
+         2,
+         {
+          "Fn::Split": [
+           "/",
+           {
+            "Fn::GetAtt": [
+             "ImageFnFunctionUrlBBD47D3E",
+             "FunctionUrl"
+            ]
+           }
+          ]
+         }
+        ]
+       },
+       "Id": "OpenReceptionWebdevDistributionOrigin20C7BB572",
+       "OriginAccessControlId": {
+        "Fn::GetAtt": [
+         "DistributionOrigin2FunctionUrlOriginAccessControlAC8EE0B1",
+         "Id"
+        ]
+       }
+      },
+      {
+       "DomainName": {
+        "Fn::GetAtt": [
+         "AssetBucket1D025086",
+         "RegionalDomainName"
+        ]
+       },
+       "Id": "OpenReceptionWebdevDistributionOrigin3CDAB7D1E",
+       "OriginAccessControlId": {
+        "Fn::GetAtt": [
+         "DistributionOrigin3S3OriginAccessControl9DA31435",
+         "Id"
+        ]
+       },
+       "OriginPath": "/_assets",
+       "S3OriginConfig": {
+        "OriginAccessIdentity": ""
+       }
+      }
+     ],
+     "PriceClass": "PriceClass_200"
+    },
+    "Tags": [
+     {
+      "Key": "Component",
+      "Value": "web"
+     },
+     {
+      "Key": "Environment",
+      "Value": "dev"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Owner",
+      "Value": "open-reception-team"
+     },
+     {
+      "Key": "Project",
+      "Value": "open-reception"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/Distribution/Resource"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/5VSwYrbMBD9ls1ZUUsCPfSWdej2sJCQdHspJcjyxDuJrAkaadMg9O9FlrPxtttDwTBP7715jDWaydmnufx4p8481c1xarCWceuVPgp15l3kuYz3QR/Bi2pvC/oRJx3+Qjv5PBm3ZT/PZS+xLNZF8LQEAx5W9QG050n6KYq0JoP6ckst5//ILg1brzx0YMfR94ohCZ7vYgMnQ5csD03LV0IoZvAsF7kkYVRXN0rGam8f1QXcd3CMZMUWbWvAk/0SrPaZeQXV/m/yyZnMD2UNrkPOOUmg6mTckIEs9PV2AwUl0Vys6qipZfym6uLsQRKGWpbxkdoHR+GUhStOQlNr0ZOMTwxuTVQmuOIrqAzmvx5JhUlCGwrN3pH1MlZKP8NtsPFxA3wiy/AVVAOOb6b3hSWyd1iHP69n5bBFu9AamCuy3pV536O383+Yx9kpiSqwp24DTMFpGEYa8Btp7egFG3D5gYh+8VuvWrTtsP6dyavfqTNrg3Jx5spg/xrEOHwV/Cn4JCw1IA/84WU2k/m7OzDi1AXrsQO5KfU3EKo06GEDAAA="
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/CDKMetadata/Default"
+   }
+  },
+  "ExportsWriteruseast10F67B507DDE2E818": {
+   "Type": "Custom::CrossRegionExportWriter",
+   "Properties": {
+    "ServiceToken": {
+     "Fn::GetAtt": [
+      "CustomCrossRegionExportWriterCustomResourceProviderHandlerD8786E8A",
+      "Arn"
+     ]
+    },
+    "WriterProps": {
+     "region": "us-east-1",
+     "exports": {
+      "/cdk/exports/OpenReception-CfMon-dev/OpenReceptionWebdevapnortheast1RefDistribution830FAC52F8F6A744": {
+       "Ref": "Distribution830FAC52"
+      }
+     }
+    }
+   },
+   "UpdateReplacePolicy": "Delete",
+   "DeletionPolicy": "Delete",
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/ExportsWriteruseast10F67B507/Resource/Default"
+   }
+  },
+  "CustomCrossRegionExportWriterCustomResourceProviderRoleC951B1E1": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Version": "2012-10-17",
+     "Statement": [
+      {
+       "Action": "sts:AssumeRole",
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "lambda.amazonaws.com"
+       }
+      }
+     ]
+    },
+    "ManagedPolicyArns": [
+     {
+      "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+     }
+    ],
+    "Policies": [
+     {
+      "PolicyName": "Inline",
+      "PolicyDocument": {
+       "Version": "2012-10-17",
+       "Statement": [
+        {
+         "Effect": "Allow",
+         "Resource": [
+          {
+           "Fn::Join": [
+            "",
+            [
+             "arn:",
+             {
+              "Ref": "AWS::Partition"
+             },
+             ":ssm:us-east-1:123456789012:parameter/cdk/exports/*"
+            ]
+           ]
+          }
+         ],
+         "Action": [
+          "ssm:DeleteParameters",
+          "ssm:ListTagsForResource",
+          "ssm:GetParameters",
+          "ssm:PutParameter"
+         ]
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/Custom::CrossRegionExportWriterCustomResourceProvider/Role"
+   }
+  },
+  "CustomCrossRegionExportWriterCustomResourceProviderHandlerD8786E8A": {
+   "Type": "AWS::Lambda::Function",
+   "Properties": {
+    "Code": {
+     "S3Bucket": "cdk-orcloud01-assets-123456789012-ap-northeast-1",
+     "S3Key": "08b23c75a1fe108c9fbd7896f6d7a668289c804be7852d611aecf2a0b501279f.zip"
+    },
+    "Timeout": 900,
+    "MemorySize": 128,
+    "Handler": "__entrypoint__.handler",
+    "Role": {
+     "Fn::GetAtt": [
+      "CustomCrossRegionExportWriterCustomResourceProviderRoleC951B1E1",
+      "Arn"
+     ]
+    },
+    "Runtime": "nodejs24.x"
+   },
+   "DependsOn": [
+    "CustomCrossRegionExportWriterCustomResourceProviderRoleC951B1E1"
+   ],
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-Web-dev/Custom::CrossRegionExportWriterCustomResourceProvider/Handler",
+    "aws:asset:path": "asset.08b23c75a1fe108c9fbd7896f6d7a668289c804be7852d611aecf2a0b501279f",
+    "aws:asset:property": "Code"
+   }
+  }
+ },
+ "Outputs": {
+  "AdminUserPoolId": {
+   "Description": "管理ログイン Cognito User Pool ID（管理者ユーザー作成に使用）",
+   "Value": {
+    "Ref": "AdminUserPoolD0AF18CF"
+   }
+  },
+  "AdminUserPoolClientId": {
+   "Description": "管理ログイン Cognito App Client ID",
+   "Value": {
+    "Ref": "AdminUserPoolAdminAppClient43C1FAD5"
+   }
+  },
+  "DistributionDomainName": {
+   "Description": "CloudFront ドメイン（受付端末/管理画面の公開 URL）",
+   "Value": {
+    "Fn::GetAtt": [
+     "Distribution830FAC52",
+     "DomainName"
+    ]
+   }
+  },
+  "DistributionId": {
+   "Description": "CloudFront Distribution ID（キャッシュ無効化に使用）",
+   "Value": {
+    "Ref": "Distribution830FAC52"
+   }
+  },
+  "AssetBucketName": {
+   "Description": "静的アセット S3 バケット名",
+   "Value": {
+    "Ref": "AssetBucket1D025086"
+   }
+  },
+  "DataTableName": {
+   "Description": "業務データ DynamoDB テーブル名（seed/運用に使用）",
+   "Value": {
+    "Ref": "DataTable447BC44E"
+   }
+  },
+  "ExportsOutputRefServerFn4F3A536E686CAA43": {
+   "Value": {
+    "Ref": "ServerFn4F3A536E"
+   },
+   "Export": {
+    "Name": "OpenReception-Web-dev:ExportsOutputRefServerFn4F3A536E686CAA43"
+   }
+  },
+  "ExportsOutputRefImageFnCD541B833F594573": {
+   "Value": {
+    "Ref": "ImageFnCD541B83"
+   },
+   "Export": {
+    "Name": "OpenReception-Web-dev:ExportsOutputRefImageFnCD541B833F594573"
+   }
+  },
+  "ExportsOutputRefDataTable447BC44E7F3657BE": {
+   "Value": {
+    "Ref": "DataTable447BC44E"
+   },
+   "Export": {
+    "Name": "OpenReception-Web-dev:ExportsOutputRefDataTable447BC44E7F3657BE"
+   }
+  },
+  "ExportsOutputRefServerFnLogs851AA92397744C9A": {
+   "Value": {
+    "Ref": "ServerFnLogs851AA923"
+   },
+   "Export": {
+    "Name": "OpenReception-Web-dev:ExportsOutputRefServerFnLogs851AA92397744C9A"
+   }
+  },
+  "ExportsOutputRefDistribution830FAC524DF81588": {
+   "Value": {
+    "Ref": "Distribution830FAC52"
+   },
+   "Export": {
+    "Name": "OpenReception-Web-dev:ExportsOutputRefDistribution830FAC524DF81588"
+   }
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/orcloud01/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}
