@@ -1,6 +1,6 @@
 ---
 name: loop-round
-description: Issue を 1 周する（AC マッピング → ブランチ → TDD → 品質ゲート → PR → マージ → 後始末）。routine セッション・claude.ai/code の web セッション・ローカル macOS のどこで走っていても同じ手順で、場所によって変わる部分だけを明示する。Use when starting a loop round on an issue, or when asked to implement/fix an issue end to end.
+description: Issue を 1 周する（AC マッピング → ブランチ → TDD → 品質ゲート → PR → --full の証拠投稿 → owner が merge → 後始末）。routine セッション・claude.ai/code の web セッション・ローカル macOS のどこで走っていても同じ手順で、場所によって変わる部分だけを明示する。Use when starting a loop round on an issue, or when asked to implement/fix an issue end to end.
 ---
 
 # loop-round
@@ -20,7 +20,7 @@ description: Issue を 1 周する（AC マッピング → ブランチ → TDD
 | --- | --- | --- |
 | 回せるゲート | `--fast` / `--pr` / `--full` **全部** | **`--fast` まで**（メモリを他プロジェクトと共有しており、`--full` は完走しないことがある） |
 | PR 作成 | `npx tsx scripts/create-pull-request.ts` | 同左（ローカルでは通常ここまで来ない） |
-| マージ | `npx tsx scripts/merge-pull-request.ts --number <n>` | 同左 |
+| マージ | **Claude はしない**（#1195）。`--full` の証拠を PR へ載せて止まる（`npm run gate:evidence -- --number <n>`）。merge は **owner が証拠を見て**行う | 同左 |
 | ブランチ削除 | **できない**（proxy が write を拒否する） | **ここでやる** |
 | `--pr` / `--full` が要るとき | その場で回す | **クラウドへ委譲する**（§5） |
 
@@ -62,7 +62,7 @@ GH_TOKEN="$(gh auth token)" npx tsx scripts/create-pull-request.ts --head … --
 ```bash
 ./scripts/quality-gate.sh --fast   # 各変更ごと
 ./scripts/quality-gate.sh --pr     # PR 前（クラウド）
-./scripts/quality-gate.sh --full   # マージ前（クラウド）
+./scripts/quality-gate.sh --full   # 証拠投稿前・owner の merge 前（クラウド。文書だけの PR は --no-skip-docs）
 ```
 
 - **要約の緑だけを信じない。** log 本文で実際に走ったコマンド行を見る。infra の `Tests` 行が
@@ -115,24 +115,28 @@ clean / `origin/<branch>` が HEAD と同じ**まで見るので、**この順�
 **停止境界も同様に断定しない。** 生成される手順が `change-risk (停止境界)` の報告を求めるので、
 その報告が唯一の根拠になる。
 
-## 6. PR とマージ
+## 6. PR と証拠（merge は owner）
 
 ```bash
 npx tsx scripts/create-pull-request.ts --head "$(git branch --show-current)" --base main \
   --title "<Conventional Commits>" --body "<本文>"
-npx tsx scripts/merge-pull-request.ts --number <番号>
+./scripts/quality-gate.sh --full                  # clean なコミットで（文書だけなら --no-skip-docs）
+npm run gate:evidence -- --number <番号>          # --full の証拠を PR のコメントへ載せる
 ```
 
-どちらも**作成／マージの直後に REST で引き直して確認する**。PR 本文には必ず:
+PR は**作成の直後に REST で引き直して確認する**。PR 本文には必ず:
 ゲート結果（summary そのまま）/ 人間承認が必要な変更の有無 / `Refs #<N>`。
+証拠は**ゲートを回した後に commit / push すると無効になる**（head が動くため）。
+終了コードと見出し（✅ か）をそのまま報告する。PASS でなければ PASS と言わない。
 
-🔴 **Claude が作った PR は Claude が merge しない（#1195）。** `--full` を green にしたら
-`npm run gate:evidence -- --number <番号>` で証拠を PR に載せ、merge は owner に任せる
-（上の `merge-pull-request.ts` は owner / 人が使う経路）。手順は
-`docs/cloud-dev-environment.md` §0-B2、PR を少なく・短く保つ規則は `docs/loop-workflow.md` 手順 6。
+🔴 **Claude は自分の PR を merge しない（#1195）。** ここで止まる。merge は **owner が PR 上の
+証拠を見て**行う。REST 経由の merge が要るときの owner / 人の経路は
+`npx tsx scripts/merge-pull-request.ts --number <番号>`（owner が使う。Claude は使わない）。
+委譲プロンプト生成器の既定も同じ（`stopAfter: 'pr'`。`'merge'` は owner が意図して任せるときの明示指定のみ）。
+手順は `docs/cloud-dev-environment.md` §0-B2、PR を少なく・短く保つ規則は `docs/loop-workflow.md` 手順 6。
 
 🔴 **「ブランチが出来た」は「PR が出来た」ではない。** #656 はこれで FAIL の記録を
-5 日間失った。**`worker_status: idle` も「終わった」ではない** —— PR とマージの実物を見る。
+5 日間失った。**`worker_status: idle` も「終わった」ではない** —— PR と証拠コメントの実物を見る（merge は owner）。
 
 ## 7. 後始末とクローズ
 
