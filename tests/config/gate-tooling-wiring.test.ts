@@ -176,9 +176,17 @@ describe('gate-tooling の復旧 (#985)', () => {
       });
       const sudoLog = join(stub, 'sudo.log');
       writeFileSync(join(stub, 'sudo'), `#!/bin/sh\necho "$*" >> '${sudoLog}'\nexit 1\n`, { mode: 0o755 });
+      // env は開発者のシェルから引き継がず最小に組む: `BASH_ENV` / `export -f` の関数は
+      // PATH の stub より先に効き、復旧を止める 2 つの変数は枝を変えてしまう。
       const r = spawnSync('bash', [RESTORE], {
         encoding: 'utf8',
-        env: { ...process.env, PATH: `${stub}:/usr/bin:/bin` },
+        env: {
+          NODE_ENV: 'test',
+          PATH: `${stub}:/usr/bin:/bin`,
+          HOME: stub,
+          OPEN_RECEPTION_TOOL_RESTORE_DRY_RUN: '0',
+          OPEN_RECEPTION_SKIP_TOOL_RESTORE: '0',
+        },
       });
       expect(r.status, 'SessionStart を落としてはいけない').toBe(0);
       // 🔴 **どちらの道具が戻せなかったかまで見る。** `FAILED` の有無だけを見ると、
