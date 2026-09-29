@@ -82,7 +82,8 @@ describe('buildDelegationPrompt', () => {
   it('マージにも GraphQL を撃つコマンドを指示しない (#702)', () => {
     // 🔴 `gh pr merge` も 403 になる（2026-08-18 / PR #701 で実測）。生成器がこれを
     // 配り続けると、委譲のたびに委譲先が現場で回避策を考える羽目になる（実際そうなった）。
-    const p = buildDelegationPrompt(BASE);
+    // 既定は 'pr'（#1198）なので、merge 経路を配る 'merge' を明示して縛る。
+    const p = buildDelegationPrompt({ ...BASE, stopAfter: 'merge' });
     expect(p).not.toContain('gh pr merge <番号>');
     expect(p).toContain('scripts/merge-pull-request.ts');
   });
@@ -341,16 +342,69 @@ describe('buildDelegationPrompt', () => {
   });
 
   describe('stopAfter', () => {
-    it('既定（省略時）はマージ手順を含める', () => {
-      // 既定は「マージまで完結させる」。**手段は REST へ移った (#702)** が、
-      // 「既定でマージまで行く」という契約そのものは変えない。
+    it("🔴 既定（省略時）は 'pr'。マージ手順を配らない (#1198)", () => {
+      // Claude は自分の PR を merge しない（#1195）。生成器の既定だけが「routine が merge する」と
+      // 指示していた。既定を 'merge' へ戻す変異は、この 3 つのどれかで落ちる。
       const p = buildDelegationPrompt(BASE);
-      expect(p).toContain('scripts/merge-pull-request.ts');
-      expect(p).toContain('マージまで**このセッション内で完結**させてください');
+      expect(p).not.toContain('scripts/merge-pull-request.ts');
+      expect(p).not.toContain('マージまで**このセッション内で完結**させてください');
+      expect(p).toMatch(/マージ(しない|するな|禁止)/);
     });
 
-    it("stopAfter: 'merge' を明示しても既定と同じ出力になる", () => {
-      expect(buildDelegationPrompt({ ...BASE, stopAfter: 'merge' })).toBe(buildDelegationPrompt(BASE));
+    it("既定は stopAfter: 'pr' を明示したときと同じ出力になる (#1198)", () => {
+      expect(buildDelegationPrompt(BASE)).toBe(buildDelegationPrompt({ ...BASE, stopAfter: 'pr' }));
+    });
+
+    it("'merge' は明示したときだけ使える（owner が意図して任せる場合）", () => {
+      const p = buildDelegationPrompt({ ...BASE, stopAfter: 'merge' });
+      expect(p).toContain('scripts/merge-pull-request.ts');
+      expect(p).toContain('マージまで**このセッション内で完結**させてください');
+      expect(p).not.toBe(buildDelegationPrompt(BASE));
+    });
+
+    describe('--full の証拠投稿 (#1198)', () => {
+      const EVIDENCE = 'npm run gate:evidence -- --number';
+      const pr = () => buildDelegationPrompt({ ...BASE, stopAfter: 'pr' });
+
+      it("'pr' の手順に --full → 証拠投稿が、この順で入る", () => {
+        const p = pr();
+        const gate = p.indexOf('quality-gate.sh --full');
+        const create = p.indexOf('scripts/create-pull-request.ts --head');
+        const evidence = p.indexOf(EVIDENCE);
+        expect(gate, 'ゲートの手順が無い').toBeGreaterThan(-1);
+        expect(evidence, `${EVIDENCE} が手順に無い`).toBeGreaterThan(-1);
+        // 証拠は PR 番号が要る＝PR 作成の後。作成前に置くと --number が渡せない。
+        expect(create).toBeGreaterThan(gate);
+        expect(evidence).toBeGreaterThan(create);
+      });
+
+      it("証拠投稿は PR 実在確認の後、'ここで止める' の前に置く", () => {
+        const p = pr();
+        expect(p.indexOf(EVIDENCE)).toBeGreaterThan(p.indexOf('ブランチが出来たこと＝PR が出来たことではない'));
+        expect(p.indexOf(EVIDENCE)).toBeLessThan(p.indexOf('ここで止める'));
+      });
+
+      it('fail-closed: PASS でなければ PASS と報告させない', () => {
+        const p = pr();
+        expect(p).toContain('PASS とは報告せず');
+        expect(p, 'push で head が動くと証拠が無効になる').toContain('head が動く');
+      });
+
+      it('文書だけの PR は --no-skip-docs で回すことを伝える', () => {
+        // docs スコープの SKIP は証拠で PASS と認められない（docs/cloud-dev-environment.md §0-B2）。
+        expect(pr()).toContain('--no-skip-docs');
+      });
+
+      it('最終報告に証拠の結果とマージしていないことを含める', () => {
+        const p = pr();
+        const report = p.slice(p.indexOf('最後に次を'), p.indexOf('## 環境の既知の制約'));
+        expect(report).toContain('証拠');
+        expect(report).toContain('マージしていないこと');
+      });
+
+      it("'pr' では gh を使わない REST 経路の証拠投稿であり、gh pr merge を出さない", () => {
+        expect(pr()).not.toContain('gh pr merge');
+      });
     });
 
     it("stopAfter: 'pr' の出力に gh pr merge がどこにも現れない", () => {
@@ -377,10 +431,10 @@ describe('buildDelegationPrompt', () => {
 
     it('手順に gh pr merge が残ったまま、禁止事項に手書きのマージ禁止を足すと矛盾として投げる', () => {
       // #680 で実際にやってしまったこと: extraProhibitions に「マージしないこと」を
-      // 手で入れても、既定（stopAfter 省略 = 'merge'）では手順11に gh pr merge が残る。
+      // 手で入れても、'merge' では手順に merge が残る（既定は #1198 で 'pr' になった）。
       // 1 つのプロンプトの中で手順と禁止事項が矛盾する状態を、投げて防ぐ。
       expect(() =>
-        buildDelegationPrompt({ ...BASE, extraProhibitions: ['マージしないこと'] }),
+        buildDelegationPrompt({ ...BASE, stopAfter: 'merge', extraProhibitions: ['マージしないこと'] }),
       ).toThrow(/矛盾|マージ/);
     });
 

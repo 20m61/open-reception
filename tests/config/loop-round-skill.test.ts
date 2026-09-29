@@ -48,13 +48,46 @@ describe('loop-round スキルと委譲プロンプトの整合', () => {
   /** 入口が変わっても同じでなければならないコマンド。 */
   const SHARED_COMMANDS = [
     'scripts/create-pull-request.ts',
-    'scripts/merge-pull-request.ts',
     'quality-gate.sh',
+    // #1198: Claude は `--full` の証拠を PR へ載せて止まる（#1195）。両方の入口が同じ手順を名指しする。
+    'npm run gate:evidence -- --number',
   ];
 
   it.each(SHARED_COMMANDS)('%s を両方の入口が名指ししている', (cmd) => {
     expect(skill, `スキルが ${cmd} を名指ししていない`).toContain(cmd);
     expect(prompt, `委譲プロンプトが ${cmd} を名指ししていない`).toContain(cmd);
+  });
+
+  /**
+   * 🔴 **merge は「owner の経路」としてだけ書く** (#1198 / #1195)。かつては両方の入口が
+   * `scripts/merge-pull-request.ts` を名指ししていたが、Claude は自分の PR を merge しない。
+   *
+   * - スキル: 名指しは残してよいが、**言及する行はすべて owner / 人の経路として書く**
+   *   （手順として無条件に並べると、読んだ Claude がそのまま merge する）
+   * - 委譲プロンプトの既定: **名指ししない**。`stopAfter: 'merge'` を明示したときだけ配る
+   */
+  describe('merge は owner の経路 (#1198)', () => {
+    it('スキルの merge-pull-request.ts への言及は、すべて owner / 人の経路として書かれている', () => {
+      const lines = skill.split('\n').filter((l) => l.includes('scripts/merge-pull-request.ts'));
+      expect(lines.length, 'スキルが merge の経路を書いていない（owner が探せない）').toBeGreaterThan(0);
+      for (const line of lines) {
+        expect(line, `owner / 人の経路と書かれていない: ${line}`).toMatch(/owner|人/);
+      }
+    });
+
+    it('スキルが「Claude は merge しない」を書いている', () => {
+      expect(skill).toMatch(/Claude[^\n]*merge しない/);
+    });
+
+    it('委譲プロンプトの既定は merge を配らない', () => {
+      expect(prompt).not.toContain('scripts/merge-pull-request.ts');
+    });
+
+    it("委譲プロンプトは stopAfter: 'merge' を明示したときだけ merge を配る", () => {
+      expect(buildDelegationPrompt({ ...BASE, stopAfter: 'merge' })).toContain(
+        'scripts/merge-pull-request.ts',
+      );
+    });
   });
 
   /**

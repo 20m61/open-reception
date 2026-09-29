@@ -62,8 +62,8 @@ green 記録が無ければブロックする。記録はゲートが実際に�
   **ローカル記録**なので、クラウドで green を取っても owner からは見えない。証拠を
   `npm run gate:evidence` で PR へ載せ、**merge は owner が証拠を見て行う**（#1195。
   手順は `docs/cloud-dev-environment.md` §0-B2）。
-  ⚠️ 委譲プロンプト生成器（`delegation-prompt.ts`）の既定はまだ `stopAfter: 'merge'` で、
-  routine にマージまで指示する。委譲するときは `stopAfter: 'pr'` を指定する（既定の変更は別 Issue）
+  委譲プロンプト生成器（`delegation-prompt.ts`）の既定は `stopAfter: 'pr'`（#1198）で、
+  ゲート → PR → `gate:evidence` で止まる。`'merge'` は owner が意図して任せるときの明示指定のみ
 - routine 作成直後は**接続済み MCP コネクタが全部自動アタッチされる**（`mcp_connections: []`
   を送っても効かない）。**毎回 `clear_mcp_connections` で外すこと**
 - squash マージ後の**ブランチは残る。クラウド側が消すことを当てにしない** — 2026-08-08 に
