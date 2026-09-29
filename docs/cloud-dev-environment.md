@@ -187,6 +187,70 @@ Chrome から dev の CloudFront → ERR_CONNECTION_RESET（curl は同じプロ
 > 版は `cloud-setup.sh` と一致していることを `tests/config/gate-tooling-wiring.test.ts` が縛る。入れ忘れると `secrets` と `sast` が**黙って SKIP** になり、マージゲートが
 弱くなる（#545 と同型）。§0-A 2. の貼り直しが恒久的な対処。
 
+### 0-H. 実測の記録（2026-09-28・main の `--full`・#1195）
+
+open-reception を起点にした Cloud session で、**worktree ではなく通常の checkout** から
+`./scripts/quality-gate.sh --full`（bootstrap あり）を回した結果。
+
+- main: `da56a99dc5f6f7aea9b91bd0ab8cc262f6bce31b`
+- 実行: 2026-09-28 19:08〜19:37 UTC（約 29 分）
+- 前提: SessionStart の `gate-tooling: all optional tools present`
+  （gitleaks / semgrep / aws / Playwright chromium が揃っていた）
+- ゲート後の `git status --porcelain --untracked-files=all` は空（ゲートはツリーを汚さない）
+
+| ステップ | 結果 | 備考 |
+| --- | --- | --- |
+| loop halt / typecheck / lint / lint suppressions | PASS | 39s / 42s / 81s |
+| **unit (vitest)** | **FAIL（11 件）** | 9,249 passed。原因は下記 1（環境）。修正後は 0 件 |
+| build (next) / build (open-next) | PASS | 67s / 34s |
+| infra typecheck / infra (cdk vitest) | PASS | 420 passed |
+| e2e (playwright) | PASS | **607 passed・flaky 0**（635s） |
+| **secrets (gitleaks)** | **FAIL（34 件）** | 原因は下記 2（main 以外の ref） |
+| sast / audit / lighthouse / vrm | PASS | 7s / 2s / 41s / 58s |
+
+**1. unit の 11 件は、環境に残っていた廃止変数が原因だった。**
+
+- 落ちたのは `tests/hooks/aws-cloud-deploy.test.ts` の 6 件と
+  `tests/hooks/aws-issue-credentials.test.ts` の 5 件。**全件**が、wrapper の先頭にある
+  「廃止された変数が残っています（#1148）: OR_ORIGIN_VERIFY_SECRET」で止まっていた
+- この session の環境に `OR_ORIGIN_VERIFY_SECRET` が**在った**（名前だけを確認し、値は読んでいない）。
+  wrapper が止まるのは #1148 の狙いどおりで、壊れていたのは**テストの前提**だった。
+  テストが `{ ...process.env }` をそのまま子へ渡していたため、credential 解決・`aws` の有無・
+  VITEST インターロックなど**別の経路を測るテストが、全部その先頭の検査で止まっていた**
+- **対処（テストの前提）**: 子へ渡す環境から廃止変数を落とす `tests/helpers/deploy-env.ts` を足し、
+  両ファイルで使う。一覧は正本（`RETIRED_DEPLOY_CONTEXT_VARS`）から取る。
+  廃止変数の検査そのものは、値を**明示的に足して**起動する #1148 節のテストが引き続き縛る
+  （wrapper の検査を外す変異の kill は修正前後とも 7 件で、減っていない）
+- 🔴 **対処（環境・人がやる）**: 環境ダイアログから `OR_ORIGIN_VERIFY_SECRET` を削除し、
+  値は露出したものとして入れ替える（`docs/runbook-cloud-aws-deploy.md`）。
+  同じ session には §0-C の 5 変数（`AWS_ACCESS_KEY_ID` は STS 形式）も在った。窓が開いたままなら閉じる
+  （`AWS_CA_BUNDLE` は proxy の CA で、資格情報ではない）
+- 前回の診断（#1195 のコメント）が「unit の失敗」に数えていた
+  `tests/config/isolation-escape-probe.spec.ts` は**失敗ではなかった**。
+  `temp-cleanup-guard.test.ts` が**わざと落とす子 vitest**を起動しており、`execFileSync` が
+  子の stderr を親のログへそのまま流していた（親は PASS）。「os.tmpdir() が /root」は
+  probe が意図して書き換えた値である。子の stdio を捕まえるよう直した
+- 前回の `aws-cloud-deploy.test.ts`「AWS 認証情報が無い状態で…」の失敗も、
+  今回の実測では同じ原因（廃止変数）で落ちていた。`AWS_*` の在否は、テストが空文字で
+  上書きしているので効いていない（廃止変数だけを外すと 75 件すべて PASS）
+
+**2. secrets の 34 件は、main ではなく未マージのブランチから出ている。**
+
+- `gitleaks detect` は**既定で全 ref を走査する**。clone に未マージのブランチの
+  remote-tracking ref（`origin/claude/arming-b1-trusted-policy`・`…-b7a-awscli-layer`、
+  PR #1182 / #1191）があり、その CDK asset の object key（SHA-256 hex + `.zip` / `.json`）が
+  `generic-api-key` に誤検出されていた
+- **main の履歴だけなら出ない**: `gitleaks detect --no-banner --redact --log-opts=HEAD` →
+  `734 commits scanned … no leaks found`
+- 誤検出を通す allowlist は #1182 自身に入っている（`df37f46`）。gitleaks は**作業ツリーの**
+  `.gitleaks.toml` を全 ref に当てるので、#1182 が main に入れば main の `--full` でも消える
+- **ゲートの走査範囲（全 ref / HEAD のみ）は変えていない。** 全 ref の走査は「どこかに push
+  された鍵」を拾う側に倒れており、範囲を狭めるかは owner の判断にする
+
+**「Cloud では測れない」ものは、今回は無かった。** 残る赤は 2 だけで、Cloud 固有ではない
+（同じ ref を fetch した clone なら Mac でも同じ結果になる）。**#1182 が main に入るまでの
+代替確認**は、上の `--log-opts=HEAD` の走査で「main の履歴に鍵が無い」ことを見ること。
+
 ---
 
 ## 1. 環境ダイアログ側の設定（claude.ai/code）
