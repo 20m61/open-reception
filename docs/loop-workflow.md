@@ -196,6 +196,10 @@ PR の上に PR を重ねる**長い積み上げ PR を作らない** —— 202
 - `pr-review-toolkit:silent-failure-hunter` … エラー握りつぶし
 - `/code-review` … 差分のバグ/簡素化レビュー
 
+**（試行・任意 / #1201）** 変異検証をした周回では、独立レビューにも**実装者に見せずに作った変異
+（holdout）**を当てさせ、train（実装者）と holdout（レビュー）の kill 率を分けて PR 本文に残してよい
+（`docs/mutation-holdout.md`）。停止条件は変えない（報告のみ。基準へ組み込むかは owner が決める）。
+
 指摘を反映したら再度 `./scripts/quality-gate.sh --pr`。
 
 ### 8. マージ（**ゲート + レビュー green で自動マージ**）
