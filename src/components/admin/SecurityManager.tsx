@@ -19,6 +19,13 @@ export type SecurityView = {
    */
   storedPinUnreadable: boolean;
   /**
+   * 保存値を読めず、閉じる側（全 IP 拒否・停止・PIN 必須）へ倒しているフィールド名 (#1172 AC4)。
+   * 🔴 **欠けていたら空として読む**（`storedPinUnreadable` と同じ理由: 警告を**足す**だけなので、
+   * #1172 以前のサーバの応答はそれ以前と同じ画面になる）。配列でない・要素が文字列でないなら
+   * 壊れた応答として扱う。
+   */
+  unreadableSettings: readonly string[];
+  /**
    * 表示している記録の版 (#1158)。保存に付けて送り、読んだ後に誰かが書いていれば 409 になる。
    * 欠けていれば（#1158 以前のサーバ）版を付けずに送る＝それ以前と同じ振る舞い。
    */
@@ -61,7 +68,29 @@ export function asSecurityView(value: unknown): SecurityView | null {
     return null;
   }
   if (v.storedPinUnreadable !== undefined && typeof v.storedPinUnreadable !== 'boolean') return null;
-  return { ...(v as unknown as SecurityView), storedPinUnreadable: v.storedPinUnreadable === true };
+  const unreadable = v.unreadableSettings;
+  if (unreadable !== undefined && !(Array.isArray(unreadable) && unreadable.every((x) => typeof x === 'string'))) {
+    return null;
+  }
+  return {
+    ...(v as unknown as SecurityView),
+    storedPinUnreadable: v.storedPinUnreadable === true,
+    unreadableSettings: unreadable === undefined ? [] : [...(unreadable as string[])],
+  };
+}
+
+/**
+ * 読めないフィールドごとの「今どう扱っているか」(#1172)。値は出さない。
+ * 知らない名前（将来のサーバが足したもの）は汎用の 1 文で出す —— 黙って落とさない。
+ */
+const UNREADABLE_SETTING_EFFECT: Readonly<Record<string, string>> = {
+  ipAllowlist: 'IP 許可リスト: 読めないため、どの IP からの PIN 許可も拒否しています。',
+  emergencyStop: '緊急停止: 読めないため、停止中（全端末で受付を停止）として扱っています。',
+  pinRequired: 'PIN 必須: 読めないため、受付端末に許可を求め、PIN による許可も受け付けていません。',
+};
+
+function unreadableSettingEffect(field: string): string {
+  return UNREADABLE_SETTING_EFFECT[field] ?? `${field}: 読めないため、安全側で扱っています。`;
 }
 
 /** セキュリティ設定 (issue #23, #29)。PIN 必須・PIN 変更・IP 許可リストを編集する。 */
@@ -184,7 +213,17 @@ export function SecurityManager() {
       setView(
         shown === null
           ? applied
-          : { ...shown, emergencyStop: applied.emergencyStop, ...(ownWriteOnly ? { rev: applied.rev } : {}) },
+          : {
+              ...shown,
+              emergencyStop: applied.emergencyStop,
+              // 🔴 読めない設定の警告も**緊急停止の分だけ**載せ替える (#1172)。緊急停止を明示的に
+              //    書いたので、その項目は応答どおり直っている。他の項目の権威はこの応答に無い。
+              unreadableSettings: [
+                ...shown.unreadableSettings.filter((f) => f !== 'emergencyStop'),
+                ...applied.unreadableSettings.filter((f) => f === 'emergencyStop'),
+              ],
+              ...(ownWriteOnly ? { rev: applied.rev } : {}),
+            },
       );
       // 🔴 **据え置いたことを黙らない**（`applySaveResult` と鏡像。独立レビュー 2 周目 MAJOR）。
       //    版が飛んでいる＝表示を読んでから他の書き込みがあった証拠なので、表示が古いことを伝える。
@@ -401,6 +440,31 @@ export function SecurityManager() {
   return (
     <section style={{ maxWidth: 480 }}>
       <h1 style={{ marginTop: 0 }}>セキュリティ設定</h1>
+
+      {/*
+        🔴 **読めない設定を閉じる側へ倒していることを、運用者が気づける形で出す (#1172 AC4)。**
+        fail closed（owner 判断）なので、IP 許可リストが読めなければ**どの端末も PIN 許可できず**、
+        緊急停止が読めなければ**全端末が止まる**。画面を見なければ原因に辿り着けない。
+        文言は「今どう扱っているか」と「どうすれば直るか」だけで、値・壊れ方は出さない。
+        緊急停止だけを送る操作では他のフィールドは直らない（サーバが生のまま書き戻す）ので、
+        残っていても嘘にならない。
+        🔴 **IP 許可リストの欄は空で表示される**（読めない値は返さない）。空のまま保存すると
+        「制限なし」で上書きされるので、そのことも書く（保存は運用者の明示的な設定＝復旧経路）。
+      */}
+      {view.unreadableSettings.length > 0 ? (
+        <div data-testid="security-settings-unreadable" role="alert" className="notice notice--danger" style={{ marginBottom: 24 }}>
+          <strong>保存されているセキュリティ設定の一部を読めません（安全側で運用中）</strong>
+          <ul style={{ margin: '8px 0' }}>
+            {view.unreadableSettings.map((field) => (
+              <li key={field}>{unreadableSettingEffect(field)}</li>
+            ))}
+          </ul>
+          <p style={{ margin: 0 }}>
+            復旧するには、各項目を設定し直してください。IP 許可リストと PIN 必須は下のフォームで保存すると上書きされます
+            （IP 許可リストを空欄のまま保存すると制限なしになります）。緊急停止は「受付を再開する」を押すと解除として設定し直されます（停止を続ける場合は、その後もう一度緊急停止してください）。
+          </p>
+        </div>
+      ) : null}
 
       <div
         data-testid="emergency-section"

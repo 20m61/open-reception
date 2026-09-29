@@ -36,4 +36,11 @@ describe('isIpAllowed (#23)', () => {
   it('リスト外は拒否', () => {
     expect(isIpAllowed('10.0.0.2', ['10.0.0.1'])).toBe(false);
   });
+  /**
+   * 🔴 **読めない許可リスト（null）は全拒否 (#1172 AC1)。** 空リスト（全許可）と区別する。
+   * 空文字の IP（`x-forwarded-for` 無し）も含め、どの入力でも通さない。
+   */
+  it.each(['1.2.3.4', '10.0.0.1', ''])('🔴 読めない許可リストはどの IP も拒否（%s）', (ip) => {
+    expect(isIpAllowed(ip, null)).toBe(false);
+  });
 });
