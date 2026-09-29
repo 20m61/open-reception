@@ -157,12 +157,25 @@ describe('gate-tooling の復旧 (#985)', () => {
    * セッションごと起動しない（`scripts/cloud-setup.sh` 冒頭の制約と同じ理由）。
    * ただし**黙って緑にしない** ―― 失敗したことは stderr に出し、直後の
    * `gate_tool_report` が欠落を名指しする。
+   *
+   * 🔴 **本物の `sudo` に届かせない。** 非 root では `as_root` が `sudo pip install …` を呼ぶ。
+   * `sudo` を stub しないと、開発機（Mac の一般ユーザー）ではパスワード待ちで止まり、
+   * 認証がキャッシュされていれば root で実際に semgrep を入れにいく。`id` も stub して、
+   * 実行する人が root かどうかに関係なく、root と非 root の両方の枝をどの環境でも通す。
    */
-  it('🔴 取得に失敗しても exit 0（ただし黙らない）', () => {
+  it.each([
+    { who: 'root', uid: '0', sudoCalls: '' },
+    { who: '非 root', uid: '501', sudoCalls: 'pip install --break-system-packages --ignore-installed PyJWT semgrep\n' },
+  ])('🔴 取得に失敗しても exit 0（ただし黙らない）— $who', ({ uid, sudoCalls }) => {
     const stub = makeTempDir('broken-curl-');
     try {
       writeFileSync(join(stub, 'curl'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
       writeFileSync(join(stub, 'pip'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+      writeFileSync(join(stub, 'id'), `#!/bin/sh\n[ "$1" = "-u" ] && { echo ${uid}; exit 0; }\nexit 1\n`, {
+        mode: 0o755,
+      });
+      const sudoLog = join(stub, 'sudo.log');
+      writeFileSync(join(stub, 'sudo'), `#!/bin/sh\necho "$*" >> '${sudoLog}'\nexit 1\n`, { mode: 0o755 });
       const r = spawnSync('bash', [RESTORE], {
         encoding: 'utf8',
         env: { ...process.env, PATH: `${stub}:/usr/bin:/bin` },
@@ -172,6 +185,14 @@ describe('gate-tooling の復旧 (#985)', () => {
       // 片方の報告を消す変異が生存する（実測）。
       expect(r.stderr, 'gitleaks の失敗を黙って飲み込んでいる').toContain('gitleaks: restore FAILED');
       expect(r.stderr, 'semgrep の失敗を黙って飲み込んでいる').toContain('semgrep: restore FAILED');
+      // stub の sudo だけが、非 root のときだけ呼ばれる（root では直接 pip を呼ぶ）
+      let calls = '';
+      try {
+        calls = readFileSync(sudoLog, 'utf8');
+      } catch {
+        calls = '';
+      }
+      expect(calls).toBe(sudoCalls);
     } finally {
       rmSync(stub, { recursive: true, force: true });
     }
