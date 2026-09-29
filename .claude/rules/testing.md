@@ -31,9 +31,11 @@ superpowers の `test-driven-development` スキルに沿って **red → green 
   `kiosk-session-transport:` 付きで落とす（spec のアサーション失敗と区別する）。
 
 - **一時領域は `os.tmpdir()` 経由で作る**（#1136）。`vitest.config.ts` の `setupFiles` が
-  **テストファイルごとに `TMPDIR` を切って回収する**ので、綴りは問わない。絶対パスの
-  直書き（`'/tmp/...'`）だけは隔離を外すので、`tests/config/temp-cleanup-guard.test.ts` が
-  報告する（逸脱は `// temp-ok: <理由>`）。
+  **テストファイルごとに `TMPDIR` を切って回収する**ので、綴りは問わない。隔離の外
+  （隔離の外枠・リポジトリ以外）への**同じプロセスからの書き込み**は、綴りに依らず
+  `tests/setup/write-guard.ts` が実行時に見てそのファイルを落とす（#1154）。子プロセスへ
+  渡す `'/tmp/...'` 直書きは `tests/config/temp-cleanup-guard.test.ts` が静的に報告する
+  （逸脱は `// temp-ok: <理由>`）。
   テストごとに小さく保つ作法は `tests/helpers/temp.ts`。
   `TMPDIR` を書き換えたら**元へ戻すこと** —— 戻さないと隔離の `afterAll` が
   `os.tmpdir() !== fileRoot` で落とす（綴りを走査していないので、ここが唯一の検査）。

@@ -24,6 +24,14 @@
  * 1. `/tmp`（や `/var/folders`）を**絶対パスで直書き**する ―― `TMPDIR` を通らない
  * 2. 逸脱マーカー（`// temp-ok:`）に**理由を書かない** ―― 唯一の抜け道なので理由は必須
  *
+ * 🔴 **面 1 のうち「同じプロセスの書き込み」は実行時に見るようになった (#1154)。**
+ * この走査は 2 綴りしか見ず、`'/var/tmp/…'`・`'/private/var/folders/…'`・変数で組んだパスが
+ * 素通りしていた。`tests/setup/write-guard.ts` が fs の書き込み API を包み、**許可する場所
+ * （隔離の外枠・リポジトリ）以外**への書き込みを綴りに依らず落とす（3 案の実測比較は
+ * あちらの doc）。**走査は残す** —— 子プロセスが絶対パスへ書く形（`'/tmp/x'` を
+ * スクリプトへ渡す等）はプロセスの外で起きるので実行時の包みから見えず、ここの
+ * `'/tmp/'` 綴りとゲートの件数だけが受けるため。
+ *
  * 🔴 **「`TMPDIR` の上書き」は走査から外した（レビュー 3 周目 MAJOR 2）。**
  * 代入の綴りを追うのは**まだ数え上げ**で、6 綴りが素通りしていた（実測）。
  * この面は `tests/setup/temp-isolation.ts` の `afterAll` が**実行時に**
@@ -39,6 +47,7 @@ import { basename, dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { makeTempDir } from '../helpers/temp';
 import { SWEEP_AGE_MS, sweepStaleRoots } from '../setup/temp-isolation';
+import { isInsideRoots, RUN_ROOT_ENV } from '../setup/write-guard';
 
 const ROOT = process.cwd();
 
@@ -147,9 +156,10 @@ const scannedFiles = (): string[] =>
  * （実測）。この面は `tests/setup/temp-isolation.ts` の `afterAll` が
  * **実行時に** `os.tmpdir() !== fileRoot` で見る —— 綴りに依らず、逃げたそのファイルで落ちる。
  *
- * 🔴 **絶対パスの直書きは、今も綴りを見るしかない**（実行時には観測点が無い）。
- * `/var/tmp/...` や `/private/var/folders/...` は**素通りする**。族を数え上げないという
- * 原則と衝突する面なので、ここは「代表的な形だけ止める」と割り切り、
+ * 🔴 **同じプロセスの直書きは実行時に見る (#1154)。** 以前はここに「実行時には観測点が無い」と
+ * 書いていたが、fs の書き込み API が観測点になる（`tests/setup/write-guard.ts`）。
+ * この走査が今も唯一見ているのは**子プロセスへ渡る `'/tmp/'` 綴り**で、
+ * `/var/tmp/...` 等を子が書く形は**素通りする**（数え上げないと割り切る）。
  * 最後の砦はゲートの「一時領域」節（エントリ件数と族の内訳）に置いている。
  */
 const ESCAPES_ISOLATION = /['"`]\/tmp[/'"`$]|['"`]\/var\/folders/;
@@ -271,6 +281,84 @@ describe('一時領域の後始末 (#1136)', () => {
     },
     60_000,
   );
+
+  /**
+   * 🔴 **隔離の外への書き込みは、綴りに依らず落ちる（#1154。実行時の包みの下界）。**
+   *
+   * probe は走査では捕まらない綴り（named import の `writeFileSync`・名前空間 import の
+   * `mkdirSync`・`fs/promises` の `writeFile`・`openSync(…, 'w')`）で、**変数で渡したパス**へ書く。
+   * 行き先はこのファイルの一時領域（親が回収する）なので、落ちても実害は残らない。
+   *
+   * 🔴 子の外枠を**このファイルの root の下**へ切り直すため `RUN_ROOT_ENV` を渡さない。
+   *    継がせると親の root 全体が「許可する場所」になり、probe の書き込みが通ってしまう。
+   */
+  it('🔴 隔離の外へ書いたファイルは落ちる（綴りすべて）', () => {
+    const outside = makeTempDir('write-guard-outside-');
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      WRITE_GUARD_PROBE_TARGET: outside,
+    };
+    delete env[RUN_ROOT_ENV];
+    let failed = false;
+    let output = '';
+    try {
+      execFileSync(
+        join(ROOT, 'node_modules', '.bin', 'vitest'),
+        ['run', join('tests', 'config', 'write-guard-probe.spec.ts')],
+        {
+          cwd: ROOT,
+          encoding: 'utf8',
+          stdio: CHILD_STDIO,
+          env,
+          timeout: 120_000,
+        },
+      );
+    } catch (e) {
+      failed = true;
+      output = `${(e as { stdout?: string }).stdout ?? ''}${(e as { stderr?: string }).stderr ?? ''}`;
+    }
+    expect(failed, '隔離の外へ書いたのに落ちていない').toBe(true);
+    expect(output).toContain('一時領域の隔離の外へ書き込みました');
+    // 🔴 下界: 各綴りが**それぞれ**見えていること（1 つだけ見えて通る形を倒す）。
+    expect(output).toContain(`fs.writeFileSync ${join(outside, 'named-import.json')}`);
+    expect(output).toContain(`fs.mkdirSync ${join(outside, 'namespace-dir')}`);
+    expect(output).toContain(`fs/promises.writeFile ${join(outside, 'promises.json')}`);
+    expect(output).toContain(`fs.openSync ${join(outside, 'opened.txt')}`);
+    // 🔴 再入は 1 回として数える: `appendFileSync` が内部で呼ぶ `writeFileSync` を別件にしない
+    //    （二重に数えると、違反の一覧が「どの行が書いたか」を指さなくなる）。
+    expect(output).toContain(`fs.appendFileSync ${join(outside, 'append.log')}`);
+    expect(output).not.toContain(`fs.writeFileSync ${join(outside, 'append.log')}`);
+    // 下界: probe が実際に書いたこと（書けずに落ちたのなら、上は別の理由で通っている）。
+    expect(existsSync(join(outside, 'promises.json'))).toBe(true);
+  }, 60_000);
+
+  /**
+   * 🔴 **負の対照: 同じ綴りでも、隔離の中へ書くなら通る。**
+   * 上の主張が「包みは何でも落とす」で空虚に通らないことを見る。
+   */
+  it('🔴 同じ probe は、隔離の中へ書くなら通る（負の対照）', () => {
+    const out = execFileSync(
+      join(ROOT, 'node_modules', '.bin', 'vitest'),
+      ['run', join('tests', 'config', 'write-guard-probe.spec.ts')],
+      {
+        cwd: ROOT,
+        encoding: 'utf8',
+        stdio: CHILD_STDIO,
+        env: { ...process.env, WRITE_GUARD_PROBE_TARGET: 'inside' },
+        timeout: 120_000,
+      },
+    );
+    expect(out).toContain('1 passed');
+  }, 60_000);
+
+  it('🔴 「中か」は区切りまで見る（兄弟のディレクトリを中と見なさない）', () => {
+    const root = join(tmpdir(), 'root');
+    expect(isInsideRoots(root, [root])).toBe(true);
+    expect(isInsideRoots(join(root, 'a', 'b.json'), [root])).toBe(true);
+    // 下界: 接頭辞が同じだけの兄弟は外。
+    expect(isInsideRoots(`${root}X/leak.json`, [root])).toBe(false);
+    expect(isInsideRoots(join(dirname(root), 'other.json'), [root])).toBe(false);
+  });
 
   /**
    * 🔴 **負の対照（同じ probe を env なしで走らせる）。**
