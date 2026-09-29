@@ -126,6 +126,11 @@ npx tsx scripts/merge-pull-request.ts --number <番号>
 どちらも**作成／マージの直後に REST で引き直して確認する**。PR 本文には必ず:
 ゲート結果（summary そのまま）/ 人間承認が必要な変更の有無 / `Refs #<N>`。
 
+🔴 **Claude が作った PR は Claude が merge しない（#1195）。** `--full` を green にしたら
+`npm run gate:evidence -- --number <番号>` で証拠を PR に載せ、merge は owner に任せる
+（上の `merge-pull-request.ts` は owner / 人が使う経路）。手順は
+`docs/cloud-dev-environment.md` §0-B2、PR を少なく・短く保つ規則は `docs/loop-workflow.md` 手順 6。
+
 🔴 **「ブランチが出来た」は「PR が出来た」ではない。** #656 はこれで FAIL の記録を
 5 日間失った。**`worker_status: idle` も「終わった」ではない** —— PR とマージの実物を見る。
 

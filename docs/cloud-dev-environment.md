@@ -81,6 +81,64 @@ Cursor の Cloud Agent は claude.ai/code とは**別環境**。install / start 
    git push origin --delete <branch> && git branch -D <branch>
    ```
 
+### 0-B2. PR に `--full` の証拠を残し、owner が merge する（#1195）
+
+**Claude が Cloud で `--full` を回して証拠を PR に載せ、owner は証拠を読んで merge する。**
+Claude は自分の PR を merge しない。owner の手元で `--full` を回し直す必要はない。
+
+ゲートのスタンプ（`pr-gate-guard.sh` が見るもの）は `.git` 配下の**ローカル記録**なので、
+Cloud で green を取っても owner からは見えない。そこで、ゲートが同じく `.git` 配下へ書く
+**証拠ファイル**を PR のコメントへ載せる。
+
+**Claude がやること（Cloud・通常の checkout で。worktree ではない）**
+
+```bash
+git add -A && git commit ...            # 1. 先にコミットする（dirty では PASS にならない）
+git push -u origin HEAD                  # 2. push して PR の head をこのコミットにする
+./scripts/quality-gate.sh --full         # 3. clean なツリーで回す
+npm run gate:evidence -- --number <PR>   # 4. 証拠をコメントとして載せる（2 回目以降は同じコメントを更新）
+```
+
+- 文書だけの PR は `--full --no-skip-docs` で回す（docs スコープの SKIP も PASS と認めないため）
+- `--dry-run` を付けると投稿せず本文だけを出す
+- 終了コード: 0 = PASS として投稿 / 1 = PASS でないものとして投稿 / 2 = 証拠ファイルや引数の誤り（投稿しない）/
+  4 = GitHub に届かない
+
+**PASS と書かない条件（fail-closed）** —— 判定は `src/domain/governance/gate-evidence.ts`（純関数）:
+
+| 条件 | 理由 |
+| --- | --- |
+| 作業ツリーが dirty（開始時・終了時。測れなかったときも） | 検証したのがコミットではなく作業ツリーになる |
+| 証拠の SHA が PR の head と違う / head を読めない / 実行中に HEAD が動いた | 古い、または別のコミットの証拠 |
+| 実行したステップが 0 件 | 「見ていない」は「問題なし」ではない |
+| SKIP・FAIL・知らない状態のステップが 1 つでもある | SKIP は「このコミットで green だった」の根拠にならない |
+| e2e に flaky が 1 件でもある（`FLAKY` の行） | retry で通った試行はアサーションに届いていない。ゲート自体の合否は変えていない |
+| tier が `full` でない / 完走していない / スタンプを書いていない | ゲートの PASS そのものが無い |
+
+証拠ファイルはゲートの**開始時に**「未完了」の記録で上書きされる。途中で死んだ実行の後に、
+前回の PASS が読まれることはない。投稿できるのは、ゲートが書いたファイルだけである
+（`--evidence` は `--dry-run` 専用）。
+
+**owner がやること**
+
+1. PR の証拠コメント（`<!-- open-reception:gate-evidence -->`）の**見出しが ✅** であることを見る
+2. 「検証したコミット」が **PR の現在の head と一致**していることを見る（投稿後に push があれば無効）
+3. merge する（GitHub の UI でも `gh pr merge --squash --delete-branch` でもよい）
+
+**限界（証拠が見ていないもの）**: dirty の判定は `git status`（未追跡を含む・ignore を除く）で、
+`.env.local` のような **ignore 済みのファイル**や `skip-worktree` の変更は見えない。
+結果を左右しうる ignore 済みファイルを置いたまま回さないこと。
+
+owner が Claude Code の中から `gh pr merge` を打つと、`pr-gate-guard.sh` は**その端末の**
+`--full` スタンプを要求して止める（フックは変えていない）。証拠を見て merge するなら
+GitHub の UI か、Claude Code の外の端末から行う。
+
+**これは記録であって強制ではない。** PR コメントは merge を機械的には止めない
+（この repo は GitHub Actions を使わず、commit status も書かない）。強制は、owner が
+この証拠を読むことが担う。`pr-gate-guard.sh`（スタンプによるローカルの merge ガード）は
+**そのまま**である。緩めてもいないし、迂回もしていない。証拠の投稿は PR にコメントを書くだけで、
+フックの対象（PR 作成・merge）には当たらない。
+
 ### 0-C. AWS の窓を開ける／閉じる — デプロイのときだけ
 
 **短命 STS の発行はローカル macOS 限定**（`guard-destructive.sh` がクラウドでブロックする / #675）。
