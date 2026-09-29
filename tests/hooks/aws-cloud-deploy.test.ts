@@ -22,6 +22,7 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { envWithoutRetiredDeployVars } from '../helpers/deploy-env';
 import { makeSharedTempDir, makeTempDir } from '../helpers/temp';
 /**
  * 🔴 **検査前にコメント（と、必要なら文字列リテラル）を落とす。**
@@ -53,7 +54,7 @@ function run(args: ReadonlyArray<string>, env: Record<string, string> = {}) {
   const result = spawnSync('bash', [WRAPPER, ...args], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, ...env },
+    env: { ...envWithoutRetiredDeployVars(), ...env },
   });
   return {
     status: result.status ?? -1,
@@ -78,11 +79,7 @@ vi.setConfig({ testTimeout: 30_000 });
 describe('廃止した生 origin secret は全サブコマンドの先頭で止める (#1148)', () => {
   const RAW = 'raw-origin-verify-value-must-not-be-echoed';
   const CLI = resolve(process.cwd(), 'scripts/aws-deploy-context.ts');
-  const withoutRetired = (): NodeJS.ProcessEnv => {
-    const env = { ...process.env };
-    delete env.OR_ORIGIN_VERIFY_SECRET;
-    return env;
-  };
+  const withoutRetired = (): NodeJS.ProcessEnv => envWithoutRetiredDeployVars();
   const cli = (args: string[], env: Record<string, string>) =>
     spawnSync('npx', ['tsx', CLI, ...args], {
       encoding: 'utf8',
@@ -132,7 +129,7 @@ describe('廃止した生 origin secret は全サブコマンドの先頭で止�
     const result = spawnSync('bash', [WRAPPER, 'verify'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, PATH: `${stubDir}:${process.env.PATH ?? ''}`, OR_ORIGIN_VERIFY_SECRET: RAW },
+      env: { ...envWithoutRetiredDeployVars(), PATH: `${stubDir}:${process.env.PATH ?? ''}`, OR_ORIGIN_VERIFY_SECRET: RAW },
       timeout: 25_000,
       killSignal: 'SIGKILL',
     });
@@ -269,7 +266,7 @@ describe('依存コマンドの有無を AWS 呼び出し前に検査する (#68
       // 「常に PASS するが何も検査していない」テストへ静かに劣化する。
       const probe = spawnSync('bash', ['-c', 'command -v aws'], {
         encoding: 'utf8',
-        env: { ...process.env, PATH: pathWithoutAwsValue },
+        env: { ...envWithoutRetiredDeployVars(), PATH: pathWithoutAwsValue },
       });
       expect(probe.status).not.toBe(0);
 
@@ -368,7 +365,7 @@ describe('workingTreeClean は git status 失敗時に fail-closed する (Impor
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
         env: {
-          ...process.env,
+          ...envWithoutRetiredDeployVars(),
           VITEST: '',
           PATH: `${fakeBinDir}:${process.env.PATH ?? ''}`,
         },
@@ -462,7 +459,7 @@ describe('cdk / aws 呼び出しに必須フラグが揃っている (round 3 �
     it('許可リスト外を渡すと非ゼロで終わる（実行して確かめる）', () => {
       const result = spawnSync('bash', [WRAPPER, 'diff', '--only', 'nodi-dev-app'], {
         encoding: 'utf8',
-        env: { ...process.env, VITEST: '1' },
+        env: { ...envWithoutRetiredDeployVars(), VITEST: '1' },
       });
       expect(result.status).not.toBe(0);
       expect(`${result.stdout}${result.stderr}`).toContain('許可されていないスタック名');
@@ -471,7 +468,7 @@ describe('cdk / aws 呼び出しに必須フラグが揃っている (round 3 �
     it('許可リスト内を渡すと対象が絞られる（実行して確かめる）', () => {
       const result = spawnSync('bash', [WRAPPER, 'diff', '--only', 'OpenReception-Web-dev'], {
         encoding: 'utf8',
-        env: { ...process.env, VITEST: '1' },
+        env: { ...envWithoutRetiredDeployVars(), VITEST: '1' },
       });
       const out = `${result.stdout}${result.stderr}`;
       expect(out).toContain('対象スタックを絞りました: OpenReception-Web-dev');

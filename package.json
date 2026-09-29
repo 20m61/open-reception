@@ -21,6 +21,7 @@
     "local:aws:smoke": "tsx scripts/local-aws-smoke.ts",
     "local:aws:integration": "vitest run src/lib/data/dynamodb.emulator.test.ts",
     "evaluate:gate-runs": "tsx scripts/evaluate-gate-runs.ts",
+    "gate:evidence": "tsx scripts/publish-gate-evidence.ts",
     "loop:retro": "tsx scripts/loop-retro.ts",
     "change-risk": "tsx scripts/change-risk.ts",
     "lint": "tsx scripts/lint-with-budget.ts",

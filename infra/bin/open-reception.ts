@@ -172,28 +172,36 @@ if (account) {
   );
 }
 
-const notification = new NotificationStack(app, `OpenReception-Notification-${config.environment}`, {
-  env: { account, region },
-  config,
-  vonageSecretName,
-  siteTokenSecretName,
-  description: `open-reception notification subsystem (${config.environment})`,
-});
+// Promotion assembly (#1146 blocker 7): the dev deploy broker's Validation synth passes
+// `-c promotionStacksOnly=true` so the cloud assembly holds only the three stacks ADR 0009 admits
+// (Web / WebMonitoring / CfMon). The trusted policy denies any other stack in the assembly, and
+// `cdk synth <names>` alone still writes every stack of the app. Default (flag absent): unchanged.
+const promotionStacksOnly = String(app.node.tryGetContext('promotionStacksOnly') ?? '') === 'true';
 
-const monitoring = new MonitoringStack(app, `OpenReception-Monitoring-${config.environment}`, {
-  env: { account, region },
-  config,
-  notificationFn: notification.notificationFn.fn,
-  httpApi: notification.api.httpApi,
-  description: `open-reception notification monitoring (${config.environment})`,
-});
-overrideComponentTag(monitoring, COST_TAG_COMPONENTS.monitoring);
+if (!promotionStacksOnly) {
+  const notification = new NotificationStack(app, `OpenReception-Notification-${config.environment}`, {
+    env: { account, region },
+    config,
+    vonageSecretName,
+    siteTokenSecretName,
+    description: `open-reception notification subsystem (${config.environment})`,
+  });
+
+  const monitoring = new MonitoringStack(app, `OpenReception-Monitoring-${config.environment}`, {
+    env: { account, region },
+    config,
+    notificationFn: notification.notificationFn.fn,
+    httpApi: notification.api.httpApi,
+    description: `open-reception notification monitoring (${config.environment})`,
+  });
+  overrideComponentTag(monitoring, COST_TAG_COMPONENTS.monitoring);
+}
 
 // リアルタイム会話 EC2 基盤 (#366 Phase 0)。config.realtime.enabled が true の環境のみ synth 対象に
 // 含める（既定は全環境 false — 本プロジェクト初の実質的固定費のためユーザー承認後に true 化する）。
 // `-c realtimeHostedZoneId=... -c realtimeZoneName=... -c realtimeRecordName=...` で Route 53 連携を
 // 任意指定できる（未指定なら Route 53 リソースを作らない、customDomain と同じ任意 context の方針）。
-if (config.realtime.enabled) {
+if (config.realtime.enabled && !promotionStacksOnly) {
   const realtimeHostedZoneId = app.node.tryGetContext('realtimeHostedZoneId') as string | undefined;
   const realtimeZoneName = app.node.tryGetContext('realtimeZoneName') as string | undefined;
   const realtimeRecordName = app.node.tryGetContext('realtimeRecordName') as string | undefined;

@@ -10,13 +10,15 @@ Issue を消化するループで開発する。**手順は `docs/loop-workflow.
 位置づけ・暴走防止ガード・人間承認が必要な変更の一覧は **`docs/ai-development-loop.md`**
 （#424 / #426。未構築の部分も明記してある）。
 1 周 = ブランチ → 実装(TDD) → 品質ゲート（`--pr`/`--full` はクラウド）→ PR → セルフ/コードレビュー →
-**ゲート green + レビュー blocking なしなら自動で squash + `--delete-branch`** → Issue
-クローズ → 次へ。**重大変更時のみユーザー確認**（破壊的変更・スキーマ/公開API・本番デプロイ・
+**ゲート green + レビュー blocking なしなら、owner が証拠を見て squash + `--delete-branch`** → Issue
+クローズ → 次へ。🔴 **Claude は自分の PR を merge しない**（#1195）。Cloud で `--full` を
+green にして証拠を PR に載せ（`npm run gate:evidence`）、merge は owner が証拠を見て行う。
+関連する修正は少数の PR にまとめ、長い積み上げ PR を作らない（`docs/loop-workflow.md` 手順 6 / 8）。**重大変更時のみユーザー確認**（破壊的変更・スキーマ/公開API・本番デプロイ・
 外部送信・依存/ライセンス追加(#105)・secret/PII 取り扱い変更）。詳細は `docs/loop-workflow.md` 手順 8。
 
 **並列オーケストレーション**: 依存のない Issue は git worktree（または
 `isolation: "worktree"` のサブエージェント）で並行実装（同時 2〜3 トラック上限、同一
-ファイルを触らせない）。依存チェーンは直列、**マージは直列**（上記の自動マージ条件で 1 本ずつ）。
+ファイルを触らせない）。依存チェーンは直列、**マージは直列**（owner が証拠を見て 1 本ずつ）。
 調査/レビューは読み取り専用エージェントを並行 fan-out してよい。
 
 ## 品質ゲート（GitHub Actions を使わない方針）
@@ -56,9 +58,12 @@ green 記録が無ければブロックする。記録はゲートが実際に�
   **2 つ**存在し（旧 `env_012h7PiJKNb4EYzKRSuBwpX3` / 現 `env_014bqpK5jWNvBq6oU2qLtybs`）、
   設定を片方へ入れて別の方でセッションが動く事故が起きた（旧環境はアーカイブ済み。
   経緯と実測は `docs/cloud-dev-environment.md` §0-A / §0-G）
-- 🔴 **PR 作成とマージまでクラウド内で完結させる。** ゲートスタンプは `.git` 配下の
-  **ローカル記録**なので、クラウドで green を取ってもローカルの `gh pr merge` は
-  フックにブロックされる。マージまで向こうでやらせれば持ち運びを考えずに済む
+- 🔴 **PR 作成と `--full` の証拠投稿までクラウド内で完結させる。** ゲートスタンプは `.git` 配下の
+  **ローカル記録**なので、クラウドで green を取っても owner からは見えない。証拠を
+  `npm run gate:evidence` で PR へ載せ、**merge は owner が証拠を見て行う**（#1195。
+  手順は `docs/cloud-dev-environment.md` §0-B2）。
+  ⚠️ 委譲プロンプト生成器（`delegation-prompt.ts`）の既定はまだ `stopAfter: 'merge'` で、
+  routine にマージまで指示する。委譲するときは `stopAfter: 'pr'` を指定する（既定の変更は別 Issue）
 - routine 作成直後は**接続済み MCP コネクタが全部自動アタッチされる**（`mcp_connections: []`
   を送っても効かない）。**毎回 `clear_mcp_connections` で外すこと**
 - squash マージ後の**ブランチは残る。クラウド側が消すことを当てにしない** — 2026-08-08 に

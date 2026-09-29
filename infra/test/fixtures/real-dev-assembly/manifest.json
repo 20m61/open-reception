@@ -1,0 +1,133 @@
+{
+ "version": "54.0.0",
+ "artifacts": {
+  "OpenReception-Web-dev.assets": {
+   "type": "cdk:asset-manifest",
+   "properties": {
+    "file": "OpenReception-Web-dev.assets.json",
+    "requiresBootstrapStackVersion": 6,
+    "bootstrapStackVersionSsmParameter": "/cdk-bootstrap/orcloud01/version"
+   }
+  },
+  "OpenReception-Web-dev": {
+   "type": "aws:cloudformation:stack",
+   "environment": "aws://123456789012/ap-northeast-1",
+   "properties": {
+    "templateFile": "OpenReception-Web-dev.template.json",
+    "terminationProtection": false,
+    "tags": {
+     "Component": "web",
+     "Environment": "dev",
+     "ManagedBy": "cdk",
+     "Owner": "open-reception-team",
+     "Project": "open-reception"
+    },
+    "validateOnSynth": false,
+    "assumeRoleArn": "arn:${AWS::Partition}:iam::123456789012:role/cdk-orcloud01-deploy-role-123456789012-ap-northeast-1",
+    "cloudFormationExecutionRoleArn": "arn:${AWS::Partition}:iam::123456789012:role/cdk-orcloud01-cfn-exec-role-123456789012-ap-northeast-1",
+    "stackTemplateAssetObjectUrl": "s3://cdk-orcloud01-assets-123456789012-ap-northeast-1/61e46baefa84f4828b4a74f1a0f7acafe9e4b1a1165862ffb5eb9a802dba0135.json",
+    "requiresBootstrapStackVersion": 6,
+    "bootstrapStackVersionSsmParameter": "/cdk-bootstrap/orcloud01/version",
+    "additionalDependencies": [
+     "OpenReception-Web-dev.assets"
+    ],
+    "lookupRole": {
+     "arn": "arn:${AWS::Partition}:iam::123456789012:role/cdk-orcloud01-lookup-role-123456789012-ap-northeast-1",
+     "requiresBootstrapStackVersion": 8,
+     "bootstrapStackVersionSsmParameter": "/cdk-bootstrap/orcloud01/version"
+    }
+   },
+   "dependencies": [
+    "OpenReception-Web-dev.assets"
+   ],
+   "additionalMetadataFile": "OpenReception-Web-dev.metadata.json",
+   "displayName": "OpenReception-Web-dev"
+  },
+  "OpenReception-WebMonitoring-dev.assets": {
+   "type": "cdk:asset-manifest",
+   "properties": {
+    "file": "OpenReception-WebMonitoring-dev.assets.json",
+    "requiresBootstrapStackVersion": 6,
+    "bootstrapStackVersionSsmParameter": "/cdk-bootstrap/orcloud01/version"
+   }
+  },
+  "OpenReception-WebMonitoring-dev": {
+   "type": "aws:cloudformation:stack",
+   "environment": "aws://123456789012/ap-northeast-1",
+   "properties": {
+    "templateFile": "OpenReception-WebMonitoring-dev.template.json",
+    "terminationProtection": false,
+    "tags": {
+     "Component": "web-monitoring",
+     "Environment": "dev",
+     "ManagedBy": "cdk",
+     "Owner": "open-reception-team",
+     "Project": "open-reception"
+    },
+    "validateOnSynth": false,
+    "assumeRoleArn": "arn:${AWS::Partition}:iam::123456789012:role/cdk-orcloud01-deploy-role-123456789012-ap-northeast-1",
+    "cloudFormationExecutionRoleArn": "arn:${AWS::Partition}:iam::123456789012:role/cdk-orcloud01-cfn-exec-role-123456789012-ap-northeast-1",
+    "stackTemplateAssetObjectUrl": "s3://cdk-orcloud01-assets-123456789012-ap-northeast-1/ca66fa6e7fca04194417899cf9a147af14e8ab84d56dfc2bcb94ea832357ed03.json",
+    "requiresBootstrapStackVersion": 6,
+    "bootstrapStackVersionSsmParameter": "/cdk-bootstrap/orcloud01/version",
+    "additionalDependencies": [
+     "OpenReception-WebMonitoring-dev.assets"
+    ],
+    "lookupRole": {
+     "arn": "arn:${AWS::Partition}:iam::123456789012:role/cdk-orcloud01-lookup-role-123456789012-ap-northeast-1",
+     "requiresBootstrapStackVersion": 8,
+     "bootstrapStackVersionSsmParameter": "/cdk-bootstrap/orcloud01/version"
+    }
+   },
+   "dependencies": [
+    "OpenReception-Web-dev",
+    "OpenReception-WebMonitoring-dev.assets"
+   ],
+   "additionalMetadataFile": "OpenReception-WebMonitoring-dev.metadata.json",
+   "displayName": "OpenReception-WebMonitoring-dev"
+  },
+  "OpenReception-CfMon-dev.assets": {
+   "type": "cdk:asset-manifest",
+   "properties": {
+    "file": "OpenReception-CfMon-dev.assets.json",
+    "requiresBootstrapStackVersion": 6,
+    "bootstrapStackVersionSsmParameter": "/cdk-bootstrap/orcloud01/version"
+   }
+  },
+  "OpenReception-CfMon-dev": {
+   "type": "aws:cloudformation:stack",
+   "environment": "aws://123456789012/us-east-1",
+   "properties": {
+    "templateFile": "OpenReception-CfMon-dev.template.json",
+    "terminationProtection": false,
+    "tags": {
+     "Component": "cloudfront-monitoring",
+     "Environment": "dev",
+     "ManagedBy": "cdk",
+     "Owner": "open-reception-team",
+     "Project": "open-reception"
+    },
+    "validateOnSynth": false,
+    "assumeRoleArn": "arn:${AWS::Partition}:iam::123456789012:role/cdk-orcloud01-deploy-role-123456789012-us-east-1",
+    "cloudFormationExecutionRoleArn": "arn:${AWS::Partition}:iam::123456789012:role/cdk-orcloud01-cfn-exec-role-123456789012-us-east-1",
+    "stackTemplateAssetObjectUrl": "s3://cdk-orcloud01-assets-123456789012-us-east-1/d2bf9362a49407b7cc944ff57fc5d48894037cdef46c89d61ad0f8bcf018d147.json",
+    "requiresBootstrapStackVersion": 6,
+    "bootstrapStackVersionSsmParameter": "/cdk-bootstrap/orcloud01/version",
+    "additionalDependencies": [
+     "OpenReception-CfMon-dev.assets"
+    ],
+    "lookupRole": {
+     "arn": "arn:${AWS::Partition}:iam::123456789012:role/cdk-orcloud01-lookup-role-123456789012-us-east-1",
+     "requiresBootstrapStackVersion": 8,
+     "bootstrapStackVersionSsmParameter": "/cdk-bootstrap/orcloud01/version"
+    }
+   },
+   "dependencies": [
+    "OpenReception-Web-dev",
+    "OpenReception-CfMon-dev.assets"
+   ],
+   "additionalMetadataFile": "OpenReception-CfMon-dev.metadata.json",
+   "displayName": "OpenReception-CfMon-dev"
+  }
+ }
+}

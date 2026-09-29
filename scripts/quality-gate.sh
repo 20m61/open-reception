@@ -95,6 +95,14 @@ if [[ "${QUALITY_GATE_DRY_RUN:-0}" == "1" ]]; then
   exit 0
 fi
 
+# 証拠ファイルへ載せる実行計画 (#1195)。上の --dry-run と同じ一覧から作る。
+GATE_EVIDENCE_PLAN=""
+for pair in "typecheck:$RUN_TYPECHECK" "lint:$RUN_LINT" "unit:$RUN_UNIT" "build:$RUN_BUILD" \
+            "infra:$RUN_INFRA" "e2e:$RUN_E2E" "secrets:$RUN_SECRETS" "sast:$RUN_SAST" \
+            "audit:$RUN_AUDIT" "lighthouse:$RUN_LH" "vrm:$RUN_VRM"; do
+  GATE_EVIDENCE_PLAN+="${pair%%:*}=${pair##*:} "
+done
+
 # ---- 実行ヘルパ -----------------------------------------------------------
 declare -a SUMMARY
 declare -a UNVERIFIED
@@ -232,6 +240,9 @@ echo "================================================================"
 # shellcheck source=lib/gate-stamp.sh
 . "${ROOT}/scripts/lib/gate-stamp.sh"
 GATE_FINGERPRINT="$(gate_tree_fingerprint || true)"
+# 証拠ファイルを開始時の記録で上書きする (#1195)。完走しなければ `exit` を持たないまま残り、
+# `scripts/publish-gate-evidence.ts` は「完走していない」として PASS と書かない。
+gate_evidence_begin "${TIER}" || true
 # 開始時の空きを控える (#721 レビュー m3)。終了時は掃除の**後**なので、
 # 周回中に沈んだピークが見えない。2 点あれば落ち込みに気づける。
 GATE_DISK_START="$(df -Pk "${TMPDIR:-/tmp}" 2>/dev/null | awk 'NR==2 {printf "%.1fG", $4/1048576}')"
@@ -353,6 +364,7 @@ finish() {
   echo "================================================================"
 
   if [[ "$FAILED" -eq 1 ]]; then
+    gate_evidence_finish "${TIER}" 1 0 ${SUMMARY[@]+"${SUMMARY[@]}"} || true
     echo "❌ quality-gate FAILED"
     exit 1
   fi
@@ -367,14 +379,46 @@ finish() {
     echo "    検査できなかったステップ: ${UNVERIFIED[*]}"
     echo "    落ちてはいませんが「通った」根拠がありません。前提を整えて再実行してください。"
     echo "    よくある原因: .open-next/ が src/ より古い → npm run build:open-next"
+    gate_evidence_finish "${TIER}" 1 0 ${SUMMARY[@]+"${SUMMARY[@]}"} || true
     exit 1
   fi
 
-  gate_write_stamp "${TIER}" "${GATE_FINGERPRINT}" "${GATE_SCOPE_RECORD:-${GATE_SCOPE:-code}}"
+  # スタンプ書き込みの終了コードを証拠へ運ぶ（git 外などで黙って書かない場合は 0 を返すので、
+  # これは「書こうとして失敗しなかった」の記録である。HEAD と clean は別に見ている）。
+  local stamped=0
+  gate_write_stamp "${TIER}" "${GATE_FINGERPRINT}" "${GATE_SCOPE_RECORD:-${GATE_SCOPE:-code}}" && stamped=1
+  gate_evidence_finish "${TIER}" 0 "${stamped}" ${SUMMARY[@]+"${SUMMARY[@]}"} || true
   echo "✅ quality-gate PASSED  (tier=${TIER} を green として記録しました)"
+  if [[ "${TIER}" == "full" ]]; then
+    echo "   PR へ証拠を載せる: npm run gate:evidence -- --number <PR 番号>（#1195）"
+  fi
   # **finish は必ず終端する。** 呼び出し口が複数あるので、戻ると呼び出し元の続きが
   # 走ってしまう（seam から呼んだときに全ステップが実行された）。
   exit 0
+}
+
+# run_e2e_counting_flaky <cmd...>
+#
+# e2e を走らせ、playwright の集計の `N flaky` を summary へ別の行として出す (#1195)。
+#
+# 🔴 **retry で通った試行は、アサーションに一度も届いていない。** playwright は flaky を
+# 含んでも exit 0 を返すので、`PASS  e2e` だけでは「全部 1 回で通った」と区別できない
+# （CLAUDE.md「緑を読むときは flaky を数える」）。ゲートの合否は変えない（赤にするかは
+# 運用の判断）が、証拠の判定（`gate-evidence.ts`）は `FLAKY` の行があれば PASS と書かない。
+# 終了コードは e2e のものをそのまま返す。
+run_e2e_counting_flaky() {
+  local log code flaky
+  log="$(mktemp)"
+  "$@" 2>&1 | tee "${log}"
+  code=${PIPESTATUS[0]}
+  flaky="$(gate_count_flaky < "${log}")"
+  rm -f "${log}"
+  if [[ "${code}" -eq 0 && "${flaky}" == "unknown" ]]; then
+    SUMMARY+=("FLAKY  e2e (playwright)  (集計を読めず flaky を数えられなかった)")
+  elif [[ "${flaky}" != "0" && "${flaky}" != "unknown" ]]; then
+    SUMMARY+=("FLAKY  e2e (playwright)  (${flaky} 件が retry で通った)")
+  fi
+  return "${code}"
 }
 
 # ---- 自己テスト用の seam --------------------------------------------------
@@ -391,6 +435,9 @@ if [[ -n "${QUALITY_GATE_SELFTEST:-}" ]]; then
     # #713: **実際の呼び出し経路**（終了コードを拾う 1 行を含む）を通す。
     # 検出器の中身は `QUALITY_GATE_DETECTOR_CMD` で差し替える。
     change-risk-invoke) run_change_risk_detector ;;
+    # #1195: e2e の flaky の数え方を、**本物の配線**（run_e2e_counting_flaky）で通す。
+    # 集計の出力は QUALITY_GATE_E2E_FIXTURE（ファイル）から流す。
+    e2e-flaky) step "e2e (playwright)" run_e2e_counting_flaky cat "${QUALITY_GATE_E2E_FIXTURE:?}" ;;
     *) echo "unknown QUALITY_GATE_SELFTEST: ${QUALITY_GATE_SELFTEST}" >&2; exit 2 ;;
   esac
   finish
@@ -700,7 +747,7 @@ if [[ "$RUN_E2E" -eq 1 ]]; then
   if scope_skips e2e; then scope_skip "e2e (playwright)"
   elif ! gate_tool_playwright_chromium_present; then
     skip_unverified "e2e (playwright)" "playwright chromium not installed (npx playwright install chromium)"
-  else step "e2e (playwright)" npm run --silent test:e2e; fi
+  else step "e2e (playwright)" run_e2e_counting_flaky npm run --silent test:e2e; fi
 fi
 
 if [[ "$RUN_SECRETS" -eq 1 ]]; then
