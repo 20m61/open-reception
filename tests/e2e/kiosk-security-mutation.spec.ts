@@ -1,0 +1,165 @@
+import { test, expect, type Page } from "@playwright/test";
+import { loginAsAdmin } from "./helpers";
+
+/**
+ * **グローバルなセキュリティ設定（PIN の値・pinRequired・緊急停止）を実際に書き換える** E2E
+ * (issue #23 / #244 / #1021 を `kiosk-access.spec.ts` から切り出した, #1161)。
+ *
+ * 🔴 **専用の終端 project `security-settings-mutation` で単独に走る。** 同居者は 0。
+ *
+ * - `test.describe.configure({ mode: "serial" })` は**このファイルの中**の順序を縛るだけで、
+ *   同じ project の**別ファイル**との並行は止まらない（`fullyParallel` は config 全体に効く）。
+ *   以前は既定 project `chromium-ipad` に居たので、PIN で authorize する spec が 1 本でも
+ *   足された瞬間にそれが flaky になり、`retries` が吸収して緑のまま見えなくなる —— #787 と同じ型。
+ * - 設定の保存は版付き (#1158)。ここで版が進むと、並行して `rev` を読んでいた別の書き手が
+ *   409 になる。**緊急停止のトグルも版を進める**ので、書き込む側は全部ここへ集める。
+ * - 🔴 **`flow-mutation-kiosk` へ相乗りさせない**（playwright.config.ts の
+ *   STAFF_AVAILABILITY_MUTATING_SPECS の注記、#787）。
+ *
+ * 読むだけのテスト（未エンロール案内・pinRequired=false での 403 など）は既定 project の
+ * `kiosk-access.spec.ts` に残る。このファイルは既定 project が全部終わった後に走るので、
+ * 読む側が書き換え途中の値を観測することもない。
+ */
+test.describe.configure({ mode: "serial" });
+
+/**
+ * 管理画面と同じく、GET で読んだ版（`rev`）を付けて設定を保存する (#1158)。
+ * 版なしで受け付けるのは緊急停止のトグルだけで、それ以外は 428 になる。
+ */
+async function putSecurity(page: Page, data: Record<string, unknown>) {
+  const current = (await (await page.request.get("/api/admin/security")).json()) as { rev: number };
+  return page.request.put("/api/admin/security", { data: { rev: current.rev, ...data } });
+}
+
+/**
+ * 🔴 **後始末は `test.afterEach`（`finally` ではない）、そして応答を見る (#1161 AC3)。**
+ *
+ * `.claude/rules/opus5-autonomous-loop.md` の実測: timeout でページが閉じられると
+ * `finally` の中の `await` は**即 reject し、復元されないまま run の残り全部が汚染される**。
+ * 応答を見ないと復元の失敗が**沈黙**する。
+ *
+ * - テスト本体がどこで止まっても復元できるよう、**ここで改めて admin にログインする**
+ *   （Playwright は test ごとに新しい context なので、本体のログインに頼ると
+ *   ログイン前に落ちた回で 401 になり、復元経路が検証されない）。
+ * - 🔴 **完全には元に戻らない**（#1021 レビュー 3 周目 MINOR 8）。`pinSetByOperator` を
+ *   false へ戻す API 経路が無いため、既定値 `0000` を入れ直すことで
+ *   「運用者が決めていない」状態へは戻る（＝`pinConfigured` は false に戻る）。
+ */
+test.afterEach(async ({ page }) => {
+  await loginAsAdmin(page);
+  const res = await putSecurity(page, { pin: "0000", pinRequired: false });
+  expect(
+    res.ok(),
+    `PIN / pinRequired の復元に失敗した（以降の spec が汚染される）: ${res.status()}`,
+  ).toBeTruthy();
+});
+
+test("pinRequired=true では正しい PIN の authorize がセッションを発行する（実 cookie 往復, #23/#244）", async ({
+  page,
+}) => {
+  await loginAsAdmin(page);
+  // グローバル設定を一時的に PIN 必須へ（戻すのは afterEach）。
+  const put = await putSecurity(page, { pinRequired: true });
+  expect(put.ok()).toBeTruthy();
+  // 既定 PIN 0000 で許可 → Set-Cookie。session-status が同 cookie を読み authorized=true を返す
+  // （authorize→cookie→再リクエストの実 HTTP 往復を検証）。
+  const auth = await page.request.post("/api/kiosk/authorize", {
+    data: { pin: "0000", kioskId: "kiosk-dev" },
+  });
+  expect(auth.ok()).toBeTruthy();
+
+  const status = await page.request.get("/api/kiosk/session-status");
+  const body = (await status.json()) as { authorized: boolean };
+  expect(body.authorized).toBe(true);
+});
+
+/**
+ * 🔴 **管理画面で決めた PIN が、端末の authorize まで通しで効く (#1021 AC3)。**
+ *
+ * unit は「ストアへ保存 → 照合」までしか見ていない。**PIN がハッシュで保存されるように
+ * なった**ので、管理 API（PUT）と端末 API（POST authorize）が**同じ解釈**を持っている
+ * ことを HTTP 越しに確かめる —— 片方だけが旧形式を知っている状態は、
+ * `pinRequired: true` のサイトを**丸ごと締め出す**形で表面化する。
+ *
+ * 🔴 **グローバルな PIN の値そのもの**を書き換える（#1161 の直接の対象）。後始末は上の afterEach。
+ */
+test.describe("管理画面で決めた PIN (#1021)", () => {
+  test("🔴 管理画面で決めた PIN で authorize できる（ハッシュ保存の通し確認, #1021）", async ({
+    page,
+  }) => {
+    await loginAsAdmin(page);
+    const res = await putSecurity(page, { pinRequired: true, pin: "4821" });
+    expect(res.ok()).toBeTruthy();
+    // 🔴 応答に PIN の値（平文もハッシュも）が出ていないこと。
+    const put = await res.text();
+    expect(put).not.toContain("4821");
+    expect(put).not.toContain("pbkdf2");
+    expect(JSON.parse(put)).toMatchObject({ pinConfigured: true });
+    // 決めた PIN では通る（後始末は afterEach が持つ）。
+    const ok = await page.request.post("/api/kiosk/authorize", {
+      data: { pin: "4821", kioskId: "kiosk-dev" },
+    });
+    expect(ok.ok()).toBeTruthy();
+    const status = await page.request.get("/api/kiosk/session-status");
+    expect(((await status.json()) as { authorized: boolean }).authorized).toBe(
+      true,
+    );
+  });
+
+  /**
+   * 🔴 **下界: 決めた PIN 以外は通らない（上のテストが「何でも通る」世界でも満たせないように）。**
+   */
+  test("🔴 管理画面で決めた PIN と違う入力は authorize できない（#1021）", async ({
+    page,
+  }) => {
+    await loginAsAdmin(page);
+    const put = await putSecurity(page, { pinRequired: true, pin: "4821" });
+    expect(put.ok()).toBeTruthy();
+    const ng = await page.request.post("/api/kiosk/authorize", {
+      data: { pin: "0000", kioskId: "kiosk-dev" },
+    });
+    expect(ng.ok()).toBeFalsy();
+    // 🔴 PIN を送らない要求も通らない（レビュー 1 周目 BLOCKER の通し確認）。
+    const empty = await page.request.post("/api/kiosk/authorize", {
+      data: { kioskId: "kiosk-dev" },
+    });
+    expect(empty.ok()).toBeFalsy();
+    // 🔴 **下界 (#1021 AC4)。** 失敗した直後でも、**予算内なら正しい PIN で通る**。
+    //    上の 2 本だけだと「全部拒否」でも満たせてしまう —— AC4 の試行回数制限が
+    //    正当な来訪者を閉め出していないことを HTTP 越しに固定する。
+    //
+    // 🔴 **副作用として共有状態を戻している。** 予算の鍵は**サイト全体**なので、
+    //    失敗を残したまま抜けると**後続の authorize が 429 になりうる**
+    //    （成功は失敗数を捨てるので、ここで戻る）。#1161 と同じ「同居者との共有状態」の型。
+    const recovered = await page.request.post("/api/kiosk/authorize", {
+      data: { pin: "4821", kioskId: "kiosk-dev" },
+    });
+    expect(
+      recovered.ok(),
+      "失敗の直後に正しい PIN が通らない（AC4 が正当な来訪者を閉め出している）",
+    ).toBeTruthy();
+  });
+});
+
+test("管理者はセキュリティ設定を取得・更新できる（PIN は無効化したまま）", async ({
+  page,
+}) => {
+  await loginAsAdmin(page);
+  const get = await page.request.get("/api/admin/security");
+  expect(get.ok()).toBeTruthy();
+
+  const put = await putSecurity(page, { pinRequired: false, ipAllowlist: [] });
+  const body = (await put.json()) as { pinRequired: boolean };
+  expect(body.pinRequired).toBe(false);
+});
+
+test("緊急停止 API は emergencyStop を返す（false のまま）", async ({
+  page,
+}) => {
+  await loginAsAdmin(page);
+  const res = await page.request.put("/api/admin/security", {
+    data: { emergencyStop: false },
+  });
+  const body = (await res.json()) as { emergencyStop: boolean };
+  expect(body.emergencyStop).toBe(false);
+});

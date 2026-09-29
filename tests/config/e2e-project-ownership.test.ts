@@ -1,9 +1,11 @@
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { makeTempDir } from '../helpers/temp';
 import {
   collectOwnershipViolations,
+  collectRestoreShapeViolations,
+  collectSoloProjectViolations,
   isCrossBrowserReplicaProject,
   isPlatformSpec,
   isPlaywrightDiscoveredTestFile,
@@ -12,6 +14,8 @@ import {
   patternMatchesSpec,
   playwrightStyleFilePath,
   projectOwnsSpec,
+  SOLO_TERMINAL_PROJECTS,
+  writesSecuritySettings,
   type E2eProjectSlice,
 } from './e2e-project-ownership';
 
@@ -23,12 +27,20 @@ const ISOLATED_SPEC = 'kiosk-flow-integration.spec.ts';
 const DEFAULT_SPEC = 'kiosk-touch-first.spec.ts';
 const PLATFORM_SPEC = 'platform-area-switch.spec.ts';
 
+const SECURITY_MUTATION_SPEC = 'kiosk-security-mutation.spec.ts';
+
 function cloneProjects(projects: readonly E2eProjectSlice[]): E2eProjectSlice[] {
   return projects.map((p) => ({
     name: p.name,
     testMatch: p.testMatch,
     testIgnore: Array.isArray(p.testIgnore) ? [...p.testIgnore] : p.testIgnore,
+    dependencies: p.dependencies ? [...p.dependencies] : undefined,
   }));
+}
+
+async function loadProjects(): Promise<E2eProjectSlice[]> {
+  const config = (await import('../../playwright.config')).default;
+  return cloneProjects((config.projects ?? []) as E2eProjectSlice[]);
 }
 
 describe('e2e-project-ownership (純関数)', () => {
@@ -188,4 +200,115 @@ describe('playwright.config.ts の project 所有 (#818)', () => {
     const owners = owningProjectNames(ISOLATED_SPEC, projects);
     expect(owners, `載らないはずが ${owners.join(',')} に載った`).toEqual([]);
   }, IMPORT_TIMEOUT_MS);
+});
+
+/**
+ * 🔴 **終端 project は同居者 0 (#787 / #1161)。** 「1 つの project にだけ載る」(#818) だけでは、
+ * 隔離先の project に**別の spec を相乗りさせる**変更も、**依存を外して並行させる**変更も通る。
+ */
+describe('終端 project の同居者 0 (#1161)', () => {
+  it('終端 project はそれぞれ spec を 1 本だけ持ち、他の project と並行しない', async () => {
+    const projects = await loadProjects();
+    const specs = listE2eSpecRelPaths(E2E_DIR);
+    const violations = collectSoloProjectViolations(specs, projects);
+    expect(violations, violations.join('\n')).toEqual([]);
+  }, IMPORT_TIMEOUT_MS);
+
+  it('webkit の複製 project を含めても並行しない（CI / E2E_WEBKIT=1 の形）', () => {
+    const projects: E2eProjectSlice[] = [
+      { name: 'chromium-ipad', testIgnore: [/solo\.spec\.ts$/] },
+      { name: 'ipad-landscape', testIgnore: [/solo\.spec\.ts$/] },
+      { name: 'solo', testMatch: /solo\.spec\.ts$/, dependencies: ['chromium-ipad', 'ipad-landscape'] },
+      { name: 'platform-developer', testMatch: /platform-/ },
+    ];
+    expect(collectSoloProjectViolations(['solo.spec.ts', 'a.spec.ts'], projects, ['solo'])).toEqual([]);
+    // 依存から外すと、複製 project と並行する。
+    projects[2]!.dependencies = ['chromium-ipad'];
+    expect(collectSoloProjectViolations(['solo.spec.ts', 'a.spec.ts'], projects, ['solo'])).toEqual([
+      'solo: ipad-landscape と依存で前後が決まっておらず並行しうる',
+    ]);
+  });
+
+  it('PIN を書き換える spec は security-settings-mutation だけが所有する', async () => {
+    const projects = (await loadProjects()).filter((p) => !isCrossBrowserReplicaProject(p.name));
+    expect(owningProjectNames(SECURITY_MUTATION_SPEC, projects)).toEqual(['security-settings-mutation']);
+  }, IMPORT_TIMEOUT_MS);
+
+  it('セキュリティ設定へ実際に書き込む spec は security-settings-mutation にしか居ない', async () => {
+    const projects = (await loadProjects()).filter((p) => !isCrossBrowserReplicaProject(p.name));
+    const writers = listE2eSpecRelPaths(E2E_DIR).filter((spec) =>
+      writesSecuritySettings(readFileSync(join(E2E_DIR, spec), 'utf8')),
+    );
+    expect(writers, '書き手が 1 本も見つからない（検出が壊れている）').toContain(SECURITY_MUTATION_SPEC);
+    const misplaced = writers
+      .map((spec) => ({ spec, owners: owningProjectNames(spec, projects) }))
+      .filter(({ owners }) => owners.length !== 1 || owners[0] !== 'security-settings-mutation')
+      .map(({ spec, owners }) => `${spec}: ${owners.join(',') || 'どこにも載っていない'}`);
+    expect(misplaced, misplaced.join('\n')).toEqual([]);
+  }, IMPORT_TIMEOUT_MS);
+
+  it('セキュリティ設定を書き換える spec は afterEach で戻し、その応答を検査する（AC3）', () => {
+    const writers = listE2eSpecRelPaths(E2E_DIR).filter((spec) =>
+      writesSecuritySettings(readFileSync(join(E2E_DIR, spec), 'utf8')),
+    );
+    expect(writers.length).toBeGreaterThan(0);
+    for (const spec of writers) {
+      const violations = collectRestoreShapeViolations(readFileSync(join(E2E_DIR, spec), 'utf8'));
+      expect(violations, `${spec}: ${violations.join(' / ')}`).toEqual([]);
+    }
+  });
+
+  it('後始末の形の検査は finally・afterEach 無し・応答を見ない afterEach を拾う', () => {
+    const ok = 'test.afterEach(async ({ page }) => {\n  const res = await put();\n  expect(res.ok(), "x").toBeTruthy();\n});\n';
+    expect(collectRestoreShapeViolations(ok)).toEqual([]);
+    expect(collectRestoreShapeViolations('test.afterEach(async () => {\n  await put();\n});\n')).toEqual([
+      'afterEach が復元の応答を expect していない',
+    ]);
+    expect(collectRestoreShapeViolations(`${ok}try { a(); } finally { await put(); }`)).toEqual([
+      'finally で後始末している',
+    ]);
+    expect(collectRestoreShapeViolations('test("x", async () => {});')).toEqual(['test.afterEach が無い']);
+    // afterEach の外の expect(res.ok()) では満たせない。
+    expect(
+      collectRestoreShapeViolations('test.afterEach(async () => {\n  await put();\n});\nexpect(res.ok()).toBeTruthy();'),
+    ).toEqual(['afterEach が復元の応答を expect していない']);
+  });
+
+  it('書き込みの検出は page.route の注入（admin-write-failure の形）を拾わない', () => {
+    expect(writesSecuritySettings(`await page.request.put("/api/admin/security", { data })`)).toBe(true);
+    expect(writesSecuritySettings(`page.request.put('/api/admin/security', {`)).toBe(true);
+    expect(writesSecuritySettings('await page.route(\'**/api/admin/security**\', (route) => {')).toBe(false);
+    expect(writesSecuritySettings(`await page.request.get("/api/admin/security")`)).toBe(false);
+    expect(writesSecuritySettings(`await page.request.put("/api/admin/security-log")`)).toBe(false);
+  });
+
+  it('終端 project に別の spec を相乗りさせると落ちる（#787 の形）', async () => {
+    const projects = await loadProjects();
+    const target = projects.find((p) => p.name === 'security-settings-mutation');
+    expect(target, 'security-settings-mutation project が無い').toBeDefined();
+    target!.testMatch = [target!.testMatch, /kiosk-flow-integration\.spec\.ts$/];
+    const violations = collectSoloProjectViolations(listE2eSpecRelPaths(E2E_DIR), projects);
+    expect(violations.some((v) => v.startsWith('security-settings-mutation: spec は 1 本だけのはずが 2 本'))).toBe(
+      true,
+    );
+  }, IMPORT_TIMEOUT_MS);
+
+  it('終端 project の依存を外すと並行しうるとして落ちる', async () => {
+    const projects = await loadProjects();
+    const target = projects.find((p) => p.name === 'security-settings-mutation');
+    target!.dependencies = ['chromium-ipad'];
+    const violations = collectSoloProjectViolations(listE2eSpecRelPaths(E2E_DIR), projects);
+    expect(violations).toEqual(
+      expect.arrayContaining([
+        'security-settings-mutation: flow-mutation と依存で前後が決まっておらず並行しうる',
+        'security-settings-mutation: staff-availability-mutation と依存で前後が決まっておらず並行しうる',
+      ]),
+    );
+  }, IMPORT_TIMEOUT_MS);
+
+  it('SOLO_TERMINAL_PROJECTS は既存の終端 project を落とさない', () => {
+    expect(SOLO_TERMINAL_PROJECTS).toEqual(
+      expect.arrayContaining(['flow-mutation-kiosk', 'staff-availability-mutation', 'security-settings-mutation']),
+    );
+  });
 });
