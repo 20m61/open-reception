@@ -21,6 +21,7 @@ import {
   stripBashCommentsAndStrings,
   parseAcceptedFlags,
 } from '../../src/domain/governance/bash-source';
+import { envWithoutRetiredDeployVars } from '../helpers/deploy-env';
 
 const SCRIPT = resolve(process.cwd(), 'scripts/aws-issue-credentials.sh');
 const source = readFileSync(SCRIPT, 'utf8');
@@ -44,7 +45,7 @@ function run(args: ReadonlyArray<string>, env: Record<string, string> = {}) {
     const stdout = execFileSync('bash', [SCRIPT, ...args], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ...env },
+      env: { ...envWithoutRetiredDeployVars(), ...env },
     });
     return { status: 0, stdout, stderr: '' };
   } catch (e) {
@@ -292,7 +293,7 @@ describe('デプロイ context もクリップボードへ載せる (#989)', () 
       const result = spawnSync('npx', ['--no-install', 'tsx', cli, ...args], {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, ...NO_CONTEXT_FILE, ...CONTEXT_ENV },
+        env: { ...envWithoutRetiredDeployVars(), ...NO_CONTEXT_FILE, ...CONTEXT_ENV },
       });
       expect(result.status, args.join(' ')).toBe(2);
       expect(result.stdout, args.join(' ')).toBe('');
