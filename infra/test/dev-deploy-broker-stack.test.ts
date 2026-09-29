@@ -9,7 +9,7 @@ import {
 const synth = () => {
   const app = new cdk.App();
   const stack = new DevDeployBrokerStack(app, 'TestDevDeployBroker', {
-    env: { account: '123456789012', region: 'ap-northeast-1' },
+    env: { account: '822063948773', region: 'ap-northeast-1' },
   });
   return Template.fromStack(stack);
 };
@@ -130,7 +130,8 @@ describe('DevDeployBrokerStack (#1146 Phase 1)', () => {
   it('keeps the trusted broker unarmed in Phase 1', () => {
     const docs = policyDocumentsForRole(template, 'OpenReceptionTrustedDevDeployBrokerRole');
     expect(JSON.stringify(docs)).not.toContain('sts:AssumeRole');
-    expect(JSON.stringify(docs)).not.toContain('cloudformation:');
+    // The only CloudFormation action is the S10a stability read (no ChangeSet, no mutation).
+    expect([...new Set(JSON.stringify(docs).match(/"cloudformation:[A-Za-z*]+"/g) ?? [])]).toEqual(['"cloudformation:DescribeStacks"']);
   });
 
   it('keeps source-provider credentials in the pipeline plane, not CodeBuild roles', () => {
@@ -163,7 +164,7 @@ describe('DevDeployBrokerStack (#1146 Phase 1)', () => {
     expect(buildSpec).toContain('OR_TRUSTED_POLICY_BUCKET');
     expect(buildSpec).toContain('OR_TRUSTED_POLICY_KEY');
     expect(buildSpec).toContain('/tmp/open-reception-trusted-policy.mjs');
-    expect(buildSpec).toContain('--assembly infra/cdk.out');
+    expect(buildSpec).toContain('--assembly /tmp/open-reception-broker-work/validated/infra/cdk.out');
     expect(buildSpec).toContain('trusted-policy-result.json');
     expect(buildSpec).not.toContain('npm ');
     expect(buildSpec).not.toContain('scripts/');
@@ -176,6 +177,6 @@ describe('DevDeployBrokerStack (#1146 Phase 1)', () => {
     expect(serialized).toContain('s3:GetObject');
     expect(serialized).not.toContain('s3:PutObject');
     expect(serialized).not.toContain('sts:AssumeRole');
-    expect(serialized).not.toContain('cloudformation:');
+    expect([...new Set(serialized.match(/"cloudformation:[A-Za-z*]+"/g) ?? [])]).toEqual(['"cloudformation:DescribeStacks"']);
   });
 });
