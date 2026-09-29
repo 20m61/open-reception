@@ -22,6 +22,7 @@ describe('asSecurityView (#973)', () => {
     pinConfigured: true,
     emergencyStop: false,
     storedPinUnreadable: false,
+    unreadableSettings: [],
   };
 
   it('正しい形はそのまま通る', () => {
@@ -111,4 +112,29 @@ describe('asSecurityView (#973)', () => {
       storedPinUnreadable: true,
     });
   });
+
+  /**
+   * 🔴 **`unreadableSettings` (#1172 AC4) は欠けても通すが、形が違えば通さない。**
+   * `storedPinUnreadable` と同じ 3 方向: 中身はそのまま届く・欠けは空・型違いは壊れた応答。
+   * 🔴 **要素 1 つだけ違う入力**を置く（全要素が違う入力だと `every` を `some` へ替える変異が生存する）。
+   */
+  it('🔴 unreadableSettings: 中身はそのまま届く', () => {
+    expect(asSecurityView({ ...valid, unreadableSettings: ['ipAllowlist', 'emergencyStop'] })?.unreadableSettings).toEqual([
+      'ipAllowlist',
+      'emergencyStop',
+    ]);
+  });
+
+  it('🔴 unreadableSettings: 欠けた応答は空として読む（#1172 以前のサーバと同じ画面）', () => {
+    const legacy: Record<string, unknown> = { ...valid };
+    delete legacy.unreadableSettings;
+    expect(asSecurityView(legacy)).toEqual({ ...valid, unreadableSettings: [] });
+  });
+
+  it.each<unknown>(['ipAllowlist', null, true, ['ipAllowlist', 1]])(
+    '🔴 unreadableSettings の形が違えば通さない: %s',
+    (wrong) => {
+      expect(asSecurityView({ ...valid, unreadableSettings: wrong })).toBeNull();
+    },
+  );
 });

@@ -414,15 +414,18 @@ describe('security-store (#23 #29)', () => {
   /**
    * 🔴 **MINOR 6: `ipAllowlist` が配列でないレコードで 500 にしない。**
    * `pin` について同じ理屈を書いておきながら、同じ式の隣が素通りだった。
+   * 🔴 **倒す先は `[]`（制限なし）ではなく `null`（全拒否）(#1172 AC1)。** 以前はここで `[]` を
+   *    期待しており、それが「壊れた許可リストは全 IP 許可」という fail-open を固定していた。
+   *    閉じる側の網羅は `security-store.settings-unreadable.test.ts`。
    */
-  it('🔴 ipAllowlist が配列でない旧レコードでも落ちない', async () => {
+  it('🔴 ipAllowlist が配列でない旧レコードでも落ちず、全拒否（null）として読む', async () => {
     await getBackend().singleton('security', { default: () => ({}) }).put({
       pinRequired: false,
       pin: BUILTIN_DEFAULT_PIN,
       ipAllowlist: undefined,
       emergencyStop: false,
     });
-    expect((await getSecuritySettings()).ipAllowlist).toEqual([]);
+    expect((await getSecuritySettings()).ipAllowlist).toBeNull();
   });
 
   it('IP 許可リストを更新できる', async () => {

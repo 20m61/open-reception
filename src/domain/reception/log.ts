@@ -258,6 +258,10 @@ export type AuditAction =
   // (#1160・fail closed)。事実と時刻と締め出しの有無だけ（値・形は残さない）。
   // プロセスにつき 1 本。actor は 'system'。
   | 'security.pin_credential_unreadable'
+  // 保存されたセキュリティ設定（IP 許可リスト・緊急停止・PIN 必須）の型が読めず、閉じる側
+  // （全 IP 拒否・停止・PIN 必須）へ倒している (#1172・fail closed)。metadata はどのフィールドか
+  // （`fields`）と `effect=fail_closed` だけ（値・型は残さない）。プロセスにつき 1 本。actor は 'system'。
+  | 'security.settings_unreadable'
   | 'voice.updated'
   | 'branding.updated'
   | 'asset.created'

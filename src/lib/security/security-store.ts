@@ -10,7 +10,11 @@ import {
   isUsablePinCredential,
   verifyPinCredential,
 } from '@/domain/security/pin';
-import type { SecuritySettings } from '@/domain/security/types';
+import type {
+  EffectiveSecuritySettings,
+  SecuritySettings,
+  UnreadableSecurityField,
+} from '@/domain/security/types';
 import { getBackend } from '@/lib/data';
 import { appendAuditLog } from '@/lib/data-stores/reception-log-store';
 
@@ -99,8 +103,69 @@ async function reportUnreadablePin(lockout: boolean): Promise<void> {
   }
 }
 
+/**
+ * 読めないセキュリティ設定（`ipAllowlist` / `emergencyStop` / `pinRequired`）を見つけて
+ * 閉じる側へ倒したことを、**このプロセスで既に監査へ出したか** (#1172 AC4)。
+ *
+ * 🔴 **`unreadablePinReported` と同じラッチ・同じ理由**（上の doc を見ること）。`current()` は
+ *    未認証の経路から毎回呼ばれるので、読み出しごとに書くと外部から監査の書き込み量を
+ *    制御できる。プロセスにつき 1 本、書き込みの前に立て、失敗しても再試行しない。
+ *    上界は要求数ではなく実行環境の数である（Lambda）。
+ *
+ * 射程の限界（PIN と同じ）: 同じプロセスの中で、最初に出した後に**別のフィールドが**壊れても
+ *    2 本目は出ない（管理画面の `unreadableSettings` は読み出しごとに判定するので、そちらには出る）。
+ */
+let unreadableSettingsReported = false;
+
+async function reportUnreadableSettings(fields: readonly UnreadableSecurityField[]): Promise<void> {
+  if (unreadableSettingsReported) return;
+  unreadableSettingsReported = true;
+  try {
+    // 🔴 **値は載せない**（`rules/pii-secret-minimization.md`）。載せるのは**どのフィールドを
+    //    閉じる側へ倒したか**（静的な列挙値）だけで、保存されていた値・型は出さない。
+    //    🔴 `appendAuditLog` を直接呼ぶので `sanitizeAuditMetadata` を通らない。metadata へ
+    //    保存値由来の文字列を足さないこと。キーに `pin` / `credential` を含めない（#1173）。
+    await appendAuditLog({
+      action: 'security.settings_unreadable',
+      actor: 'system',
+      targetType: 'security',
+      metadata: { reason: 'stored_record_unreadable', fields: fields.join(','), effect: 'fail_closed' },
+    });
+  } catch (err) {
+    // 監査の失敗で判定を変えない（どのみち閉じる側。throw すると未認証経路が 500 になるだけ）。
+    console.error('[security] failed to record audit', {
+      action: 'security.settings_unreadable',
+      error: err instanceof Error ? err.name : 'unknown',
+    });
+  }
+}
+
+/**
+ * 保存レコードのうち、**型が違って読めない**セキュリティ設定を列挙する (#1172)。順序は固定。
+ *
+ * 🔴 **読めないものは閉じる側へ倒す（owner 判断 2026-09-29。3 つとも fail closed）。**
+ *    - `ipAllowlist` が配列でない → 全 IP 拒否（`null`。空配列 `[]` ＝制限なし とは区別する）
+ *    - `emergencyStop` が boolean でない（欠落を含む） → 停止
+ *    - `pinRequired` が boolean でない（欠落を含む） → PIN 必須
+ *    `'false'` のような文字列も「読めない」に入る（truthy で読むと意図と逆になるので、
+ *    綴りから推測しない）。
+ *
+ * `defaults()` は必ず読める値を返すので、ここで何か出るのは**保存レコード**だけである。
+ */
+function unreadableFieldsOf(s: SecuritySettings): UnreadableSecurityField[] {
+  const fields: UnreadableSecurityField[] = [];
+  if (!Array.isArray(s.ipAllowlist)) fields.push('ipAllowlist');
+  if (typeof s.emergencyStop !== 'boolean') fields.push('emergencyStop');
+  if (typeof s.pinRequired !== 'boolean') fields.push('pinRequired');
+  return fields;
+}
+
 type SecurityRead = {
-  settings: SecuritySettings;
+  /**
+   * 判定に使う設定。読めないフィールドは閉じる側へ倒してあり、どれを倒したかは
+   * `settings.unreadableFields` が持つ (#1172)。
+   */
+  settings: EffectiveSecuritySettings;
   /**
    * 保存レコードの PIN を資格情報として読めず、**PIN 認可を誰にも通さない状態**か (#1160)。
    * 管理画面が「保存されている PIN を読めません」を出すための事実。値は含まない。
@@ -108,12 +173,33 @@ type SecurityRead = {
   storedPinUnreadable: boolean;
 };
 
-async function current(): Promise<SecuritySettings> {
+async function current(): Promise<EffectiveSecuritySettings> {
   return (await read()).settings;
 }
 
 async function read(): Promise<SecurityRead> {
-  const s = (await security().get()) ?? defaults();
+  return (await readRecord()).read;
+}
+
+/**
+ * 保存レコード（無ければ `defaults()`）を読み、判定に使える形へ解釈して、必要なら監査に出す。
+ * `record` は**生の記録**で、書き戻し（`attemptUpdate`）だけが使う。
+ */
+async function readRecord(): Promise<{ record: SecuritySettings; read: SecurityRead }> {
+  const record = (await security().get()) ?? defaults();
+  const result = interpret(record);
+  // 🔴 **拒否側へ倒した事実を観測できるようにする (#1160 AC1 / #1172 AC4)。**
+  //    `lockout` は正規化後の `pinRequired`（読めなければ PIN 必須側）で決める ——
+  //    照合（`verifyPin`）と同じ値を見ないと、監査と実際の締め出しが食い違う（#1172 L1）。
+  if (result.storedPinUnreadable) await reportUnreadablePin(result.settings.pinRequired);
+  if (result.settings.unreadableFields.length > 0) {
+    await reportUnreadableSettings(result.settings.unreadableFields);
+  }
+  return { record, read: result };
+}
+
+/** 生の記録を判定に使える形へ解釈する（副作用なし）。 */
+function interpret(s: SecuritySettings): SecurityRead {
   // 🔴 **読めない資格情報は fail closed —— 既定値へ倒さず、誰も通さない (#1160・ユーザー判断)。**
   //
   // 以前（#1021 AC3）は読めない資格情報を「未設定」とみなし、**公開されている組込み既定
@@ -135,16 +221,24 @@ async function read(): Promise<SecurityRead> {
   const usable = isUsablePinCredential(s.pin);
   // 読めない資格情報を「設定済み」と表示しない（表示は `storedPinUnreadable` が別に持つ）。
   const pinSetByOperator = usable ? s.pinSetByOperator : false;
-  // 🔴 **隣のフィールドでも 500 にしない（レビュー 3 周目 MINOR 6）。**
-  const ipAllowlist = Array.isArray(s.ipAllowlist) ? [...s.ipAllowlist] : [];
-  // 🔴 **拒否側へ倒した事実を観測できるようにする (#1160 AC1)。** `pinRequired` なら受付端末は
-  //    どの PIN でも許可されない（締め出し）。管理画面と監査の両方から分かるようにする。
-  //    `defaults()` は必ず読める値を返すので、ここへ来るのは**保存レコード**だけである。
-  if (!usable) await reportUnreadablePin(s.pinRequired === true);
-  return { settings: { ...s, pinSetByOperator, ipAllowlist }, storedPinUnreadable: !usable };
+  // 🔴 **読めない設定は閉じる側へ倒す (#1172。owner 判断で 3 つとも fail closed)。**
+  //    以前は配列でない `ipAllowlist` を `[]` に正規化していた（レビュー 3 周目 MINOR 6 で
+  //    「500 にしない」ために入れた）。`[]` は**制限なし**なので、IP 許可リストを設定していた
+  //    サイトで記録が壊れると無言で全 IP 許可になっていた。500 にしないことは保ったまま、
+  //    倒す先を `null`（全拒否）へ替える。**正しい形の `[]` の意味（制限なし）は変えない。**
+  //    `emergencyStop` / `pinRequired` は以前は検証せず truthy で読まれていたので、欠落した
+  //    緊急停止は「稼働」、`'false'` の PIN 必須は「必須」と、壊れ方次第でどちらにも倒れていた。
+  const unreadableFields = unreadableFieldsOf(s);
+  const ipAllowlist = Array.isArray(s.ipAllowlist) ? [...s.ipAllowlist] : null;
+  const emergencyStop = typeof s.emergencyStop === 'boolean' ? s.emergencyStop : true;
+  const pinRequired = typeof s.pinRequired === 'boolean' ? s.pinRequired : true;
+  return {
+    settings: { ...s, pinSetByOperator, ipAllowlist, emergencyStop, pinRequired, unreadableFields },
+    storedPinUnreadable: !usable,
+  };
 }
 
-export async function getSecuritySettings(): Promise<SecuritySettings> {
+export async function getSecuritySettings(): Promise<EffectiveSecuritySettings> {
   return current();
 }
 
@@ -253,7 +347,7 @@ function expectedRevisionOf(patch: unknown): number | undefined {
  * - それ以外の版なしの patch は `SecuritySettingsPreconditionRequiredError`（428）。
  *   以前は受け付けて後勝ちにしていた（独立レビュー 1 周目 MAJOR・ユーザー判断で必須化）
  */
-export async function updateSecuritySettings(patch: unknown): Promise<SecuritySettings> {
+export async function updateSecuritySettings(patch: unknown): Promise<EffectiveSecuritySettings> {
   const expectedRev = expectedRevisionOf(patch);
   if (expectedRev === undefined && !isEmergencyToggleOnly(patch)) {
     throw new SecuritySettingsPreconditionRequiredError();
@@ -276,8 +370,20 @@ export async function updateSecuritySettings(patch: unknown): Promise<SecuritySe
 async function attemptUpdate(
   patch: unknown,
   expectedRev: number | undefined,
-): Promise<SecuritySettings | null> {
-  const settings = await current();
+): Promise<EffectiveSecuritySettings | null> {
+  const { record, read: effective } = await readRecord();
+  /*
+    🔴 **書き戻すのは生の記録で、判定用の解釈ではない (#1172)。**
+
+    読めない `ipAllowlist` / `emergencyStop` / `pinRequired` を解釈（`null`・`true`）のまま
+    書くと、無関係な更新（緊急停止のトグル等）の 1 回で記録が**正しい形に化けて**
+    「読めない」という観測が消える —— `null` は書けないので `[]`（制限なし）に化ければ
+    **開く側**である。#1160 が PIN について決めたのと同じく、patch が**そのフィールドを
+    明示的に書いたときだけ**直す（運用者が設定し直すのが復旧経路）。それ以外は生のまま
+    書き戻し、閉じる側の判定と観測を保つ。
+    `pinSetByOperator` だけは解釈側を採る（#1160: 読めない資格情報を「設定済み」と書かない）。
+  */
+  const settings: SecuritySettings = { ...record, pinSetByOperator: effective.settings.pinSetByOperator };
   /** 読んだ記録の版の**生の値**。条件式はこれと比べる（形が壊れていても一致で判定できる）。 */
   const storedRev = settings.rev;
   const rev = revisionOf(storedRev);
@@ -354,7 +460,8 @@ async function attemptUpdate(
   // 版が無い（旧レコード・未作成）なら「版が無いこと」を条件にする（`putIf` の契約）。
   const written = await security().putIf(settings, { rev: storedRev });
   if (!written) return null;
-  return { ...settings, ipAllowlist: [...settings.ipAllowlist] };
+  // 書いた記録を**読み出しと同じ解釈**で返す（読めないまま残したフィールドは閉じる側・観測つき）。
+  return interpret(settings).settings;
 }
 
 /**
@@ -368,11 +475,20 @@ async function attemptUpdate(
  */
 export async function verifyPin(pin: string): Promise<boolean> {
   const settings = await current();
+  // 🔴 **`pinRequired` を読めない記録では、どの PIN も通さない (#1172)。**
+  //    「PIN 必須」へ倒すのは受付端末の側（許可を求める）では閉じる向きだが、authorize の
+  //    側では**逆**になる —— `pinRequired: false` のサイトでは PIN による自己許可そのものが
+  //    無効（route が 403）なので、壊れた記録を「必須」と読んで照合を通すと、そのサイトで
+  //    閉じていた経路が開く（PIN が公開既定 `0000` のままなら誰でも 30 日セッションを取れる）。
+  //    壊れた記録は、そのフィールドが取りうる**どの正しい値よりも開かない**ように倒す。
+  //    照合側で閉じるので、呼び出し順（route の 403 が先か）に安全性を依存させない（#1172 M3）。
+  if (settings.unreadableFields.includes('pinRequired')) return false;
   return !settings.pinRequired || (await verifyPinCredential(settings.pin, pin));
 }
 
 /** テスト用: 既定へ戻す。 */
 export async function __resetSecurity(): Promise<void> {
   unreadablePinReported = false;
+  unreadableSettingsReported = false;
   await security().reset();
 }
