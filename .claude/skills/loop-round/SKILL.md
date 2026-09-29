@@ -1,6 +1,6 @@
 ---
 name: loop-round
-description: Issue を 1 周する（AC マッピング → ブランチ → TDD → 品質ゲート → PR → マージ → 後始末）。routine セッション・claude.ai/code の web セッション・ローカル macOS のどこで走っていても同じ手順で、場所によって変わる部分だけを明示する。Use when starting a loop round on an issue, or when asked to implement/fix an issue end to end.
+description: Issue を 1 周する（AC マッピング → ブランチ → TDD → 品質ゲート → PR → --full の証拠投稿 → owner が merge → 後始末）。routine セッション・claude.ai/code の web セッション・ローカル macOS のどこで走っていても同じ手順で、場所によって変わる部分だけを明示する。Use when starting a loop round on an issue, or when asked to implement/fix an issue end to end.
 ---
 
 # loop-round
@@ -136,7 +136,7 @@ PR は**作成の直後に REST で引き直して確認する**。PR 本文に�
 手順は `docs/cloud-dev-environment.md` §0-B2、PR を少なく・短く保つ規則は `docs/loop-workflow.md` 手順 6。
 
 🔴 **「ブランチが出来た」は「PR が出来た」ではない。** #656 はこれで FAIL の記録を
-5 日間失った。**`worker_status: idle` も「終わった」ではない** —— PR とマージの実物を見る。
+5 日間失った。**`worker_status: idle` も「終わった」ではない** —— PR と証拠コメントの実物を見る（merge は owner）。
 
 ## 7. 後始末とクローズ
 
