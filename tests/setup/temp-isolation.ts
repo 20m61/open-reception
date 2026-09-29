@@ -19,9 +19,12 @@
  *
  * ## 残る面（ここで塞がらないもの）
  *
- * 1. `/tmp` を**絶対パスで直書き**する（`TMPDIR` を経由しない）
- *    → `tests/config/temp-cleanup-guard.test.ts` が静的に見る。逸脱は `// temp-ok: <理由>`
- *      （理由を書かないマーカーは通らない。これも走査が見る）
+ * 1. **絶対パスで直書き**する（`TMPDIR` を経由しない）
+ *    → **同じプロセスの書き込みは実行時に見る (#1154)。** `write-guard.ts` が fs の書き込み
+ *      API を包み、隔離の外枠・リポジトリ以外への書き込みを下の `afterAll` で落とす
+ *      （綴りに依らない。比較の実測は `write-guard.ts` の doc）。
+ *    → **子プロセスの直書き**は見えないので、`tests/config/temp-cleanup-guard.test.ts` の
+ *      静的走査（`'/tmp/'` 綴り）とゲートの件数が受ける。逸脱は `// temp-ok: <理由>`
  * 2. テストが自分で `TMPDIR` を**上書きする**
  *    → **静的には見ない**（綴りを数えることになるため）。上の `afterAll` が
  *      `os.tmpdir() !== fileRoot` を実行時に見て、そのファイルで大声で落とす
@@ -30,10 +33,11 @@
  *    これは `finally` でも防げない（元の教訓の正しい射程）。下の掃き出しと、
  *    ゲートの「一時領域」節（`vitest root N 件`）で受ける。
  */
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll } from 'vitest';
+import { installWriteGuard, RUN_ROOT_ENV, type WriteViolation } from './write-guard';
 
 /** 隔離前の本物の一時領域（`TMPDIR` を書き換える前に採る）。 */
 const REAL_TMP = tmpdir();
@@ -103,6 +107,31 @@ sweepStaleRoots(RUN_ROOT, Date.now());
 const fileRoot = mkdtempSync(`${RUN_ROOT}/`);
 process.env.TMPDIR = fileRoot;
 
+/**
+ * 隔離の外への書き込みを実行時に見る (#1154)。許可するのは**回収される場所**だけ。
+ *
+ * 🔴 **外枠は最も外側の run のものを使う。** 子 vitest（`temp-cleanup-guard.test.ts` の
+ * probe）は親の root の中に自分の `or-vitest` を掘るので、自分の `RUN_ROOT` だけを許すと
+ * **親が渡したパスへの書き込み**（`ISOLATION_PROBE_OUT`）を違反と数える（実測で 1 件の偽陽性）。
+ * env で外枠を子へ継がせる。親の root は親の `afterAll` が回収する。
+ *
+ * リポジトリ（`process.cwd()`）は一時領域ではないので許す。外すと実測で
+ * `tests/hooks/change-budget.test.ts` が落ちる（リポジトリ内へ書いて自分で消すテスト）。
+ */
+const outerRunRoot = (process.env[RUN_ROOT_ENV] ??= RUN_ROOT);
+const writeViolations: WriteViolation[] = [];
+installWriteGuard(
+  [outerRunRoot, process.cwd()].flatMap((root) => {
+    // macOS の `/var` は `/private/var` への symlink なので、実体のパスでも許す。
+    try {
+      return [root, realpathSync(root)];
+    } catch {
+      return [root];
+    }
+  }),
+  writeViolations,
+);
+
 function removeRoot(path: string): void {
   try {
     rmSync(path, { recursive: true, force: true });
@@ -130,6 +159,13 @@ afterAll(() => {
     throw new Error(
       `一時領域の隔離が外れています（#1136）: os.tmpdir() が ${actual} を指しています。` +
         `期待は ${fileRoot} です。テストが process.env.TMPDIR を書き換えたなら、元へ戻してください`,
+    );
+  }
+  if (writeViolations.length > 0) {
+    const listed = [...new Set(writeViolations.map((v) => `  ${v.api} ${v.path}`))].join('\n');
+    throw new Error(
+      `一時領域の隔離の外へ書き込みました（#1154）:\n${listed}\n` +
+        `一時ファイルは os.tmpdir() 経由で作ってください（${fileRoot} はファイル終了時に回収されます）`,
     );
   }
 });
