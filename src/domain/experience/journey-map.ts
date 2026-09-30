@@ -221,6 +221,8 @@ export const NOT_A_TIMELINE_VOCABULARY: Record<string, string> = {
     '見えず、局面も変えない（遅延の切り分けだけに使う運用計測の語彙）',
   CALLING_STAGES: 'contacting の内側の段階（呼出中 → 応答待ち → 長期化）',
   AVATAR_STATES: '各状態の中でのアバターの見え方。状態そのものではない',
+  AVATAR_BEHAVIOR_PHASES:
+    '既存の受付状態と音声状態から純粋導出する VRM 描画ヒント。独立した状態や体験局面ではない',
   CALL_STATUSES: '呼び出し 1 件の進捗。contacting / connected の内側',
   TERMINAL_VOICE_STATES:
     '担当者への外線通話 1 本の終端結果 (#4)。contacting の内側で、来訪者の局面は変えない' +
