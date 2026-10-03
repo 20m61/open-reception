@@ -113,6 +113,9 @@ stack deploy role は、手順 4 で作る broker 専用 bootstrap の cfn-exec 
   - 属性の一覧は `buildGenesisPut` / `buildIssueOverridePut` / `buildOutcomeTransaction`（`failed`）が書く属性と、
     条件式で読む属性である（`infra/broker/sparse-ledger.mjs`）。`successCount`・`lastSuccessAt`・`lastDay`・
     `lastDayAttempts` などは含めないので、attempt を `succeeded` で閉じたり、genesis の累計を書き換えたりはできない。
+  - D-5（2026-10-03）で増えた属性（genesis の `lastAttemptId`・`lastReservedAt`・`lastRevision`・`lastCooldownWaived`、
+    `ATTEMPT#` の `cooldownWaived`・`accessProfile`・`softCeiling`）は **broker の予約だけが書く**。issuer の一覧には足さない
+    （genesis の初期化と close-as-failed はこれらを書かない。`infra/test/sparse-dev-deploy-ledger.test.ts` がこの一覧と突き合わせる）。
   - これは事故を減らす絞り込みで、完全ではない。たとえば `PutItem` で既存の `REV#` を上書きする操作は、条件式を
     IAM では強制できないので残る。ただし、そうして壊れた counter は ledger が `SPARSE_LEDGER_CORRUPT` として止める（fail closed）。
     誰が何を書いたかは、手順 7 の CloudTrail に残る。
@@ -562,6 +565,11 @@ arming の PR（`reserve` / `outcome` を mutation の前後に呼ぶ変更）�
 `ledgerId` は手順 5 の `SparseLedgerId` と同じ値にする。genesis は create-only で、2 回目は失敗する。
 genesis が無いか値が違う間は、broker は `SPARSE_LEDGER_CORRUPT` で止まる（fail closed）。
 
+🔴 **genesis は D-5 の変更（#1153、直前の attempt を指す pointer: `lastAttemptId` ほか）が main に merge された後に書く。**
+D-5 以降の broker は、`totalAttempts > 0` の genesis に pointer が無いと `SPARSE_LEDGER_CORRUPT` で止まる。
+`buildGenesisPut` が書くのは `totalAttempts = 0` で pointer なしの genesis であり、pointer は最初の予約が書く。
+それより前の版の `sparse-ledger.mjs` で genesis を書いて予約まで進めた ledger は、作り直しになる。
+
 repo の root で `npm ci` 済みであること（`@aws-sdk/client-dynamodb` は root の依存）。
 issuer role を引き受けた credential（profile）で、repo の実装（`buildGenesisPut`）を使って書く。
 `AWS_PROFILE` が issuer role を指していることを `aws sts get-caller-identity` で先に確かめる:
@@ -618,6 +626,11 @@ EventBridge 経由の警報は、broker build の停止・timeout・fault であ
 予約された attempt は、成功か失敗が記録されるまで `in_progress` のまま予算を持ち続ける。
 自動では閉じない（仕様）。
 
+🔴 **D-5（2026-10-03）以降、`in_progress` の attempt が 1 件でも残っている間は、project 全体の次の attempt がすべて止まる**
+（revision・アクセス制限の profile・override の有無に関係なく `SPARSE_PREVIOUS_ATTEMPT_UNSETTLED`。override では解除できない）。
+警報（`rule` が `SPARSE_PREVIOUS_ATTEMPT_UNSETTLED`）が来たら、この手順で閉じるまで broker は先に進まない。
+止まっている attempt は genesis の `lastAttemptId` が指すものである（1. の query でも見つかる）。
+
 1. 対象を探す（issuer role、読み取りのみ）:
 
    ```bash
@@ -656,7 +669,9 @@ EventBridge 経由の警報は、broker build の停止・timeout・fault であ
    閉じるのは**記録のため**で、予算は戻らない。
    - その日の attempt 数（`attemptCount`）は変わらない。
    - revision の `unsettledCount` も変わらない。未成功の 1 件として残り、2 件目で `SPARSE_REVISION_REPEATED_FAILURE` になる。
-   - preflight は `ATTEMPT#` の status を読まない。
+   - preflight は、genesis の `lastAttemptId` が指す直前の attempt に限って `ATTEMPT#` の status を読む（D-5）。
+     `failed` で閉じれば `SPARSE_PREVIOUS_ATTEMPT_UNSETTLED` は解ける。予算と revision の slot は戻らない。
+     アクセス制限ありの profile では、閉じた時刻ではなく**予約した時刻**から 1 時間の cooldown が数えられる。
    - ledger 上では、人間が閉じたものと broker が記録したものの区別はつかない。
      誰が閉じたかは CloudTrail（手順 7）と #1153 の記録で残す。
 

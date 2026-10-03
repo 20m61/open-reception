@@ -144,6 +144,7 @@ export const PROVENANCE_DECISION_PATH = `${BROKER_OUT_DIR}/provenance.json`;
 export const POLICY_RESULT_PATH = `${BROKER_OUT_DIR}/trusted-policy-result.json`;
 export const BROKER_RESULT_PATH = `${BROKER_OUT_DIR}/broker-result.json`;
 export const TARGET_STACKS_DECISION_PATH = `${BROKER_OUT_DIR}/target-stacks.json`;
+export const ACCESS_RESTRICTION_DECISION_PATH = `${BROKER_OUT_DIR}/access-restriction.json`;
 
 /**
  * Sparse ledger modules (#1153 wiring). Published as stack assets and SHA-256 verified like the
@@ -176,6 +177,14 @@ export const TARGET_STACKS_LOCAL_PATH = '/tmp/open-reception-target-stacks.mjs';
 export const TARGET_STACK_READ_ACTIONS = ['cloudformation:DescribeStacks'] as const;
 
 /**
+ * S6c access-restriction gate (D-5, #1153). Derives `absent` / `verified` / `unverifiable` from the
+ * provenance-bound assembly and denies a credential in the template. No AWS call, no new IAM: it
+ * reads only BROKER_ASSEMBLY_DIR. `reserve` reads its decision to pick the sparse-deploy profile.
+ */
+export const ACCESS_RESTRICTION_SOURCE_PATH = path.join(__dirname, '../../broker/access-restriction.mjs');
+export const ACCESS_RESTRICTION_LOCAL_PATH = '/tmp/open-reception-access-restriction.mjs';
+
+/**
  * Ledger / gate rules that need a human (S10a escalation): alerted whenever the runner logs them.
  * The repeated-failure rule is logged by `reserve` once armed; the stability gate by `deny`.
  */
@@ -184,6 +193,14 @@ export const ESCALATION_RULES = [
   'TARGET_STACK_UNVERIFIABLE',
   'TARGET_STACK_INPUT_INVALID',
   'SPARSE_REVISION_REPEATED_FAILURE',
+  'SPARSE_PREVIOUS_ATTEMPT_UNSETTLED',
+  // The ledger's integrity cannot be established (pointer mismatch, a future reservation time, an
+  // inconsistent genesis): possibly tampering, never retried; a human inspects CloudTrail (owner 2026-10-03).
+  'SPARSE_LEDGER_CORRUPT',
+  'ACCESS_RESTRICTION_WEAKENED',
+  'ACCESS_RESTRICTION_INPUT_INVALID',
+  // A credential found in the template has leaked into the repository / assembly: a human rotates it.
+  'ACCESS_RESTRICTION_CREDENTIAL_IN_TEMPLATE',
 ] as const;
 
 /**
@@ -319,7 +336,14 @@ export const BROKER_MODULE_HASH_CHECK_SCRIPT = [
 
 /** Name the gate the broker is about to evaluate; `deny` records it if the build stops there. */
 export const gateCommand = (
-  rule: 'BROKER_MODULE_INTEGRITY' | 'TRUSTED_PROVENANCE_DENIED' | 'TRUSTED_REVISION_MISMATCH' | 'TRUSTED_POLICY_DENIED' | 'TARGET_STACK_NOT_STABLE' | 'BROKER_NOT_ARMED',
+  rule:
+    | 'BROKER_MODULE_INTEGRITY'
+    | 'TRUSTED_PROVENANCE_DENIED'
+    | 'TRUSTED_REVISION_MISMATCH'
+    | 'TRUSTED_POLICY_DENIED'
+    | 'TARGET_STACK_NOT_STABLE'
+    | 'ACCESS_RESTRICTION_DENIED'
+    | 'BROKER_NOT_ARMED',
 ) =>
   `echo ${rule} > ${LEDGER_GATE_FILE}`;
 
@@ -373,6 +397,21 @@ export const TARGET_STACKS_RESULT_CHECK_SCRIPT = [
   `const expected=${JSON.stringify(TARGET_STACKS.map((t) => t.stackName).join(','))};`,
   'const ok=d&&d.result==="allowed"&&d.rule===null&&typeof d.executionId==="string"&&d.executionId===process.env.OR_PIPELINE_EXECUTION_ID&&typeof d.revision==="string"&&d.revision===process.env.OR_TRUSTED_SOURCE_REVISION&&Array.isArray(d.stacks)&&d.stacks.map((s)=>s&&s.stackName).join(",")===expected;',
   'if(!ok){throw new Error("target stack decision missing, denied or not for this execution")}',
+].join(' ');
+
+/** The broker command that runs the verified access-restriction module over the validated assembly. */
+export const ACCESS_RESTRICTION_COMMAND = `node ${ACCESS_RESTRICTION_LOCAL_PATH} --assembly ${BROKER_ASSEMBLY_DIR}`;
+
+/**
+ * Broker: the access-restriction decision (in the broker-owned output dir) must say allowed, for
+ * THIS execution and revision, with a known state. argv[1] is the decision file.
+ */
+export const ACCESS_RESTRICTION_RESULT_CHECK_SCRIPT = [
+  'const fs=require("fs");',
+  'const d=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));',
+  'const s=d&&d.accessRestriction&&d.accessRestriction.state;',
+  'const ok=d&&d.result==="allowed"&&d.rule===null&&typeof d.executionId==="string"&&d.executionId===process.env.OR_PIPELINE_EXECUTION_ID&&typeof d.revision==="string"&&d.revision===process.env.OR_TRUSTED_SOURCE_REVISION&&(s==="absent"||s==="verified");',
+  'if(!ok){throw new Error("access restriction decision missing, denied or not for this execution")}',
 ].join(' ');
 
 /** Trusted revision shape: a full 40-hex commit SHA (short or missing values fail closed). */
@@ -541,6 +580,8 @@ export class DevDeployBrokerStack extends cdk.Stack {
     ledgerRunnerAsset.grantRead(brokerRole);
     const targetStacksAsset = new s3assets.Asset(this, 'TargetStacksModuleAsset', { path: TARGET_STACKS_SOURCE_PATH });
     targetStacksAsset.grantRead(brokerRole);
+    const accessRestrictionAsset = new s3assets.Asset(this, 'AccessRestrictionModuleAsset', { path: ACCESS_RESTRICTION_SOURCE_PATH });
+    accessRestrictionAsset.grantRead(brokerRole);
 
     // Sparse dev-deploy attempt ledger (#1153, Foundation S6a): state in the trusted account,
     // writable only by the broker. The Validation role (candidate code) gets no statement on it.
@@ -842,6 +883,9 @@ export class DevDeployBrokerStack extends cdk.Stack {
           OR_TARGET_STACKS_MODULE_BUCKET: { value: targetStacksAsset.s3BucketName },
           OR_TARGET_STACKS_MODULE_KEY: { value: targetStacksAsset.s3ObjectKey },
           OR_TARGET_STACKS_MODULE_SHA256: { value: trustedPolicySha256(TARGET_STACKS_SOURCE_PATH) },
+          OR_ACCESS_RESTRICTION_MODULE_BUCKET: { value: accessRestrictionAsset.s3BucketName },
+          OR_ACCESS_RESTRICTION_MODULE_KEY: { value: accessRestrictionAsset.s3ObjectKey },
+          OR_ACCESS_RESTRICTION_MODULE_SHA256: { value: trustedPolicySha256(ACCESS_RESTRICTION_SOURCE_PATH) },
           OR_BROKER_TARGET_REGION: { value: cdk.Aws.REGION },
         },
       },
@@ -894,6 +938,15 @@ export class DevDeployBrokerStack extends cdk.Stack {
               gateCommand('TARGET_STACK_NOT_STABLE'),
               TARGET_STACKS_COMMAND,
               nodeEval(TARGET_STACKS_RESULT_CHECK_SCRIPT, TARGET_STACKS_DECISION_PATH),
+              // S6c (D-5): derive whether the target is access-restricted from the validated
+              // assembly, and deny a restriction credential in the template. `reserve` reads the
+              // decision to pick the sparse-deploy profile; a weakened declared restriction escalates.
+              gateCommand('BROKER_MODULE_INTEGRITY'),
+              `aws s3 cp "s3://$OR_ACCESS_RESTRICTION_MODULE_BUCKET/$OR_ACCESS_RESTRICTION_MODULE_KEY" ${ACCESS_RESTRICTION_LOCAL_PATH} --only-show-errors`,
+              nodeEval(BROKER_MODULE_HASH_CHECK_SCRIPT, ACCESS_RESTRICTION_LOCAL_PATH, 'OR_ACCESS_RESTRICTION_MODULE_SHA256'),
+              gateCommand('ACCESS_RESTRICTION_DENIED'),
+              ACCESS_RESTRICTION_COMMAND,
+              nodeEval(ACCESS_RESTRICTION_RESULT_CHECK_SCRIPT, ACCESS_RESTRICTION_DECISION_PATH),
               // Even an allowed static assembly cannot mutate yet. When armed, the live ChangeSet
               // gate and then `ledger-runner.mjs reserve` (the last deny-capable step) go here,
               // and `outcome` after the mutation.
@@ -931,7 +984,7 @@ export class DevDeployBrokerStack extends cdk.Stack {
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
       alarmDescription:
-        'A sparse-ledger attempt may be left in_progress (ambiguous reservation / unrecorded outcome / runner error), a denial went unaudited, or a denial needs a human (unstable target stack / repeated failure of one revision, S10a). See docs/architecture/aws-dev-deploy-broker.md.',
+        'A sparse-ledger attempt may be left in_progress (ambiguous reservation / unrecorded outcome / runner error), a denial went unaudited, or a denial needs a human (unstable target stack / repeated failure of one revision, S10a / unsettled previous attempt or corrupt ledger, weakened access restriction or credential in the template, D-5). See docs/architecture/aws-dev-deploy-broker.md.',
     });
     ledgerAttentionAlarm.addAlarmAction(new cwActions.SnsAction(brokerAlerts));
     // The topic's resource policy (created for EventBridge / TLS) replaces the default one, so
