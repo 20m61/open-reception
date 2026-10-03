@@ -13,7 +13,8 @@
  * - `verified`: a check is declared and proves EVERY possible entry point restricted. Fail closed:
  *   every resource whose type is not on the short NON_VIEWER_FACING_TYPES allowlist is an entry
  *   point (CloudFront distributions count once per behaviour; an S3 bucket only with
- *   `WebsiteConfiguration`; an ELBv2 load balancer unless its `Scheme` is the literal `internal`),
+ *   `WebsiteConfiguration`, `AccessControl` or non-literal `Properties`, and a bucket policy only
+ *   when it may Allow anyone; an ELBv2 load balancer unless its `Scheme` is the literal `internal`),
  *   so a function URL, API Gateway, AppSync, App Runner, Amplify, a Cognito domain, a public load
  *   balancer, or any type nobody classified must be proven too. No entry point at all is not a
  *   proof;
@@ -22,11 +23,13 @@
  *   restriction (S5 envelope change), a human gate, not an autonomous deploy.
  *
  * Independently of any check, a best-effort scan looks for the restriction's credential in the
- * template (S6c): any base64 token (standard or URL-safe, also after `%`-decoding, at least
- * MIN_TOKEN_LENGTH characters) that decodes to a printable `user:password` (RFC 7617), a
+ * template (S6c): any base64 token (standard or URL-safe, also after `%`-decoding, also each part
+ * of a run between `/` boundaries, at least MIN_TOKEN_LENGTH characters) that decodes to a
+ * printable `user:password` (RFC 7617), a
  * `user:password` literal after `Basic `, passed to `btoa(...)` / `Buffer.from(...)`, or given to
  * `Fn::Base64`, over every string and the recursive literal projection of every `Fn::Join` /
- * `Fn::Sub` / `Fn::Select` / `Fn::Base64` node; and a CloudFront KeyValueStore seeded from the
+ * `Fn::Sub` / `Fn::Select` / `Fn::Base64` node, with every `Fn::If` taken by its first and by its
+ * second branch; and a CloudFront KeyValueStore seeded from the
  * template (`ImportSource`). Any of these denies `ACCESS_RESTRICTION_CREDENTIAL_IN_TEMPLATE`. A
  * `{{resolve:...}}` dynamic reference is a pointer, not a value. This is a guard, not a guarantee:
  * code outside the template (Lambda@Edge / asset bundles) and credentials built at runtime are not
@@ -88,7 +91,7 @@ export const NON_VIEWER_FACING_TYPES = Object.freeze(new Set([
   'AWS::Lambda::Permission',
   'AWS::Logs::LogGroup',
   'AWS::Logs::MetricFilter',
-  'AWS::S3::BucketPolicy',
+  'AWS::S3::BucketPolicy', // unless it may Allow anyone (isEntryPoint)
   'AWS::SNS::Subscription',
   'AWS::SNS::Topic',
   'AWS::SNS::TopicPolicy',
@@ -98,11 +101,40 @@ export const NON_VIEWER_FACING_TYPES = Object.freeze(new Set([
   'Custom::S3AutoDeleteObjects',
 ]));
 
-/** Can this resource serve a viewer request (so a declared check must prove it restricted)? */
-function isEntryPoint(type, props) {
-  if (type === 'AWS::S3::Bucket') return props.WebsiteConfiguration !== undefined;
+/**
+ * Can this resource serve a viewer request (so a declared check must prove it restricted)? An S3
+ * bucket and its policy are decided here, not by relying on the trusted policy's S3 property
+ * allowlist and `RESOURCE_POLICY_PRINCIPAL_NOT_REVIEWED`: a bucket with `WebsiteConfiguration` or
+ * `AccessControl` (a canned ACL may be public-read), or whose `Properties` are not a literal object,
+ * and a bucket policy that may Allow anyone (`*` principal, `NotPrincipal`, or a statement or
+ * principal that is not literal) are entry points.
+ */
+function isEntryPoint(type, rawProps) {
+  const props = isRecord(rawProps) ? rawProps : {};
+  if (type === 'AWS::S3::Bucket') {
+    if (rawProps !== undefined && !isRecord(rawProps)) return true;
+    return Object.keys(props).some((k) => k.startsWith('Fn::')) || props.WebsiteConfiguration !== undefined || props.AccessControl !== undefined;
+  }
+  if (type === 'AWS::S3::BucketPolicy') return mayAllowAnyone(props.PolicyDocument);
   if (type === 'AWS::ElasticLoadBalancingV2::LoadBalancer') return props.Scheme !== 'internal';
   return !NON_VIEWER_FACING_TYPES.has(type);
+}
+
+/** Could this policy document Allow a public principal? Anything not literal counts as yes. */
+function mayAllowAnyone(document) {
+  if (document === undefined) return false; // grants nothing
+  if (!isRecord(document) || !Array.isArray(document.Statement)) return true;
+  return document.Statement.some((statement) => {
+    if (!isRecord(statement)) return true;
+    if (statement.Effect === 'Deny') return false;
+    if (statement.NotPrincipal !== undefined) return true;
+    const principal = statement.Principal;
+    if (typeof principal === 'string') return principal.includes('*');
+    if (!isRecord(principal)) return true;
+    return Object.values(principal).some((value) =>
+      (Array.isArray(value) ? value : [value]).some((v) => (typeof v === 'string' ? v.includes('*') : !(isRecord(v) && Object.keys(v).length === 1 && Object.hasOwn(v, 'Fn::GetAtt')))),
+    );
+  });
 }
 
 // --- copied from trusted-policy.mjs (isRecord, parseStrictJson, safeTemplatePath, joinedLiterals,
@@ -285,11 +317,29 @@ const PLAIN_IN_CONTEXT = [/\bBasic\s+([^\s'"`]+)/gi, /\b(?:btoa|Buffer\.from)\(\
 
 /**
  * RFC 7617 `user-id ":" password` as it would be sent: printable ASCII, a non-empty user without
- * whitespace or colon, then a colon. A `{{resolve:...}}` dynamic reference never qualifies (`{` is
- * not a base64 character, and the reference text is not a user).
+ * whitespace or colon, then a colon and a password of printable ASCII (spaces included). A
+ * `{{resolve:...}}` dynamic reference never qualifies (`{` is not a base64 character, and the
+ * reference text is not a user).
  */
 export function isCredentialText(text) {
-  return typeof text === 'string' && /^[\x20-\x7e]+$/.test(text) && /^[^:\s{}]+:\S*$/.test(text);
+  return typeof text === 'string' && /^[\x20-\x7e]+$/.test(text) && /^[^:\s{}]+:[\x20-\x7e]*$/.test(text);
+}
+
+/**
+ * The run itself and every part of it between `/` boundaries: `/` is a base64 character, so a token
+ * after a path separator (`/dXNlcjpwYXNz`) would otherwise only be read misaligned inside the run.
+ */
+function slashSpans(run) {
+  const starts = [0];
+  const ends = [];
+  for (let i = 0; i < run.length; i += 1) {
+    if (run[i] === '/') {
+      ends.push(i);
+      starts.push(i + 1);
+    }
+  }
+  ends.push(run.length);
+  return starts.flatMap((s) => ends.filter((e) => e - s >= MIN_TOKEN_LENGTH).map((e) => run.slice(s, e)));
 }
 
 const percentDecoded = (text) => text.replace(/%([0-9A-Fa-f]{2})/g, (_m, h) => String.fromCharCode(parseInt(h, 16)));
@@ -299,9 +349,11 @@ export function looksLikeCredential(text) {
   if (typeof text !== 'string') return false;
   for (const variant of new Set([text, percentDecoded(text)])) {
     for (const m of variant.matchAll(BASE64_TOKEN)) {
-      const body = m[0].replace(/=+$/, '').replace(/-/g, '+').replace(/_/g, '/');
-      if (body.length % 4 === 1) continue;
-      if (isCredentialText(Buffer.from(body, 'base64').toString('latin1'))) return true;
+      for (const token of slashSpans(m[0])) {
+        const body = token.replace(/=+$/, '').replace(/-/g, '+').replace(/_/g, '/');
+        if (body.length < MIN_TOKEN_LENGTH || body.length % 4 === 1) continue;
+        if (isCredentialText(Buffer.from(body, 'base64').toString('latin1'))) return true;
+      }
     }
     for (const re of PLAIN_IN_CONTEXT) {
       for (const m of variant.matchAll(re)) if (isCredentialText(m[m.length - 1])) return true;
@@ -336,10 +388,25 @@ function base64Arguments(value, out = []) {
   return out;
 }
 
-/** Does the template carry a credential anywhere the scan can see? */
+/**
+ * The template with every `Fn::If` replaced by its first (`pick` 1) or its second (`pick` 2) branch.
+ * The projections read an `Fn::If` as a NUL, so without this a credential given to `Fn::Base64`, or
+ * split across `Fn::Join` parts, through one branch would not be seen.
+ */
+function withIfBranch(value, pick) {
+  if (Array.isArray(value)) return value.map((v) => withIfBranch(v, pick));
+  if (!isRecord(value)) return value;
+  const branches = value['Fn::If'];
+  if (Object.keys(value).length === 1 && Array.isArray(branches) && branches.length === 3) return withIfBranch(branches[pick], pick);
+  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, withIfBranch(v, pick)]));
+}
+
+/** Does the template carry a credential anywhere the scan can see (in either branch of every `Fn::If`)? */
 export function templateCarriesCredential(template) {
-  if ([...templateStrings(template), ...joinedLiterals(template), ...base64Arguments(template)].some(looksLikeCredential)) return true;
-  return base64Arguments(template).some(isCredentialText);
+  return [template, withIfBranch(template, 1), withIfBranch(template, 2)].some((t) => {
+    if ([...templateStrings(t), ...joinedLiterals(t), ...base64Arguments(t)].some(looksLikeCredential)) return true;
+    return base64Arguments(t).some(isCredentialText);
+  });
 }
 
 /** Viewer-facing entry points of one template; a distribution's behaviours are each one. */
@@ -348,8 +415,7 @@ function entryPoints(stackName, template) {
   const resources = isRecord(template?.Resources) ? template.Resources : {};
   for (const [logicalId, resource] of Object.entries(resources)) {
     const type = isRecord(resource) && typeof resource.Type === 'string' ? resource.Type : '(no type)';
-    const props = isRecord(resource) && isRecord(resource.Properties) ? resource.Properties : {};
-    if (!isEntryPoint(type, props)) continue;
+    if (!isEntryPoint(type, isRecord(resource) ? resource.Properties : undefined)) continue;
     const base = { stackName, logicalId, type, resource, template };
     if (type !== 'AWS::CloudFront::Distribution') {
       out.push({ ...base, entry: logicalId });

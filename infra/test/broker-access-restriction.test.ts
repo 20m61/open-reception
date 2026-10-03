@@ -46,12 +46,12 @@ afterEach(() => {
   while (dirs.length > 0) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
 
-/** A minimal assembly: one stack per entry of `stacks` (name -> Resources). */
-const assembly = (stacks: Record<string, J>) => {
+/** A minimal assembly: one stack per entry of `stacks` (name -> Resources), with `extra` template sections. */
+const assembly = (stacks: Record<string, J>, extra: J = {}) => {
   const dir = scratch();
   const artifacts: J = {};
   for (const [name, resources] of Object.entries(stacks)) {
-    writeFileSync(join(dir, `${name}.template.json`), JSON.stringify({ Resources: resources }));
+    writeFileSync(join(dir, `${name}.template.json`), JSON.stringify({ ...extra, Resources: resources }));
     artifacts[name] = { type: 'aws:cloudformation:stack', properties: { templateFile: `${name}.template.json`, stackName: name } };
   }
   writeFileSync(join(dir, 'manifest.json'), JSON.stringify({ version: '1', artifacts }));
@@ -168,6 +168,20 @@ describe('a declared check verifies only when it proves every entry point', () =
     ['HTTP API', { Type: 'AWS::ApiGatewayV2::Api', Properties: {} }],
     ['a type nobody classified', { Type: 'AWS::Some::NewThing', Properties: {} }],
     ['a resource without a type', { Properties: {} }],
+    // #1214 AC4: decided here, not by relying on the trusted policy's S3 allowlist and principal review.
+    ['bucket with a canned ACL', { Type: 'AWS::S3::Bucket', Properties: { AccessControl: 'PublicRead' } }],
+    ['bucket whose Properties are an intrinsic', { Type: 'AWS::S3::Bucket', Properties: { 'Fn::If': ['C', { WebsiteConfiguration: { IndexDocument: 'i' } }, {}] } }],
+    ['bucket whose Properties are not an object', { Type: 'AWS::S3::Bucket', Properties: ['x'] }],
+    ['bucket policy allowing Principal "*"', { Type: 'AWS::S3::BucketPolicy', Properties: { PolicyDocument: { Statement: [{ Effect: 'Allow', Principal: '*', Action: 's3:GetObject' }] } } }],
+    ['bucket policy allowing {AWS: "*"}', { Type: 'AWS::S3::BucketPolicy', Properties: { PolicyDocument: { Statement: [{ Effect: 'Allow', Principal: { AWS: '*' }, Action: 's3:GetObject' }] } } }],
+    ['bucket policy allowing {AWS: ["*"]}', { Type: 'AWS::S3::BucketPolicy', Properties: { PolicyDocument: { Statement: [{ Effect: 'Allow', Principal: { AWS: ['arn:aws:iam::1:role/r', '*'] }, Action: 's3:GetObject' }] } } }],
+    ['bucket policy with an Allow and NotPrincipal', { Type: 'AWS::S3::BucketPolicy', Properties: { PolicyDocument: { Statement: [{ Effect: 'Allow', NotPrincipal: { AWS: 'arn:aws:iam::1:root' }, Action: 's3:GetObject' }] } } }],
+    ['bucket policy with a non-literal Effect', { Type: 'AWS::S3::BucketPolicy', Properties: { PolicyDocument: { Statement: [{ Effect: { 'Fn::If': ['C', 'Allow', 'Deny'] }, Principal: '*', Action: 's3:GetObject' }] } } }],
+    ['bucket policy with a non-literal statement', { Type: 'AWS::S3::BucketPolicy', Properties: { PolicyDocument: { Statement: [{ 'Fn::If': ['C', { Effect: 'Allow', Principal: '*' }, { Ref: 'AWS::NoValue' }] }] } } }],
+    ['bucket policy whose statement is not a literal object', { Type: 'AWS::S3::BucketPolicy', Properties: { PolicyDocument: { Statement: ['x'] } } }],
+    ['bucket policy with a non-literal document', { Type: 'AWS::S3::BucketPolicy', Properties: { PolicyDocument: { 'Fn::If': ['C', { Statement: [] }, {}] } } }],
+    ['bucket policy with a non-literal principal', { Type: 'AWS::S3::BucketPolicy', Properties: { PolicyDocument: { Statement: [{ Effect: 'Allow', Principal: { AWS: { Ref: 'Who' } }, Action: 's3:GetObject' }] } } }],
+    ['bucket policy with a principal that is not an object', { Type: 'AWS::S3::BucketPolicy', Properties: { PolicyDocument: { Statement: [{ Effect: 'Allow', Principal: ['*'], Action: 's3:GetObject' }] } } }],
   ])('a declared check must prove a %s too (fail closed)', (_l, resource) => {
     const proveCdn: Check = { name: 'cdn only', isRestricted: (e) => e.type === 'AWS::CloudFront::Distribution' };
     const d = M.evaluateAccessRestriction({ assemblyDir: assembly({ Web: { Cdn: distribution(0), X: resource } }), check: proveCdn });
@@ -180,6 +194,19 @@ describe('a declared check verifies only when it proves every entry point', () =
     const internal = {
       Lb: { Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer', Properties: { Scheme: 'internal' } },
       Bucket: { Type: 'AWS::S3::Bucket', Properties: {} },
+      // The real assembly's reviewed shape: a Deny to everyone, an Allow to a local role and to a service.
+      Policy: {
+        Type: 'AWS::S3::BucketPolicy',
+        Properties: {
+          PolicyDocument: {
+            Statement: [
+              { Effect: 'Deny', Principal: { AWS: '*' }, Action: 's3:*' },
+              { Effect: 'Allow', Principal: { AWS: { 'Fn::GetAtt': ['Role', 'Arn'] } }, Action: 's3:DeleteObject*' },
+              { Effect: 'Allow', Principal: { Service: 'cloudfront.amazonaws.com' }, Action: 's3:GetObject' },
+            ],
+          },
+        },
+      },
       ...Object.fromEntries([...M.NON_VIEWER_FACING_TYPES].map((t, i) => [`R${i}`, { Type: t, Properties: {} }])),
     };
     const seen: string[] = [];
@@ -224,6 +251,19 @@ describe('the credential never appears in the template (scan runs with or withou
     ['Fn::Select of a literal list', fnCode({ 'Fn::Join': ['', ['Basic ', { 'Fn::Select': [1, ['x', credential]] }]] })],
     ['Fn::Select over Fn::Split', fnCode({ 'Fn::Select': [1, { 'Fn::Split': ['|', `x|${credential}`] }] })],
     ['split across Fn::Join parts', fnCode({ 'Fn::Join': ['', ['Basic ', credential.slice(0, 6), credential.slice(6)]] })],
+    // #1214 AC1: both branches of an Fn::If are projected (the projections read it as a NUL).
+    ['Fn::Base64 of an Fn::If whose first branch is user:password', { P: { Type: 'AWS::CloudFront::OriginRequestPolicy', Properties: { V: { 'Fn::Base64': { 'Fn::If': ['C', 'user:pass', 'x'] } } } } }],
+    ['Fn::Base64 of an Fn::If whose second branch is user:password', { P: { Type: 'AWS::CloudFront::OriginRequestPolicy', Properties: { V: { 'Fn::Base64': { 'Fn::If': ['C', 'x', 'user:pass'] } } } } }],
+    ['Fn::Base64 of a Join through an Fn::If', { P: { Type: 'AWS::CloudFront::OriginRequestPolicy', Properties: { V: { 'Fn::Base64': { 'Fn::Join': [':', ['owner', { 'Fn::If': ['C', 's3cret-pass', 'x'] }]] } } } } }],
+    ['a token split across Fn::Join parts, one part through an Fn::If', fnCode({ 'Fn::Join': ['', ['Basic ', credential.slice(0, 6), { 'Fn::If': ['C', credential.slice(6), 'x'] }]] })],
+    // A whole literal inside an Fn::If is an ordinary nested string and was always scanned.
+    ['a plain string inside an Fn::If', fnCode({ 'Fn::If': ['C', `Basic ${credential}`, 'x'] })],
+    // #1214 AC2: RFC 7617 allows spaces in the password.
+    ['a password with a space', fnCode(`const t = '${Buffer.from('owner:s3cret pass').toString('base64')}';`)],
+    // #1214 AC3: `/` is a base64 character, so a token after a path separator is tried on its own.
+    ['a token right after a slash', fnCode(`if (uri === "/${Buffer.from('owner:s3cret-pass').toString('base64')}") return ok;`)],
+    // Unpadded: a padded token followed by more base64 characters (`...=/x`) is a documented miss.
+    ['a token between path separators', fnCode(`fetch("https://h/auth/${Buffer.from('owner:s3cret-pa').toString('base64')}/check")`)],
     ['as a header value elsewhere', { P: { Type: 'AWS::CloudFront::OriginRequestPolicy', Properties: { Headers: [{ Name: 'Authorization', Value: `Basic ${credential}` }] } } }],
     ['a KeyValueStore seeded from the template', { Kvs: { Type: 'AWS::CloudFront::KeyValueStore', Properties: { Name: 'auth', ImportSource: { SourceType: 'S3', SourceArn: 'arn:aws:s3:::b/k' } } } }],
   ])('denies: %s', (_l, resources) => {
@@ -262,6 +302,41 @@ describe('the credential never appears in the template (scan runs with or withou
     expect(M.looksLikeCredential(42)).toBe(false);
     expect(M.isCredentialText('owner:pass')).toBe(true);
     expect(M.isCredentialText('{{resolve:ssm:x}}')).toBe(false);
+  });
+
+  it('a password may contain spaces (RFC 7617); the user part still may not, and must not be empty', () => {
+    expect(M.isCredentialText('user:pa ss')).toBe(true);
+    expect(M.looksLikeCredential(Buffer.from('user:pa ss').toString('base64'))).toBe(true);
+    expect(M.looksLikeCredential(Buffer.from('owner: leading space').toString('base64'))).toBe(true);
+    expect(M.isCredentialText('us er:pass')).toBe(false);
+    expect(M.isCredentialText(':pa ss')).toBe(false);
+    expect(M.isCredentialText('user:pa\tss')).toBe(false); // printable ASCII only
+  });
+
+  it('a token after `/` is tried on its own; the full run still is too', () => {
+    const userPass = Buffer.from('user:pass').toString('base64');
+    expect(userPass).toBe('dXNlcjpwYXNz');
+    expect(M.looksLikeCredential(`/${userPass}`)).toBe(true);
+    expect(M.looksLikeCredential(`a/b/${userPass}`)).toBe(true);
+    expect(M.looksLikeCredential(`/x/${userPass}/y`)).toBe(true);
+    expect(M.looksLikeCredential(`/x/${userPass}/longer-segment`)).toBe(true);
+    // A credential whose own base64 contains `/` is still read as one run.
+    const withSlash = Buffer.from('owner:s3cret>>?pass').toString('base64');
+    expect(withSlash).toContain('/');
+    expect(M.looksLikeCredential(withSlash)).toBe(true);
+    // A piece shorter than the minimum token length is not tried.
+    expect(M.looksLikeCredential(`/${Buffer.from('a:bcd').toString('base64')}`)).toBe(false);
+  });
+
+  it('a credential used as an object KEY (e.g. under Mappings) is found', () => {
+    const extra = { Mappings: { Auth: { [credential]: { Header: 'Authorization' } } } };
+    for (const check of [null, all]) {
+      const d = M.evaluateAccessRestriction({ assemblyDir: assembly({ Web: { Cdn: distribution(0) } }, extra), check });
+      expect(d, String(check?.name)).toMatchObject({ result: 'denied', rule: 'ACCESS_RESTRICTION_CREDENTIAL_IN_TEMPLATE' });
+    }
+    // Control: the same template without the key is allowed, so the key is what denies.
+    const control = { Mappings: { Auth: { Basic: { Header: 'Authorization' } } } };
+    expect(M.evaluateAccessRestriction({ assemblyDir: assembly({ Web: { Cdn: distribution(0) } }, control), check: null })).toMatchObject({ result: 'allowed' });
   });
 
   it('negative control: ordinary template base64 and hashes are not credentials', () => {
