@@ -62,13 +62,13 @@ VAL=$(mktemp)
 openssl rand -base64 32 > "$VAL"    # 値は argv に載せず、0600 のファイル経由で jq に渡す
 aws secretsmanager get-secret-value --secret-id "$SECRET_ID" --query SecretString --output text \
   | jq --rawfile v "$VAL" '. + {ORIGIN_VERIFY_SECRET: ($v | rtrimstr("\n"))}' > "$TMP"
-rm -P "$VAL"; unset VAL
+command rm -P "$VAL"; unset VAL   # command: `rm -i` の alias で止まらないように
 # 形の確認（値は出さない）: 既存キーがすべて残り、ORIGIN_VERIFY_SECRET が 44 文字であること
 jq -r 'keys[]' "$TMP"
 jq -r '.ORIGIN_VERIFY_SECRET | length' "$TMP"          # 44
 aws secretsmanager put-secret-value --secret-id "$SECRET_ID" --secret-string "file://$TMP" \
   --query '{VersionId:VersionId}'
-rm -P "$TMP"; unset TMP
+command rm -P "$TMP"; unset TMP
 ```
 
 - `put-secret-value` は新しい version（`AWSCURRENT`）を作り、直前の値は `AWSPREVIOUS` に残る
