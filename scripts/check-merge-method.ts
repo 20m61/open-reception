@@ -45,20 +45,20 @@
  * 見える範囲で確実に落とす方が安全側。同じ理由で、main 系の ref が**どちらも無い**ときは
  * `HEAD` へ倒す（判定できないことを「違反なし」に丸めない）。
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync } from 'node:child_process';
 
 /**
  * squash 運用が確立した日。これより前のマージコミットは初期開発期のもので、
  * 履歴は不変なので対象外にする（最後の歴史的マージは 2026-06-18 の PR #64）。
  */
-export const SQUASH_CONVENTION_SINCE = "2026-06-19T00:00:00+09:00";
+export const SQUASH_CONVENTION_SINCE = '2026-06-19T00:00:00+09:00';
 
 /** マージコミット 1 件。 */
 export type MergeCommit = { sha: string; committedAt: string; subject: string };
 
 /** PR #1197 の merge commit を通って main に入った、統合 branch 内部の merge commit の理由。 */
 const ARMING_INTEGRATION_INNER_MERGE =
-  "PR #1197 の統合 branch 内の merge commit（force push を避けた ours merge と、12 PR を 1 本にまとめた merge）。squash されずに #1197 の merge commit ごと main に入った。";
+  'PR #1197 の統合 branch 内の merge commit（force push を避けた ours merge と、12 PR を 1 本にまとめた merge）。squash されずに #1197 の merge commit ごと main に入った。';
 
 /**
  * 規約確立後に入った merge commit のうち、**事後には直せない既知の逸脱**。
@@ -68,45 +68,45 @@ const ARMING_INTEGRATION_INNER_MERGE =
  */
 export const KNOWN_VIOLATIONS: Readonly<Record<string, string>> = {
   e377c9e3ffabef822a14002204143befaf2d7efa:
-    "2026-08-09 の 3 本並列委譲で、PR #672 だけクラウドが --squash を使わなかった。指示は --squash だったが、守られたかを見る仕組みがこの時点で無かった（本検査を入れた直接のきっかけ）。",
-  a1f4dc57a6d6abe9e8d9ef72e53ee9a3d21e7aac:
-    "2026-09-29 の PR #1197（arming 前ブロッカー 12 PR の統合）を、Claude が「元の commit を履歴に残せる」として --merge を勧め、owner がそのとおり merge した。CLAUDE.md の squash 規約を確かめずに勧めたのが原因。",
-  "376ba1a836d0b3bb50674fa4271ebd8b0eb2e4a8": ARMING_INTEGRATION_INNER_MERGE,
-  d0a5c6df5bfeb9fc7b1ceedf21cd48854280c22c: ARMING_INTEGRATION_INNER_MERGE,
-  f48b0a3cde96e6c32b94eca87e97a773db0f7b5b: ARMING_INTEGRATION_INNER_MERGE,
-  "535f855f89600cd2b4ee35fc7c206b0aa5ce2b48": ARMING_INTEGRATION_INNER_MERGE,
-  "679dd646fea456d571232e0cb62a1ee4fb91037e": ARMING_INTEGRATION_INNER_MERGE,
-  "03f7db761aca292942c1f377e3edabd69f7fa8fa": ARMING_INTEGRATION_INNER_MERGE,
-  "09e5c6c58fa155a3e99effeb2a3e20e09ad2e4c3": ARMING_INTEGRATION_INNER_MERGE,
-  "03dec21f49f5ea11cfb6fadf9f1fc3929fb70dc6": ARMING_INTEGRATION_INNER_MERGE,
-  e861a29f4965baa51cd9966fbd9b727a334a03a0: ARMING_INTEGRATION_INNER_MERGE,
-  a544317c0856bf598a7b6f424bdc53ae338dcb68: ARMING_INTEGRATION_INNER_MERGE,
-  ebb8245835d476b3028cce3062d406dd471f356a: ARMING_INTEGRATION_INNER_MERGE,
-  b0d7d7959b780a8f28cfe8def0f06bdc36dd349f: ARMING_INTEGRATION_INNER_MERGE,
-  "8b276b09030670d67c1f8fa4bfd2ba202c581ae4": ARMING_INTEGRATION_INNER_MERGE,
-  "870a34b523385bc4159f75339349ad2ab57c7ad0": ARMING_INTEGRATION_INNER_MERGE,
-  "10ded7cb7e57bde805b433bf5054664c509a5470": ARMING_INTEGRATION_INNER_MERGE,
-  "96741695adb44f6c8b5a1f894ce38900d4f9ed0e": ARMING_INTEGRATION_INNER_MERGE,
-  a356f17a70a19d81d5fa0646423a6527d2bbaa71: ARMING_INTEGRATION_INNER_MERGE,
-  "4212d1c60aaa54efc83dc9746502d61e1bfaabd3": ARMING_INTEGRATION_INNER_MERGE,
-  d6b9a74d215309a295259e98d05c5451a3985565: ARMING_INTEGRATION_INNER_MERGE,
-  "4245760ffa619da2a60ca2c3ceccaf0ebb8aa9ba": ARMING_INTEGRATION_INNER_MERGE,
-  "90b150518894931d5ea578aee5ca834cd29ce14c": ARMING_INTEGRATION_INNER_MERGE,
-  "02b1c227af3a4f22de144a81c5776bb79b4e6d18": ARMING_INTEGRATION_INNER_MERGE,
-  "5d63fc8b193b52dc32571797148aba54c63c3574": ARMING_INTEGRATION_INNER_MERGE,
+    '2026-08-09 の 3 本並列委譲で、PR #672 だけクラウドが --squash を使わなかった。指示は --squash だったが、守られたかを見る仕組みがこの時点で無かった（本検査を入れた直接のきっかけ）。',
+  'a1f4dc57a6d6abe9e8d9ef72e53ee9a3d21e7aac':
+    '2026-09-29 の PR #1197（arming 前ブロッカー 12 PR の統合）を、Claude が「元の commit を履歴に残せる」として --merge を勧め、owner がそのとおり merge した。CLAUDE.md の squash 規約を確かめずに勧めたのが原因。',
+  '376ba1a836d0b3bb50674fa4271ebd8b0eb2e4a8': ARMING_INTEGRATION_INNER_MERGE,
+  'd0a5c6df5bfeb9fc7b1ceedf21cd48854280c22c': ARMING_INTEGRATION_INNER_MERGE,
+  'f48b0a3cde96e6c32b94eca87e97a773db0f7b5b': ARMING_INTEGRATION_INNER_MERGE,
+  '535f855f89600cd2b4ee35fc7c206b0aa5ce2b48': ARMING_INTEGRATION_INNER_MERGE,
+  '679dd646fea456d571232e0cb62a1ee4fb91037e': ARMING_INTEGRATION_INNER_MERGE,
+  '03f7db761aca292942c1f377e3edabd69f7fa8fa': ARMING_INTEGRATION_INNER_MERGE,
+  '09e5c6c58fa155a3e99effeb2a3e20e09ad2e4c3': ARMING_INTEGRATION_INNER_MERGE,
+  '03dec21f49f5ea11cfb6fadf9f1fc3929fb70dc6': ARMING_INTEGRATION_INNER_MERGE,
+  'e861a29f4965baa51cd9966fbd9b727a334a03a0': ARMING_INTEGRATION_INNER_MERGE,
+  'a544317c0856bf598a7b6f424bdc53ae338dcb68': ARMING_INTEGRATION_INNER_MERGE,
+  'ebb8245835d476b3028cce3062d406dd471f356a': ARMING_INTEGRATION_INNER_MERGE,
+  'b0d7d7959b780a8f28cfe8def0f06bdc36dd349f': ARMING_INTEGRATION_INNER_MERGE,
+  '8b276b09030670d67c1f8fa4bfd2ba202c581ae4': ARMING_INTEGRATION_INNER_MERGE,
+  '870a34b523385bc4159f75339349ad2ab57c7ad0': ARMING_INTEGRATION_INNER_MERGE,
+  '10ded7cb7e57bde805b433bf5054664c509a5470': ARMING_INTEGRATION_INNER_MERGE,
+  '96741695adb44f6c8b5a1f894ce38900d4f9ed0e': ARMING_INTEGRATION_INNER_MERGE,
+  'a356f17a70a19d81d5fa0646423a6527d2bbaa71': ARMING_INTEGRATION_INNER_MERGE,
+  '4212d1c60aaa54efc83dc9746502d61e1bfaabd3': ARMING_INTEGRATION_INNER_MERGE,
+  'd6b9a74d215309a295259e98d05c5451a3985565': ARMING_INTEGRATION_INNER_MERGE,
+  '4245760ffa619da2a60ca2c3ceccaf0ebb8aa9ba': ARMING_INTEGRATION_INNER_MERGE,
+  '90b150518894931d5ea578aee5ca834cd29ce14c': ARMING_INTEGRATION_INNER_MERGE,
+  '02b1c227af3a4f22de144a81c5776bb79b4e6d18': ARMING_INTEGRATION_INNER_MERGE,
+  '5d63fc8b193b52dc32571797148aba54c63c3574': ARMING_INTEGRATION_INNER_MERGE,
   f98437188cef104ca5ff73024898ad74d20292c7:
-    "2026-09-29 の PR #1207 を owner が merge commit で merge した。理由は owner の記憶では不明（2026-10-03 に確認）。同じ日の直前に #1197 が --merge で merge されている。",
-  "9702fb64d265aac945c94ffb37189f9cdf82f10a":
-    "2026-09-29 の PR #1208 を owner が merge commit で merge した。理由は owner の記憶では不明（2026-10-03 に確認）。同じ日の直前に #1197 と #1207 が merge commit で merge されている。",
+    '2026-09-29 の PR #1207 を owner が merge commit で merge した。理由は owner の記憶では不明（2026-10-03 に確認）。同じ日の直前に #1197 が --merge で merge されている。',
+  '9702fb64d265aac945c94ffb37189f9cdf82f10a':
+    '2026-09-29 の PR #1208 を owner が merge commit で merge した。理由は owner の記憶では不明（2026-10-03 に確認）。同じ日の直前に #1197 と #1207 が merge commit で merge されている。',
 };
 
 /** `git log --merges` の 1 行を読む。 */
 export function parseMergeLine(line: string): MergeCommit | undefined {
   const trimmed = line.trim();
-  if (trimmed === "") return undefined;
-  const [sha, committedAt, ...rest] = trimmed.split("\t");
+  if (trimmed === '') return undefined;
+  const [sha, committedAt, ...rest] = trimmed.split('\t');
   if (sha === undefined || committedAt === undefined) return undefined;
-  return { sha, committedAt, subject: rest.join("\t") };
+  return { sha, committedAt, subject: rest.join('\t') };
 }
 
 /**
@@ -121,10 +121,7 @@ export type GitRunner = (args: ReadonlyArray<string>) => string | null;
 /** 既定の runner。カレントディレクトリの git を叩く。 */
 const defaultRunner: GitRunner = (args) => {
   try {
-    return execFileSync("git", [...args], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    return execFileSync('git', [...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   } catch {
     return null;
   }
@@ -137,10 +134,7 @@ const defaultRunner: GitRunner = (args) => {
  * `BASE_REF_PREFERENCE` と同じ考えだが、**あちらは「差分の起点」、こちらは
  * 「履歴の検査対象」**で目的が違うため、共有せず別に持つ。
  */
-export const MERGE_SCAN_REF_PREFERENCE: readonly string[] = [
-  "origin/main",
-  "main",
-];
+export const MERGE_SCAN_REF_PREFERENCE: readonly string[] = ['origin/main', 'main'];
 
 /**
  * 検査対象の ref を決める。どちらの main も見えなければ `HEAD` へ倒す。
@@ -151,9 +145,9 @@ export const MERGE_SCAN_REF_PREFERENCE: readonly string[] = [
  */
 export function resolveMergeScanRef(run: GitRunner = defaultRunner): string {
   for (const ref of MERGE_SCAN_REF_PREFERENCE) {
-    if (run(["rev-parse", "--verify", "--quiet", ref]) !== null) return ref;
+    if (run(['rev-parse', '--verify', '--quiet', ref]) !== null) return ref;
   }
-  return "HEAD";
+  return 'HEAD';
 }
 
 /**
@@ -162,31 +156,18 @@ export function resolveMergeScanRef(run: GitRunner = defaultRunner): string {
  * `--since` を使うので、浅い clone では単に見える分だけが返る。
  * 走査するのは `resolveMergeScanRef` が決めた **main の履歴**であって `HEAD` ではない (#1031)。
  */
-export function findMergeCommitsSinceConvention(
-  run: GitRunner = defaultRunner,
-): MergeCommit[] {
+export function findMergeCommitsSinceConvention(run: GitRunner = defaultRunner): MergeCommit[] {
   const ref = resolveMergeScanRef(run);
-  const out = run([
-    "log",
-    "--merges",
-    `--since=${SQUASH_CONVENTION_SINCE}`,
-    "--format=%H\t%cI\t%s",
-    ref,
-  ]);
+  const out = run(['log', '--merges', `--since=${SQUASH_CONVENTION_SINCE}`, '--format=%H\t%cI\t%s', ref]);
   // 走査そのものが失敗したら、**空（＝違反なし）と読まない**。呼び出し側へ例外で伝える。
-  if (out === null)
-    throw new Error(`merge commit を走査できませんでした（ref: ${ref}）`);
+  if (out === null) throw new Error(`merge commit を走査できませんでした（ref: ${ref}）`);
   return out
-    .split("\n")
+    .split('\n')
     .map(parseMergeLine)
     .filter((c): c is MergeCommit => c !== undefined);
 }
 
 /** 既知の逸脱を除いた、説明の付いていない merge commit。 */
-export function findUnexplainedMergeCommits(
-  run: GitRunner = defaultRunner,
-): MergeCommit[] {
-  return findMergeCommitsSinceConvention(run).filter(
-    (c) => !(c.sha in KNOWN_VIOLATIONS),
-  );
+export function findUnexplainedMergeCommits(run: GitRunner = defaultRunner): MergeCommit[] {
+  return findMergeCommitsSinceConvention(run).filter((c) => !(c.sha in KNOWN_VIOLATIONS));
 }
