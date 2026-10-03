@@ -36,10 +36,12 @@ IAM・CloudFormation・DynamoDB・SNS・CloudTrail に一切書き込まない�
 | 1 | 2 つの role の名前を決める | いつでも | — |
 | 2 | override issuer role を作る | broker stack の deploy 前 | role を消せば戻る |
 | 3 | boundary / cfn-exec policy の新しい版を適用する | ブロッカー 8 の merge 後、broker stack の deploy 前 | 前の版を default に戻せば戻る |
+| 3.5 | GitHub 接続（CodeConnections）を作り、承認する | 4 の前（4a の `PassConnection` の対象がこの ARN で決まる） | 承認前なら `delete-connection` で戻る。承認後は GitHub App の対象 repo を外せば戻る |
 | 4 | broker 専用の bootstrap（`orbrkr01`）を作る。その cfn-exec role が stack deploy role | broker stack の deploy 前 | bootstrap stack を消せば戻る（deploy 前に限る） |
 | 5 | broker stack を deploy する | 1〜4 の後 | table・監査 bucket は `RETAIN`・削除保護（下記） |
 | 6 | 警報の通知先（メール）を購読する | 5 の直後 | unsubscribe で戻る |
 | 7 | CloudTrail の data events を確認する | 5 の後 | —（確認のみ） |
+| 7.5 | unarmed のまま pipeline を 1 回通す（`dev-deploy` を作る） | 5〜7 の後、arming の前 | branch を消せば戻る。mutation は起きない |
 | 8 | genesis を書く | **arming 時** | create-only。書き直せない |
 | 9 | override を発行する（必要な日だけ） | arming 後、3 回目以降の attempt が要る日 | create-only |
 | 10 | 警報が来たら: stuck attempt を閉じる / 不安定な stack を片付ける | arming 後、警報のたび | 閉じた attempt は戻せない |
@@ -222,6 +224,58 @@ aws iam list-policy-versions --policy-arn <ARN> --query 'Versions[*].[VersionId,
 aws iam set-default-policy-version --policy-arn <ARN> --version-id <直前の版>
 ```
 
+## 3.5. GitHub 接続（CodeConnections）を作り、承認する
+
+broker stack の parameter `GitHubConnectionArn` に渡す接続である。CodePipeline の Source だけがこの接続を使い、
+candidate のコードを実行する build には接続の token を渡さない（`docs/architecture/aws-dev-deploy-broker.md`）。
+
+- **既存の別用途の接続は使わない。** 2026-10-03 の棚卸し（#1153）で `AVAILABLE` だったのは `amplify_test` だけで、
+  owner の判断で broker には使わない。
+- account `822063948773` の safe-dev-deploy の consumer（Foundation `safe-dev-deploy`）は、**1 つの接続を共有してよい**。
+  どの repo を読めるかは、GitHub App の対象 repo の選択で決まる。pipeline の Source action は
+  `owner` / `repo` / `branch` を固定している（`infra/lib/stacks/dev-deploy-broker-stack.ts` の `PromotionBranch`）。
+- 接続そのものは secret ではない。ARN は記録してよい。
+
+### 3.5a. 接続を作る（`PENDING` になる）
+
+```bash
+aws codestar-connections create-connection --provider-type GitHub \
+  --connection-name safe-dev-deploy-github \
+  --query ConnectionArn --output text
+```
+
+- 名前は 32 文字以内。上の名前は例である。
+- `codestar-connections` の名前空間で作る。この stack の pipeline は CDK の `CodeStarConnectionsSourceAction` を使っており、
+  pipeline role に付く権限も `codestar-connections:UseConnection` だからである。
+  `codeconnections` の名前空間で作った接続（ARN が `arn:aws:codeconnections:...`）でも同じ権限で使えるかは、
+  **live で確かめていない**。確かめるまでは `codestar-connections` で作る。
+- parameter の pattern は両方の ARN を受け付ける。
+
+### 3.5b. 承認する（owner がブラウザで行う。CLI では完了できない）
+
+1. AWS コンソールの Developer Tools → Settings → Connections で、上の接続を開く。状態は `Pending`。
+2. 「Update pending connection」を押し、GitHub に `20m61` の owner としてログインする。
+3. GitHub App（AWS Connector for GitHub）を `20m61` に install する。既に install 済みなら、それを選ぶ。
+   - **Repository access は「Only select repositories」にし、safe-dev-deploy の consumer の repo だけを選ぶ。**
+     今の時点では `20m61/open-reception`。consumer が増えたら、そのとき追加する。
+   - 「All repositories」は選ばない。
+4. 「Connect」を押す。
+
+確認:
+
+```bash
+aws codestar-connections get-connection --connection-arn <3.5a の ARN> \
+  --query 'Connection.{Name:ConnectionName,Status:ConnectionStatus,Provider:ProviderType}'   # Status: AVAILABLE
+```
+
+この ARN を、手順 4a の `PassConnection` の対象と、手順 5 の `GitHubConnectionArn` に使う。
+
+**Rollback**:
+
+- 承認前なら `aws codestar-connections delete-connection --connection-arn <ARN>`。
+- 承認後に接続を止めたいときは、GitHub の Settings → Applications → AWS Connector for GitHub で対象 repo を外すか、
+  app を uninstall する。broker stack が参照している間は、接続を消さない（pipeline の Source が失敗する）。
+
 ## 4. broker 専用の bootstrap を作る（owner 決定 (a)）
 
 stack deploy role は、2 つの resource policy で**例外扱い**になる。
@@ -339,7 +393,7 @@ ARGS=(--app "npx ts-node --prefer-ts-exts bin/dev-deploy-broker.ts" OpenReceptio
   --parameters SparseLedgerOverrideIssuerRoleArn=<issuer role ARN>
   --parameters SparseLedgerStackDeployRoleArn=arn:aws:iam::822063948773:role/cdk-orbrkr01-cfn-exec-role-822063948773-ap-northeast-1
   --parameters SparseLedgerId=<owner が決めた ledger id>
-  --parameters GitHubConnectionArn=<既存の値> --parameters DevAppSecretsName=open-reception/dev/app-v2
+  --parameters GitHubConnectionArn=<手順 3.5 の ARN> --parameters DevAppSecretsName=open-reception/dev/app-v2
   --parameters DevPublicOriginOverride=<既存の値> --parameters DevProviderSecretBackend=secrets-manager
   --change-set-name ledger-activation)
 npx cdk deploy "${ARGS[@]}" --method=prepare-change-set          # 作るだけ。実行しない
@@ -451,6 +505,59 @@ live で確かめる点:
 
 残余リスク: trail 自体の停止（`StopLogging` / `DeleteTrail`）を防ぐのは、`cloudtrail:` 権限を誰が持つかだけ。
 account の management event trail が、その操作を記録している前提である（この repo からは確認していない）。
+
+## 7.5. unarmed のまま pipeline を 1 回通す（`dev-deploy` を作る）
+
+#1146 の「Bootstrap note」の手順である。`dev-deploy` は promotion pointer で、開発ブランチではない
+（`.claude/rules/aws-dev-promotion.md`）。broker は `BROKER_NOT_ARMED`（exit 42）で止まるので、
+**AWS の dev 環境には何も起きない**。目的は、arming の前に、配線と「live で確かめる点」を実物で確かめることである。
+
+前提:
+
+- 手順 3.5〜7 が済んでいる（接続が `AVAILABLE`、broker stack が deploy 済み、通知と trail を確認済み）。
+- 作る revision は、owner が review した `main` の commit。
+  その commit で `./scripts/quality-gate.sh --full` が green で、`infra` の CDK テストが通っていること。
+
+### 7.5a. `dev-deploy` を作る（owner が実行する）
+
+```bash
+git fetch origin main
+SHA=$(git rev-parse origin/main)             # review した main の完全な SHA
+git log -1 --format='%H %s' "$SHA"           # 目視で確かめる
+git push origin "$SHA:refs/heads/dev-deploy"
+```
+
+- push すると、pipeline の Source（`PromotionBranch`、`triggerOnPush`）が起動する。
+- **arming まで `dev-deploy` を動かすのは owner だけ。** 2 回目以降の移動も、この手順のような
+  pipeline 構造の検証に限る（`.claude/rules/aws-dev-promotion.md`「Current Phase 1 rule」）。
+  arming 後に誰が動かしてよいかは、arming の PR で決める。
+- GitHub の branch protection で `dev-deploy` の force-push と削除を禁じるかどうかは、owner が決める
+  （この repo には GitHub Actions が無いので、protection の status check は使えない）。
+
+### 7.5b. 期待する結果と記録
+
+| 段 | 期待 | 見る場所 |
+|---|---|---|
+| Source | 7.5a の `SHA` と同じ完全な commit id を取り込む | CodePipeline の execution の source revision |
+| Validation | 成功する。credential を消した状態で、typecheck・lint・unit・`build:open-next`・`aws:local:test`・infra のテストと 3 stack の synth が通る | `OpenReceptionDevDeployValidation` の build log |
+| Broker | `BROKER_NOT_ARMED` で止まる（exit 42）。`broker-result.json` は `result: denied`、`rule: BROKER_NOT_ARMED`、`source_revision` が `SHA` と一致 | `OpenReceptionTrustedDevDeployBroker` の build log と artifact |
+| mutation | 起きない。3 stack（`OpenReception-Web-dev` など）の `LastUpdatedTime` が変わらない | `describe-stacks` |
+| ledger | budget を消費しない（mutation boundary に達していない） | 下の「live で確かめる点」 |
+
+この 1 回で、`docs/architecture/aws-dev-deploy-broker.md` の「Needs live verification」のうち、次を確かめて記録する。
+
+- Validation が CodeBuild の上でテストと synth を完走するか（credential を消した環境で）。
+  特に `npm run aws:local:test`（MiniStack）が CodeBuild の build 環境で動くかは、まだ誰も確かめていない。
+- broker の trusted module の download と SHA-256 の検証が、実物の artifact で通るか。
+- broker の build phase の `finally` の中で、`CODEBUILD_BUILD_SUCCEEDING` が既に 0 になっているか。
+  0 なら、`BROKER_NOT_ARMED` の deny が ledger に `denied_before_mutation` として監査記録される。
+  記録されていなければ、その事実を書く（genesis 前の table に対する挙動も含めて）。
+- 3 stack の `DescribeStacks` が、stack ARN で絞った権限の下でどう答えるか。
+
+記録は #1146 に残す: 実施日時、`SHA`、pipeline の execution id、各段の結果、上の確認点の結果。
+失敗したら、同じ revision で再度 push しない。原因を local / 静的な検証へ戻して直す（`.claude/rules/aws-dev-promotion.md`）。
+
+**Rollback**: `git push origin --delete dev-deploy`。broker stack はそのままでよい（branch が無ければ pipeline は起動しない）。
 
 ## 8. genesis を書く（arming 時。今はまだ実行しない）
 
