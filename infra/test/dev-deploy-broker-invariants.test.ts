@@ -1848,6 +1848,7 @@ describe('target-stack stability gate (S10a): a failed or busy target stack bloc
     for (const r of ESCALATION_RULES) expect(pattern).toContain(`($.rule = "${r}")`);
     const ledger = (await import(pathToFileURL(LEDGER_MODULE_SOURCE_PATH).href)) as { RULES: Record<string, string> };
     expect(ESCALATION_RULES).toContain(ledger.RULES.REVISION_REPEATED_FAILURE);
+    expect(ESCALATION_RULES).toContain(ledger.RULES.LEDGER_CORRUPT);
     // Every rule the stability module can log (its own line carries the precise rule).
     const stacks = (await import(pathToFileURL(TARGET_STACKS_SOURCE_PATH).href)) as { RULES: Record<string, string> };
     for (const r of Object.values(stacks.RULES)) expect(ESCALATION_RULES, r).toContain(r);
