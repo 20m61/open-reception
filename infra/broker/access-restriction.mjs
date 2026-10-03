@@ -1,0 +1,522 @@
+#!/usr/bin/env node
+/**
+ * Access-restriction gate for the trusted dev-deploy broker (#1153 / #1146, Foundation
+ * safe-dev-deploy S6c, owner decision D-5 of 2026-10-03).
+ *
+ * The looser sparse-deploy profile (soft ceiling 5, 1 h cooldown, one waiver) applies only while
+ * the target is **access-restricted**: every viewer-facing entry point refuses requests without a
+ * credential issued to named people. That is a property the broker derives from the synthesized
+ * template, never a claim of the candidate (S7). This module derives it:
+ *
+ * - `absent`: the product declares no restriction check (`PRODUCT_RESTRICTION_CHECK = null`).
+ *   open-reception declares none today, so its effective policy stays 1 target / 2 ceiling;
+ * - `verified`: a check is declared and proves EVERY possible entry point restricted. Fail closed:
+ *   every resource whose type is not on the short NON_VIEWER_FACING_TYPES allowlist is an entry
+ *   point (CloudFront distributions count once per behaviour; an S3 bucket only with
+ *   `WebsiteConfiguration`; an ELBv2 load balancer unless its `Scheme` is the literal `internal`),
+ *   so a function URL, API Gateway, AppSync, App Runner, Amplify, a Cognito domain, a public load
+ *   balancer, or any type nobody classified must be proven too. No entry point at all is not a
+ *   proof;
+ * - `unverifiable`: a check is declared but cannot prove one of them. A declared check that is
+ *   not `verified` is `ACCESS_RESTRICTION_WEAKENED`: the change removes, bypasses or weakens the
+ *   restriction (S5 envelope change), a human gate, not an autonomous deploy.
+ *
+ * Independently of any check, a best-effort scan looks for the restriction's credential in the
+ * template (S6c): any base64 token (standard or URL-safe, also after `%`-decoding, at least
+ * MIN_TOKEN_LENGTH characters) that decodes to a printable `user:password` (RFC 7617), a
+ * `user:password` literal after `Basic `, passed to `btoa(...)` / `Buffer.from(...)`, or given to
+ * `Fn::Base64`, over every string and the recursive literal projection of every `Fn::Join` /
+ * `Fn::Sub` / `Fn::Select` / `Fn::Base64` node; and a CloudFront KeyValueStore seeded from the
+ * template (`ImportSource`). Any of these denies `ACCESS_RESTRICTION_CREDENTIAL_IN_TEMPLATE`. A
+ * `{{resolve:...}}` dynamic reference is a pointer, not a value. This is a guard, not a guarantee:
+ * code outside the template (Lambda@Edge / asset bundles) and credentials built at runtime are not
+ * seen. The guarantee is S6c's "only a verifier is deployed, and a human writes it".
+ *
+ * An assembly that cannot be read, or that nests a stack or a cloud assembly (whose templates this
+ * module would not scan), denies `ACCESS_RESTRICTION_INPUT_INVALID`.
+ *
+ * The decision (`evaluateAccessRestriction`) is pure over the assembly directory. The CLI writes it
+ * to DECISION_PATH (exclusive create in the broker-owned output dir) with this execution's id and
+ * revision; `ledger-runner.mjs reserve` treats anything but a matching `verified` as `unverifiable`.
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+export const ACCESS_RESTRICTION_VERSION = 1;
+export const BROKER_OUT_DIR = '/tmp/open-reception-broker-out';
+export const DECISION_PATH = `${BROKER_OUT_DIR}/access-restriction.json`;
+export const DENIED_EXIT_CODE = 47;
+
+export const RULES = Object.freeze({
+  CREDENTIAL_IN_TEMPLATE: 'ACCESS_RESTRICTION_CREDENTIAL_IN_TEMPLATE',
+  WEAKENED: 'ACCESS_RESTRICTION_WEAKENED',
+  INPUT_INVALID: 'ACCESS_RESTRICTION_INPUT_INVALID',
+});
+
+/**
+ * The product-declared restriction check: `null`, or `{ name, isRestricted(entryPoint) }` where
+ * `isRestricted` returns exactly `true` only for an entry point it proves restricted. open-reception
+ * declares none (D-5): its target is not access-restricted.
+ */
+export const PRODUCT_RESTRICTION_CHECK = null;
+
+/**
+ * Resource types that cannot themselves serve a viewer request (S6c). Everything else is a possible
+ * entry point that a declared check must prove restricted: an allowlist of the known-internal fails
+ * closed on a type nobody classified, which a list of internet-facing types would let through.
+ * `AWS::S3::Bucket` and `AWS::ElasticLoadBalancingV2::LoadBalancer` are decided per resource
+ * (`isEntryPoint`).
+ */
+export const NON_VIEWER_FACING_TYPES = Object.freeze(new Set([
+  'AWS::CDK::Metadata',
+  'AWS::CloudFront::CachePolicy',
+  'AWS::CloudFront::Function',
+  'AWS::CloudFront::KeyValueStore',
+  'AWS::CloudFront::OriginAccessControl',
+  'AWS::CloudFront::OriginRequestPolicy',
+  'AWS::CloudFront::ResponseHeadersPolicy',
+  'AWS::CloudWatch::Alarm',
+  'AWS::CloudWatch::Dashboard',
+  'AWS::Cognito::UserPool',
+  'AWS::Cognito::UserPoolClient',
+  'AWS::DynamoDB::Table',
+  'AWS::IAM::Policy',
+  'AWS::IAM::Role',
+  'AWS::Lambda::Function',
+  'AWS::Lambda::LayerVersion',
+  'AWS::Lambda::Permission',
+  'AWS::Logs::LogGroup',
+  'AWS::Logs::MetricFilter',
+  'AWS::S3::BucketPolicy',
+  'AWS::SNS::Subscription',
+  'AWS::SNS::Topic',
+  'AWS::SNS::TopicPolicy',
+  'Custom::CDKBucketDeployment',
+  'Custom::CrossRegionExportReader',
+  'Custom::CrossRegionExportWriter',
+  'Custom::S3AutoDeleteObjects',
+]));
+
+/** Can this resource serve a viewer request (so a declared check must prove it restricted)? */
+function isEntryPoint(type, props) {
+  if (type === 'AWS::S3::Bucket') return props.WebsiteConfiguration !== undefined;
+  if (type === 'AWS::ElasticLoadBalancingV2::LoadBalancer') return props.Scheme !== 'internal';
+  return !NON_VIEWER_FACING_TYPES.has(type);
+}
+
+// --- copied from trusted-policy.mjs (isRecord, parseStrictJson, safeTemplatePath, joinedLiterals,
+// literalProjection, literalList) ---------------------------------------------------------------
+// Provenance: infra/broker/trusted-policy.mjs at origin/main 9702fb6. Copied, not imported: the
+// broker downloads and verifies each module on its own, so one module cannot import another.
+// Keep in step with the original (byte identity is tested).
+
+function isRecord(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * JSON.parse keeps the last of two equal keys; another reader (the CDK CLI, CloudFormation) may
+ * keep the first, so the reviewed document and the deployed one could differ. Reject duplicate
+ * keys (compared after JSON unescaping) at any depth, then parse normally.
+ */
+export function parseStrictJson(text) {
+  let i = 0;
+  const fail = (why) => {
+    throw new Error(`invalid JSON at offset ${i}: ${why}`);
+  };
+  const ws = () => {
+    while (i < text.length && ' \t\n\r'.includes(text[i])) i += 1;
+  };
+  const string = () => {
+    const start = i;
+    i += 1;
+    while (i < text.length && text[i] !== '"') i += text[i] === '\\' ? 2 : 1;
+    if (text[i] !== '"') fail('unterminated string');
+    i += 1;
+    return JSON.parse(text.slice(start, i));
+  };
+  const value = () => {
+    ws();
+    if (text[i] === '{') {
+      i += 1;
+      const seen = new Set();
+      ws();
+      if (text[i] === '}') {
+        i += 1;
+        return;
+      }
+      for (;;) {
+        ws();
+        if (text[i] !== '"') fail('expected a key');
+        const k = string();
+        if (seen.has(k)) fail(`duplicate key ${JSON.stringify(k)}`);
+        seen.add(k);
+        ws();
+        if (text[i] !== ':') fail('expected ":"');
+        i += 1;
+        value();
+        ws();
+        if (text[i] === ',') {
+          i += 1;
+          continue;
+        }
+        if (text[i] === '}') {
+          i += 1;
+          return;
+        }
+        fail('expected "," or "}"');
+      }
+    }
+    if (text[i] === '[') {
+      i += 1;
+      ws();
+      if (text[i] === ']') {
+        i += 1;
+        return;
+      }
+      for (;;) {
+        value();
+        ws();
+        if (text[i] === ',') {
+          i += 1;
+          continue;
+        }
+        if (text[i] === ']') {
+          i += 1;
+          return;
+        }
+        fail('expected "," or "]"');
+      }
+    }
+    if (text[i] === '"') {
+      string();
+      return;
+    }
+    const m = /^(?:-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)/.exec(text.slice(i, i + 64));
+    if (!m) fail('unexpected token');
+    i += m[0].length;
+  };
+  value();
+  ws();
+  if (i !== text.length) fail('trailing data');
+  return JSON.parse(text);
+}
+
+function safeTemplatePath(assemblyDir, templateFile) {
+  if (typeof templateFile !== 'string' || templateFile.length === 0) return null;
+  const resolved = path.resolve(assemblyDir, templateFile);
+  const root = path.resolve(assemblyDir) + path.sep;
+  if (!resolved.startsWith(root)) return null;
+  // Lexically inside is not enough: a symlinked directory on the way (`ext/x` with `ext` -> /elsewhere)
+  // would read, and let the CLI publish, bytes from outside the assembly. An existing path must also
+  // be inside the assembly after resolving every link; a missing one is left to the caller (it fails).
+  try {
+    const real = fs.realpathSync(resolved);
+    if (!real.startsWith(fs.realpathSync(assemblyDir) + path.sep)) return null;
+  } catch {
+    // does not exist (yet): reading it fails closed later
+  }
+  return resolved;
+}
+
+/**
+ * Literal projections of `Fn::Join` / `Fn::Sub` values, so a number split across intrinsic parts
+ * (`['...:999999', '999999:...']`, `${A}${B}` with a variable map) is still scanned as one string.
+ * Non-literal parts become a NUL, which is never part of an account id.
+ */
+function joinedLiterals(value, out = []) {
+  if (Array.isArray(value)) {
+    value.forEach((v) => joinedLiterals(v, out));
+    return out;
+  }
+  if (!isRecord(value)) return out;
+  if (['Fn::Join', 'Fn::Sub', 'Fn::Select'].some((k) => Object.hasOwn(value, k))) out.push(literalProjection(value));
+  Object.values(value).forEach((v) => joinedLiterals(v, out));
+  return out;
+}
+
+/**
+ * The string an intrinsic evaluates to, as far as literals decide it, with every other part a
+ * NUL: nested `Fn::Join`, `Fn::Sub` variables that are themselves intrinsics, and `Fn::Select` of
+ * a literal list are resolved recursively, so no nesting splits an account id out of view.
+ */
+function literalProjection(value, depth = 0) {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number') return String(value);
+  if (!isRecord(value) || depth > 32) return '\u0000';
+  const j = value['Fn::Join'];
+  if (Array.isArray(j) && j.length === 2 && typeof j[0] === 'string') {
+    const parts = literalList(j[1], depth + 1);
+    if (parts) return parts.map((p) => literalProjection(p, depth + 1)).join(j[0]);
+  }
+  const sub = value['Fn::Sub'];
+  if (typeof sub === 'string' || (Array.isArray(sub) && typeof sub[0] === 'string')) {
+    const [text, vars] = typeof sub === 'string' ? [sub, {}] : [sub[0], isRecord(sub[1]) ? sub[1] : {}];
+    return text.replace(/\$\{([^}]*)\}/g, (_m, name) => (Object.hasOwn(vars, name) ? literalProjection(vars[name], depth + 1) : '\u0000'));
+  }
+  const sel = value['Fn::Select'];
+  if (Array.isArray(sel) && sel.length === 2) {
+    const list = literalList(sel[1], depth + 1);
+    const index = Number(literalProjection(sel[0], depth + 1));
+    return list && Number.isInteger(index) && index >= 0 && index < list.length ? literalProjection(list[index], depth + 1) : '\u0000';
+  }
+  return '\u0000';
+}
+
+/** A literal list, or `Fn::Split` of a projectable string; otherwise null. */
+function literalList(value, depth) {
+  if (Array.isArray(value)) return value;
+  const split = isRecord(value) ? value['Fn::Split'] : undefined;
+  if (Array.isArray(split) && split.length === 2 && typeof split[0] === 'string' && split[0] !== '') {
+    return literalProjection(split[1], depth + 1).split(split[0]);
+  }
+  return null;
+}
+
+// --- end of copy ----------------------------------------------------------------------------
+
+/** Shortest base64 token considered (6 decoded bytes, e.g. `a:bcde`); keeps random hits rare. */
+export const MIN_TOKEN_LENGTH = 8;
+/** Standard or URL-safe base64, not part of a longer run of base64 characters. */
+const BASE64_TOKEN = new RegExp(`(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{${MIN_TOKEN_LENGTH},}={0,2}(?![A-Za-z0-9+/=_-])`, 'g');
+/** A `user:password` literal in a credential position: after `Basic `, or passed to an encoder. */
+const PLAIN_IN_CONTEXT = [/\bBasic\s+([^\s'"`]+)/gi, /\b(?:btoa|Buffer\.from)\(\s*(['"`])([^'"`]*)\1/g];
+
+/**
+ * RFC 7617 `user-id ":" password` as it would be sent: printable ASCII, a non-empty user without
+ * whitespace or colon, then a colon. A `{{resolve:...}}` dynamic reference never qualifies (`{` is
+ * not a base64 character, and the reference text is not a user).
+ */
+export function isCredentialText(text) {
+  return typeof text === 'string' && /^[\x20-\x7e]+$/.test(text) && /^[^:\s{}]+:\S*$/.test(text);
+}
+
+const percentDecoded = (text) => text.replace(/%([0-9A-Fa-f]{2})/g, (_m, h) => String.fromCharCode(parseInt(h, 16)));
+
+/** Does this literal carry an HTTP Basic credential (encoded, or plain in a credential position)? */
+export function looksLikeCredential(text) {
+  if (typeof text !== 'string') return false;
+  for (const variant of new Set([text, percentDecoded(text)])) {
+    for (const m of variant.matchAll(BASE64_TOKEN)) {
+      const body = m[0].replace(/=+$/, '').replace(/-/g, '+').replace(/_/g, '/');
+      if (body.length % 4 === 1) continue;
+      if (isCredentialText(Buffer.from(body, 'base64').toString('latin1'))) return true;
+    }
+    for (const re of PLAIN_IN_CONTEXT) {
+      for (const m of variant.matchAll(re)) if (isCredentialText(m[m.length - 1])) return true;
+    }
+  }
+  return false;
+}
+
+/** Every string of the template (keys and values) and every literal projection of an intrinsic. */
+function templateStrings(value, out = []) {
+  if (typeof value === 'string') {
+    out.push(value);
+  } else if (Array.isArray(value)) {
+    for (const v of value) templateStrings(v, out);
+  } else if (isRecord(value)) {
+    for (const [k, v] of Object.entries(value)) {
+      out.push(k);
+      templateStrings(v, out);
+    }
+  }
+  return out;
+}
+
+/** `Fn::Base64` arguments (projected), which deploy as base64 of the argument text. */
+function base64Arguments(value, out = []) {
+  if (Array.isArray(value)) {
+    value.forEach((v) => base64Arguments(v, out));
+  } else if (isRecord(value)) {
+    if (Object.hasOwn(value, 'Fn::Base64')) out.push(literalProjection(value['Fn::Base64']));
+    Object.values(value).forEach((v) => base64Arguments(v, out));
+  }
+  return out;
+}
+
+/** Does the template carry a credential anywhere the scan can see? */
+export function templateCarriesCredential(template) {
+  if ([...templateStrings(template), ...joinedLiterals(template), ...base64Arguments(template)].some(looksLikeCredential)) return true;
+  return base64Arguments(template).some(isCredentialText);
+}
+
+/** Viewer-facing entry points of one template; a distribution's behaviours are each one. */
+function entryPoints(stackName, template) {
+  const out = [];
+  const resources = isRecord(template?.Resources) ? template.Resources : {};
+  for (const [logicalId, resource] of Object.entries(resources)) {
+    const type = isRecord(resource) && typeof resource.Type === 'string' ? resource.Type : '(no type)';
+    const props = isRecord(resource) && isRecord(resource.Properties) ? resource.Properties : {};
+    if (!isEntryPoint(type, props)) continue;
+    const base = { stackName, logicalId, type, resource, template };
+    if (type !== 'AWS::CloudFront::Distribution') {
+      out.push({ ...base, entry: logicalId });
+      continue;
+    }
+    const config = isRecord(resource.Properties) ? resource.Properties.DistributionConfig : undefined;
+    if (!isRecord(config) || !isRecord(config.DefaultCacheBehavior)) {
+      // A distribution whose behaviours cannot be read is still an entry point nobody proved.
+      out.push({ ...base, entry: `${logicalId}/unreadable`, behavior: null });
+      continue;
+    }
+    out.push({ ...base, entry: `${logicalId}/DefaultCacheBehavior`, behavior: config.DefaultCacheBehavior });
+    const extra = config.CacheBehaviors;
+    if (extra !== undefined && !Array.isArray(extra)) {
+      out.push({ ...base, entry: `${logicalId}/CacheBehaviors`, behavior: null });
+    }
+    for (const [i, behavior] of (Array.isArray(extra) ? extra : []).entries()) {
+      out.push({ ...base, entry: `${logicalId}/CacheBehaviors/${i}`, behavior: isRecord(behavior) ? behavior : null });
+    }
+  }
+  return out;
+}
+
+/** Read every stack template of the assembly (strict JSON, inside the assembly). Throws on any failure. */
+function readTemplates(assemblyDir) {
+  const manifestFile = safeTemplatePath(assemblyDir, 'manifest.json');
+  if (!manifestFile) throw new Error('manifest.json escapes the assembly');
+  const manifest = parseStrictJson(fs.readFileSync(manifestFile, 'utf8'));
+  if (!isRecord(manifest) || !isRecord(manifest.artifacts)) throw new Error('manifest.artifacts must be an object');
+  const templates = [];
+  for (const [artifactId, artifact] of Object.entries(manifest.artifacts)) {
+    // A nested assembly's templates would not be scanned here (the trusted policy also denies it).
+    if (isRecord(artifact) && artifact.type === 'cdk:cloud-assembly') throw new Error(`nested cloud assembly ${artifactId} is not evaluated`);
+    if (!isRecord(artifact) || artifact.type !== 'aws:cloudformation:stack') continue;
+    const props = isRecord(artifact.properties) ? artifact.properties : {};
+    const file = safeTemplatePath(assemblyDir, props.templateFile);
+    if (!file) throw new Error(`template of ${artifactId} is missing or escapes the assembly`);
+    const template = parseStrictJson(fs.readFileSync(file, 'utf8'));
+    if (!isRecord(template)) throw new Error(`template of ${artifactId} is not an object`);
+    for (const [logicalId, r] of Object.entries(isRecord(template.Resources) ? template.Resources : {})) {
+      if (isRecord(r) && r.Type === 'AWS::CloudFormation::Stack') throw new Error(`nested stack ${artifactId}/${logicalId} is not evaluated`);
+    }
+    templates.push({ stackName: typeof props.stackName === 'string' ? props.stackName : artifactId, template });
+  }
+  if (templates.length === 0) throw new Error('assembly has no stack template');
+  return templates;
+}
+
+const decision = (result, rule, reason, accessRestriction, extra = {}) => ({
+  version: ACCESS_RESTRICTION_VERSION,
+  result,
+  rule,
+  reason,
+  accessRestriction,
+  ...extra,
+});
+
+/**
+ * Pure decision over the assembly. `check` is the product-declared restriction check (or null).
+ * Returns `{ result: 'allowed' | 'denied', rule, reason, accessRestriction: { state, reason? }, ... }`.
+ */
+export function evaluateAccessRestriction({ assemblyDir, check }) {
+  let templates;
+  try {
+    templates = readTemplates(assemblyDir);
+  } catch (error) {
+    return decision('denied', RULES.INPUT_INVALID, `assembly could not be read: ${error instanceof Error ? error.message : String(error)}`, {
+      state: 'unverifiable',
+      reason: 'assembly unreadable',
+    });
+  }
+
+  // S6c: the credential never appears in the template, whatever the check (runs unconditionally).
+  const findings = [];
+  for (const { stackName, template } of templates) {
+    if (templateCarriesCredential(template)) {
+      findings.push({ stackName, logicalId: null, why: 'a template string or intrinsic looks like an HTTP Basic credential' });
+    }
+    const resources = isRecord(template.Resources) ? template.Resources : {};
+    for (const [logicalId, resource] of Object.entries(resources)) {
+      if (isRecord(resource) && resource.Type === 'AWS::CloudFront::KeyValueStore' && isRecord(resource.Properties) && resource.Properties.ImportSource !== undefined) {
+        findings.push({ stackName, logicalId, why: 'a CloudFront KeyValueStore is seeded from the template (ImportSource)' });
+      }
+    }
+  }
+  const checkName = check === null || check === undefined ? null : typeof check?.name === 'string' ? check.name : 'unnamed';
+  if (findings.length > 0) {
+    return decision(
+      'denied',
+      RULES.CREDENTIAL_IN_TEMPLATE,
+      `the access restriction's credential must not appear in the synthesized template: ${findings.map((f) => `${f.stackName}${f.logicalId ? `/${f.logicalId}` : ''}: ${f.why}`).join('; ')}`,
+      { state: 'unverifiable', reason: 'credential in template' },
+      { check: checkName, findings },
+    );
+  }
+
+  if (check === null || check === undefined) {
+    return decision('allowed', null, null, { state: 'absent' }, { check: null, findings: [] });
+  }
+
+  const entries = templates.flatMap(({ stackName, template }) => entryPoints(stackName, template));
+  const results = entries.map((e) => {
+    let restricted = false;
+    try {
+      restricted = typeof check.isRestricted === 'function' && check.isRestricted(e) === true;
+    } catch {
+      restricted = false; // a check that throws proved nothing
+    }
+    return { stackName: e.stackName, logicalId: e.logicalId, type: e.type, entry: e.entry, restricted };
+  });
+  const unproven = results.filter((r) => !r.restricted);
+  if (results.length > 0 && unproven.length === 0) {
+    return decision('allowed', null, null, { state: 'verified' }, { check: checkName, entryPoints: results, findings: [] });
+  }
+  const why = results.length === 0 ? 'no possible entry point was found to prove restricted' : `entry points not proven restricted: ${unproven.map((r) => `${r.stackName}/${r.entry}`).join(', ')}`;
+  return decision(
+    'denied',
+    RULES.WEAKENED,
+    `the declared access restriction (${checkName}) cannot be established: ${why}; removing, bypassing or weakening it is an envelope change (S5) and needs a human`,
+    { state: 'unverifiable', reason: why },
+    { check: checkName, entryPoints: results, findings: [] },
+  );
+}
+
+// --- CLI ------------------------------------------------------------------------------------
+
+/**
+ * Decide and write the decision to DECISION_PATH (exclusive create in the broker-owned output
+ * dir). Exit 0 only when the decision allows.
+ */
+export function runCli(argv, { now = new Date(), env = process.env, check = PRODUCT_RESTRICTION_CHECK, decisionPath = DECISION_PATH } = {}) {
+  const i = argv.indexOf('--assembly');
+  const assemblyDir = i >= 0 ? argv[i + 1] : undefined;
+  const d =
+    typeof assemblyDir === 'string' && path.isAbsolute(assemblyDir)
+      ? evaluateAccessRestriction({ assemblyDir, check })
+      : decision('denied', RULES.INPUT_INVALID, '--assembly must be an absolute path', { state: 'unverifiable', reason: 'no assembly' });
+  const record = {
+    ...d,
+    executionId: env.OR_PIPELINE_EXECUTION_ID ?? null,
+    revision: env.OR_TRUSTED_SOURCE_REVISION ?? null,
+    decidedAt: now.toISOString(),
+  };
+  let exitCode = d.result === 'allowed' ? 0 : DENIED_EXIT_CODE;
+  try {
+    fs.writeFileSync(decisionPath, `${JSON.stringify(record, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+  } catch {
+    exitCode = DENIED_EXIT_CODE; // the decision could not be recorded where the next check reads it
+  }
+  return { exitCode, record };
+}
+
+function main() {
+  const { exitCode, record } = runCli(process.argv.slice(2));
+  process.stdout.write(`${JSON.stringify({ event: exitCode === 0 ? 'access_restriction.allowed' : 'access_restriction.denied', ...record })}\n`);
+  process.exitCode = exitCode;
+}
+
+/** Run as a program even when invoked through a symlinked path. */
+const invokedDirectly = () => {
+  try {
+    return Boolean(process.argv[1]) && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+};
+
+if (invokedDirectly()) {
+  main();
+}
