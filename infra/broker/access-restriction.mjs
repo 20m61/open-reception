@@ -13,7 +13,8 @@
  * - `verified`: a check is declared and proves EVERY possible entry point restricted. Fail closed:
  *   every resource whose type is not on the short NON_VIEWER_FACING_TYPES allowlist is an entry
  *   point (CloudFront distributions count once per behaviour; an S3 bucket only with
- *   `WebsiteConfiguration`; an ELBv2 load balancer unless its `Scheme` is the literal `internal`),
+ *   `WebsiteConfiguration`, `AccessControl` or non-literal `Properties`, and a bucket policy only
+ *   when it may Allow anyone; an ELBv2 load balancer unless its `Scheme` is the literal `internal`),
  *   so a function URL, API Gateway, AppSync, App Runner, Amplify, a Cognito domain, a public load
  *   balancer, or any type nobody classified must be proven too. No entry point at all is not a
  *   proof;
@@ -22,11 +23,13 @@
  *   restriction (S5 envelope change), a human gate, not an autonomous deploy.
  *
  * Independently of any check, a best-effort scan looks for the restriction's credential in the
- * template (S6c): any base64 token (standard or URL-safe, also after `%`-decoding, at least
- * MIN_TOKEN_LENGTH characters) that decodes to a printable `user:password` (RFC 7617), a
+ * template (S6c): any base64 token (standard or URL-safe, also after `%`-decoding, also each part
+ * of a run between `/` boundaries, at least MIN_TOKEN_LENGTH characters) that decodes to a
+ * printable `user:password` (RFC 7617), a
  * `user:password` literal after `Basic `, passed to `btoa(...)` / `Buffer.from(...)`, or given to
  * `Fn::Base64`, over every string and the recursive literal projection of every `Fn::Join` /
- * `Fn::Sub` / `Fn::Select` / `Fn::Base64` node; and a CloudFront KeyValueStore seeded from the
+ * `Fn::Sub` / `Fn::Select` / `Fn::Base64` node, under every combination of branches of the `Fn::If`
+ * inside them (more than MAX_PROJECTED_IFS fails closed); and a CloudFront KeyValueStore seeded from the
  * template (`ImportSource`). Any of these denies `ACCESS_RESTRICTION_CREDENTIAL_IN_TEMPLATE`. A
  * `{{resolve:...}}` dynamic reference is a pointer, not a value. This is a guard, not a guarantee:
  * code outside the template (Lambda@Edge / asset bundles) and credentials built at runtime are not
@@ -88,7 +91,7 @@ export const NON_VIEWER_FACING_TYPES = Object.freeze(new Set([
   'AWS::Lambda::Permission',
   'AWS::Logs::LogGroup',
   'AWS::Logs::MetricFilter',
-  'AWS::S3::BucketPolicy',
+  'AWS::S3::BucketPolicy', // unless it may Allow anyone (isEntryPoint)
   'AWS::SNS::Subscription',
   'AWS::SNS::Topic',
   'AWS::SNS::TopicPolicy',
@@ -98,11 +101,39 @@ export const NON_VIEWER_FACING_TYPES = Object.freeze(new Set([
   'Custom::S3AutoDeleteObjects',
 ]));
 
-/** Can this resource serve a viewer request (so a declared check must prove it restricted)? */
-function isEntryPoint(type, props) {
-  if (type === 'AWS::S3::Bucket') return props.WebsiteConfiguration !== undefined;
+/**
+ * Can this resource serve a viewer request (so a declared check must prove it restricted)? An S3
+ * bucket and its policy are decided here, not by relying on the trusted policy's S3 property
+ * allowlist and `RESOURCE_POLICY_PRINCIPAL_NOT_REVIEWED`: a bucket with `WebsiteConfiguration` or
+ * `AccessControl` (a canned ACL may be public-read), or whose `Properties` are not a literal object,
+ * and a bucket policy that may Allow anyone (a `*` principal, no literal `Principal` — e.g.
+ * `NotPrincipal` — or a statement that is not literal) are entry points.
+ */
+function isEntryPoint(type, rawProps) {
+  const props = isRecord(rawProps) ? rawProps : {};
+  if (type === 'AWS::S3::Bucket') {
+    if (rawProps !== undefined && !isRecord(rawProps)) return true;
+    return Object.keys(props).some((k) => k.startsWith('Fn::')) || props.WebsiteConfiguration !== undefined || props.AccessControl !== undefined;
+  }
+  if (type === 'AWS::S3::BucketPolicy') return mayAllowAnyone(props.PolicyDocument);
   if (type === 'AWS::ElasticLoadBalancingV2::LoadBalancer') return props.Scheme !== 'internal';
   return !NON_VIEWER_FACING_TYPES.has(type);
+}
+
+/** Could this policy document Allow a public principal? Anything not literal counts as yes. */
+function mayAllowAnyone(document) {
+  if (document === undefined) return false; // grants nothing
+  if (!isRecord(document) || !Array.isArray(document.Statement)) return true;
+  return document.Statement.some((statement) => {
+    if (!isRecord(statement)) return true;
+    if (statement.Effect === 'Deny') return false;
+    const principal = statement.Principal;
+    if (typeof principal === 'string') return principal.includes('*');
+    if (!isRecord(principal)) return true;
+    return Object.values(principal).some((value) =>
+      (Array.isArray(value) ? value : [value]).some((v) => (typeof v === 'string' ? v.includes('*') : !(isRecord(v) && Object.keys(v).length === 1 && Object.hasOwn(v, 'Fn::GetAtt')))),
+    );
+  });
 }
 
 // --- copied from trusted-policy.mjs (isRecord, parseStrictJson, safeTemplatePath, joinedLiterals,
@@ -285,11 +316,29 @@ const PLAIN_IN_CONTEXT = [/\bBasic\s+([^\s'"`]+)/gi, /\b(?:btoa|Buffer\.from)\(\
 
 /**
  * RFC 7617 `user-id ":" password` as it would be sent: printable ASCII, a non-empty user without
- * whitespace or colon, then a colon. A `{{resolve:...}}` dynamic reference never qualifies (`{` is
- * not a base64 character, and the reference text is not a user).
+ * whitespace or colon, then a colon and a password of printable ASCII (spaces included). A
+ * `{{resolve:...}}` dynamic reference never qualifies (`{` is not a base64 character, and the
+ * reference text is not a user).
  */
 export function isCredentialText(text) {
-  return typeof text === 'string' && /^[\x20-\x7e]+$/.test(text) && /^[^:\s{}]+:\S*$/.test(text);
+  return typeof text === 'string' && /^[\x20-\x7e]+$/.test(text) && /^[^:\s{}]+:[\x20-\x7e]*$/.test(text);
+}
+
+/**
+ * The run itself and every part of it between `/` boundaries: `/` is a base64 character, so a token
+ * after a path separator (`/dXNlcjpwYXNz`) would otherwise only be read misaligned inside the run.
+ */
+function slashSpans(run) {
+  const starts = [0];
+  const ends = [];
+  for (let i = 0; i < run.length; i += 1) {
+    if (run[i] === '/') {
+      ends.push(i);
+      starts.push(i + 1);
+    }
+  }
+  ends.push(run.length);
+  return starts.flatMap((s) => ends.filter((e) => e - s >= MIN_TOKEN_LENGTH).map((e) => run.slice(s, e)));
 }
 
 const percentDecoded = (text) => text.replace(/%([0-9A-Fa-f]{2})/g, (_m, h) => String.fromCharCode(parseInt(h, 16)));
@@ -299,9 +348,11 @@ export function looksLikeCredential(text) {
   if (typeof text !== 'string') return false;
   for (const variant of new Set([text, percentDecoded(text)])) {
     for (const m of variant.matchAll(BASE64_TOKEN)) {
-      const body = m[0].replace(/=+$/, '').replace(/-/g, '+').replace(/_/g, '/');
-      if (body.length % 4 === 1) continue;
-      if (isCredentialText(Buffer.from(body, 'base64').toString('latin1'))) return true;
+      for (const token of slashSpans(m[0])) {
+        const body = token.replace(/=+$/, '').replace(/-/g, '+').replace(/_/g, '/');
+        if (body.length < MIN_TOKEN_LENGTH || body.length % 4 === 1) continue;
+        if (isCredentialText(Buffer.from(body, 'base64').toString('latin1'))) return true;
+      }
     }
     for (const re of PLAIN_IN_CONTEXT) {
       for (const m of variant.matchAll(re)) if (isCredentialText(m[m.length - 1])) return true;
@@ -336,10 +387,56 @@ function base64Arguments(value, out = []) {
   return out;
 }
 
-/** Does the template carry a credential anywhere the scan can see? */
+/**
+ * At most this many `Fn::If` inside `Fn::Join` / `Fn::Sub` / `Fn::Select` / `Fn::Base64` nodes are
+ * projected (2^6 = 64 branch combinations); a template with more fails closed.
+ */
+export const MAX_PROJECTED_IFS = 6;
+
+const PROJECTED_INTRINSICS = ['Fn::Join', 'Fn::Sub', 'Fn::Select', 'Fn::Base64'];
+const isIf = (value) => isRecord(value) && Object.keys(value).length === 1 && Array.isArray(value['Fn::If']) && value['Fn::If'].length === 3;
+
+/** Every `Fn::If` node inside a projected intrinsic (an `Fn::If` elsewhere cannot split a projection). */
+function projectedIfs(value, inside = false, out = new Set()) {
+  if (Array.isArray(value)) {
+    value.forEach((v) => projectedIfs(v, inside, out));
+  } else if (isRecord(value)) {
+    if (inside && isIf(value)) out.add(value);
+    const nowInside = inside || PROJECTED_INTRINSICS.some((k) => Object.hasOwn(value, k));
+    Object.values(value).forEach((v) => projectedIfs(v, nowInside, out));
+  }
+  return out;
+}
+
+/**
+ * The template with each `Fn::If` replaced by the branch `pickOf(node)` names (1 or 2); one it
+ * names none for is kept, so both of its branches are still walked.
+ */
+function withIfBranch(value, pickOf) {
+  if (Array.isArray(value)) return value.map((v) => withIfBranch(v, pickOf));
+  if (!isRecord(value)) return value;
+  const pick = isIf(value) ? pickOf(value) : undefined;
+  if (pick !== undefined) return withIfBranch(value['Fn::If'][pick], pickOf);
+  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, withIfBranch(v, pickOf)]));
+}
+
+/**
+ * Does the template carry a credential anywhere the scan can see? The projections read an `Fn::If`
+ * as a NUL, so the template is also scanned under every combination of branches of the `Fn::If`
+ * nodes inside projected intrinsics (a credential split across branches of two of them is seen);
+ * more than MAX_PROJECTED_IFS of them fails closed (true).
+ */
 export function templateCarriesCredential(template) {
-  if ([...templateStrings(template), ...joinedLiterals(template), ...base64Arguments(template)].some(looksLikeCredential)) return true;
-  return base64Arguments(template).some(isCredentialText);
+  const ifs = [...projectedIfs(template)];
+  if (ifs.length > MAX_PROJECTED_IFS) return true;
+  const variants = [template];
+  for (let combo = 0; ifs.length > 0 && combo < 2 ** ifs.length; combo += 1) {
+    variants.push(withIfBranch(template, (node) => (ifs.includes(node) ? ((combo >> ifs.indexOf(node)) & 1) + 1 : undefined)));
+  }
+  return variants.some((t) => {
+    if ([...templateStrings(t), ...joinedLiterals(t), ...base64Arguments(t)].some(looksLikeCredential)) return true;
+    return base64Arguments(t).some(isCredentialText);
+  });
 }
 
 /** Viewer-facing entry points of one template; a distribution's behaviours are each one. */
@@ -348,8 +445,7 @@ function entryPoints(stackName, template) {
   const resources = isRecord(template?.Resources) ? template.Resources : {};
   for (const [logicalId, resource] of Object.entries(resources)) {
     const type = isRecord(resource) && typeof resource.Type === 'string' ? resource.Type : '(no type)';
-    const props = isRecord(resource) && isRecord(resource.Properties) ? resource.Properties : {};
-    if (!isEntryPoint(type, props)) continue;
+    if (!isEntryPoint(type, isRecord(resource) ? resource.Properties : undefined)) continue;
     const base = { stackName, logicalId, type, resource, template };
     if (type !== 'AWS::CloudFront::Distribution') {
       out.push({ ...base, entry: logicalId });
@@ -426,7 +522,11 @@ export function evaluateAccessRestriction({ assemblyDir, check }) {
   const findings = [];
   for (const { stackName, template } of templates) {
     if (templateCarriesCredential(template)) {
-      findings.push({ stackName, logicalId: null, why: 'a template string or intrinsic looks like an HTTP Basic credential' });
+      const why =
+        projectedIfs(template).size > MAX_PROJECTED_IFS
+          ? `more than ${MAX_PROJECTED_IFS} Fn::If inside Fn::Join / Fn::Sub / Fn::Select / Fn::Base64: their branch combinations are not projected (fail closed)`
+          : 'a template string or intrinsic looks like an HTTP Basic credential';
+      findings.push({ stackName, logicalId: null, why });
     }
     const resources = isRecord(template.Resources) ? template.Resources : {};
     for (const [logicalId, resource] of Object.entries(resources)) {
