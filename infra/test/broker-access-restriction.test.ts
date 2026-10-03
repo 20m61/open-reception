@@ -24,6 +24,7 @@ type Mod = {
   isCredentialText: (s: unknown) => boolean;
   NON_VIEWER_FACING_TYPES: ReadonlySet<string>;
   MIN_TOKEN_LENGTH: number;
+  MAX_PROJECTED_IFS: number;
   parseStrictJson: (s: string) => unknown;
   runCli: (argv: string[], o?: J) => { exitCode: number; record: J };
 };
@@ -256,6 +257,12 @@ describe('the credential never appears in the template (scan runs with or withou
     ['Fn::Base64 of an Fn::If whose second branch is user:password', { P: { Type: 'AWS::CloudFront::OriginRequestPolicy', Properties: { V: { 'Fn::Base64': { 'Fn::If': ['C', 'x', 'user:pass'] } } } } }],
     ['Fn::Base64 of a Join through an Fn::If', { P: { Type: 'AWS::CloudFront::OriginRequestPolicy', Properties: { V: { 'Fn::Base64': { 'Fn::Join': [':', ['owner', { 'Fn::If': ['C', 's3cret-pass', 'x'] }]] } } } } }],
     ['a token split across Fn::Join parts, one part through an Fn::If', fnCode({ 'Fn::Join': ['', ['Basic ', credential.slice(0, 6), { 'Fn::If': ['C', credential.slice(6), 'x'] }]] })],
+    // Mixed branches: the credential needs the first branch of one Fn::If and the second of another.
+    ['a token split across two Fn::If, first branch of one and second of the other', fnCode({ 'Fn::Join': ['', ['Basic ', { 'Fn::If': ['A', credential.slice(0, 6), 'x'] }, { 'Fn::If': ['B', 'y', credential.slice(6)] }]] })],
+    ['Fn::Base64 of user:password split across two Fn::If with mixed branches', { P: { Type: 'AWS::CloudFront::OriginRequestPolicy', Properties: { V: { 'Fn::Base64': { 'Fn::Join': [':', [{ 'Fn::If': ['A', 'owner', 'x'] }, { 'Fn::If': ['B', 'y', 's3cret-pass'] }]] } } } } }],
+    ['an Fn::If nested in a branch of another', { P: { Type: 'AWS::CloudFront::OriginRequestPolicy', Properties: { V: { 'Fn::Base64': { 'Fn::If': ['A', { 'Fn::If': ['B', 'x', 'user:pass'] }, 'y'] } } } } }],
+    // An Fn::If outside any projected intrinsic keeps both branches, so a Join in its second branch is projected too.
+    ['mixed-branch Fn::If inside a Join in the second branch of an outer Fn::If', fnCode({ 'Fn::If': ['O', 'plain', { 'Fn::Join': ['', ['Basic ', { 'Fn::If': ['A', credential.slice(0, 6), 'x'] }, { 'Fn::If': ['B', 'y', credential.slice(6)] }]] }] })],
     // A whole literal inside an Fn::If is an ordinary nested string and was always scanned.
     ['a plain string inside an Fn::If', fnCode({ 'Fn::If': ['C', `Basic ${credential}`, 'x'] })],
     // #1214 AC2: RFC 7617 allows spaces in the password.
@@ -326,6 +333,18 @@ describe('the credential never appears in the template (scan runs with or withou
     expect(M.looksLikeCredential(withSlash)).toBe(true);
     // A piece shorter than the minimum token length is not tried.
     expect(M.looksLikeCredential(`/${Buffer.from('a:bcd').toString('base64')}`)).toBe(false);
+  });
+
+  it('more Fn::If inside projected intrinsics than MAX_PROJECTED_IFS fails closed; up to it, and outside them, is scanned', () => {
+    expect(M.MAX_PROJECTED_IFS).toBe(6);
+    const ifs = (n: number): J => ({ 'Fn::Join': ['', Array.from({ length: n }, (_, i) => ({ 'Fn::If': [`C${i}`, 'a', 'b'] }))] });
+    const run = (code: unknown) => M.evaluateAccessRestriction({ assemblyDir: assembly({ Web: { ...fnCode(code), Cdn: distribution(0) } }), check: null });
+    const over = run(ifs(M.MAX_PROJECTED_IFS + 1));
+    expect(over).toMatchObject({ result: 'denied', rule: 'ACCESS_RESTRICTION_CREDENTIAL_IN_TEMPLATE' });
+    expect(String(over.reason)).toContain('fail closed');
+    expect(run(ifs(M.MAX_PROJECTED_IFS))).toMatchObject({ result: 'allowed' });
+    // Fn::If outside any projected intrinsic cannot split a projection and does not count.
+    expect(run(Array.from({ length: 10 }, (_, i) => ({ 'Fn::If': [`C${i}`, 'a', 'b'] })))).toMatchObject({ result: 'allowed' });
   });
 
   it('a credential used as an object KEY (e.g. under Mappings) is found', () => {

@@ -28,8 +28,8 @@
  * printable `user:password` (RFC 7617), a
  * `user:password` literal after `Basic `, passed to `btoa(...)` / `Buffer.from(...)`, or given to
  * `Fn::Base64`, over every string and the recursive literal projection of every `Fn::Join` /
- * `Fn::Sub` / `Fn::Select` / `Fn::Base64` node, with every `Fn::If` taken by its first and by its
- * second branch; and a CloudFront KeyValueStore seeded from the
+ * `Fn::Sub` / `Fn::Select` / `Fn::Base64` node, under every combination of branches of the `Fn::If`
+ * inside them (more than MAX_PROJECTED_IFS fails closed); and a CloudFront KeyValueStore seeded from the
  * template (`ImportSource`). Any of these denies `ACCESS_RESTRICTION_CREDENTIAL_IN_TEMPLATE`. A
  * `{{resolve:...}}` dynamic reference is a pointer, not a value. This is a guard, not a guarantee:
  * code outside the template (Lambda@Edge / asset bundles) and credentials built at runtime are not
@@ -106,8 +106,8 @@ export const NON_VIEWER_FACING_TYPES = Object.freeze(new Set([
  * bucket and its policy are decided here, not by relying on the trusted policy's S3 property
  * allowlist and `RESOURCE_POLICY_PRINCIPAL_NOT_REVIEWED`: a bucket with `WebsiteConfiguration` or
  * `AccessControl` (a canned ACL may be public-read), or whose `Properties` are not a literal object,
- * and a bucket policy that may Allow anyone (`*` principal, `NotPrincipal`, or a statement or
- * principal that is not literal) are entry points.
+ * and a bucket policy that may Allow anyone (a `*` principal, no literal `Principal` — e.g.
+ * `NotPrincipal` — or a statement that is not literal) are entry points.
  */
 function isEntryPoint(type, rawProps) {
   const props = isRecord(rawProps) ? rawProps : {};
@@ -127,7 +127,6 @@ function mayAllowAnyone(document) {
   return document.Statement.some((statement) => {
     if (!isRecord(statement)) return true;
     if (statement.Effect === 'Deny') return false;
-    if (statement.NotPrincipal !== undefined) return true;
     const principal = statement.Principal;
     if (typeof principal === 'string') return principal.includes('*');
     if (!isRecord(principal)) return true;
@@ -389,21 +388,52 @@ function base64Arguments(value, out = []) {
 }
 
 /**
- * The template with every `Fn::If` replaced by its first (`pick` 1) or its second (`pick` 2) branch.
- * The projections read an `Fn::If` as a NUL, so without this a credential given to `Fn::Base64`, or
- * split across `Fn::Join` parts, through one branch would not be seen.
+ * At most this many `Fn::If` inside `Fn::Join` / `Fn::Sub` / `Fn::Select` / `Fn::Base64` nodes are
+ * projected (2^6 = 64 branch combinations); a template with more fails closed.
  */
-function withIfBranch(value, pick) {
-  if (Array.isArray(value)) return value.map((v) => withIfBranch(v, pick));
-  if (!isRecord(value)) return value;
-  const branches = value['Fn::If'];
-  if (Object.keys(value).length === 1 && Array.isArray(branches) && branches.length === 3) return withIfBranch(branches[pick], pick);
-  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, withIfBranch(v, pick)]));
+export const MAX_PROJECTED_IFS = 6;
+
+const PROJECTED_INTRINSICS = ['Fn::Join', 'Fn::Sub', 'Fn::Select', 'Fn::Base64'];
+const isIf = (value) => isRecord(value) && Object.keys(value).length === 1 && Array.isArray(value['Fn::If']) && value['Fn::If'].length === 3;
+
+/** Every `Fn::If` node inside a projected intrinsic (an `Fn::If` elsewhere cannot split a projection). */
+function projectedIfs(value, inside = false, out = new Set()) {
+  if (Array.isArray(value)) {
+    value.forEach((v) => projectedIfs(v, inside, out));
+  } else if (isRecord(value)) {
+    if (inside && isIf(value)) out.add(value);
+    const nowInside = inside || PROJECTED_INTRINSICS.some((k) => Object.hasOwn(value, k));
+    Object.values(value).forEach((v) => projectedIfs(v, nowInside, out));
+  }
+  return out;
 }
 
-/** Does the template carry a credential anywhere the scan can see (in either branch of every `Fn::If`)? */
+/**
+ * The template with each `Fn::If` replaced by the branch `pickOf(node)` names (1 or 2); one it
+ * names none for is kept, so both of its branches are still walked.
+ */
+function withIfBranch(value, pickOf) {
+  if (Array.isArray(value)) return value.map((v) => withIfBranch(v, pickOf));
+  if (!isRecord(value)) return value;
+  const pick = isIf(value) ? pickOf(value) : undefined;
+  if (pick !== undefined) return withIfBranch(value['Fn::If'][pick], pickOf);
+  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, withIfBranch(v, pickOf)]));
+}
+
+/**
+ * Does the template carry a credential anywhere the scan can see? The projections read an `Fn::If`
+ * as a NUL, so the template is also scanned under every combination of branches of the `Fn::If`
+ * nodes inside projected intrinsics (a credential split across branches of two of them is seen);
+ * more than MAX_PROJECTED_IFS of them fails closed (true).
+ */
 export function templateCarriesCredential(template) {
-  return [template, withIfBranch(template, 1), withIfBranch(template, 2)].some((t) => {
+  const ifs = [...projectedIfs(template)];
+  if (ifs.length > MAX_PROJECTED_IFS) return true;
+  const variants = [template];
+  for (let combo = 0; ifs.length > 0 && combo < 2 ** ifs.length; combo += 1) {
+    variants.push(withIfBranch(template, (node) => (ifs.includes(node) ? ((combo >> ifs.indexOf(node)) & 1) + 1 : undefined)));
+  }
+  return variants.some((t) => {
     if ([...templateStrings(t), ...joinedLiterals(t), ...base64Arguments(t)].some(looksLikeCredential)) return true;
     return base64Arguments(t).some(isCredentialText);
   });
@@ -492,7 +522,11 @@ export function evaluateAccessRestriction({ assemblyDir, check }) {
   const findings = [];
   for (const { stackName, template } of templates) {
     if (templateCarriesCredential(template)) {
-      findings.push({ stackName, logicalId: null, why: 'a template string or intrinsic looks like an HTTP Basic credential' });
+      const why =
+        projectedIfs(template).size > MAX_PROJECTED_IFS
+          ? `more than ${MAX_PROJECTED_IFS} Fn::If inside Fn::Join / Fn::Sub / Fn::Select / Fn::Base64: their branch combinations are not projected (fail closed)`
+          : 'a template string or intrinsic looks like an HTTP Basic credential';
+      findings.push({ stackName, logicalId: null, why });
     }
     const resources = isRecord(template.Resources) ? template.Resources : {};
     for (const [logicalId, resource] of Object.entries(resources)) {
