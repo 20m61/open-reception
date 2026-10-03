@@ -10,18 +10,30 @@
  *
  * - `absent`: the product declares no restriction check (`PRODUCT_RESTRICTION_CHECK = null`).
  *   open-reception declares none today, so its effective policy stays 1 target / 2 ceiling;
- * - `verified`: a check is declared and proves EVERY viewer-facing entry point restricted
- *   (CloudFront distributions and each of their behaviours, `AWS::Lambda::Url`, every
- *   `AWS::ApiGateway*` / `AWS::ApiGatewayV2*` resource). No entry point at all is not a proof;
+ * - `verified`: a check is declared and proves EVERY possible entry point restricted. Fail closed:
+ *   every resource whose type is not on the short NON_VIEWER_FACING_TYPES allowlist is an entry
+ *   point (CloudFront distributions count once per behaviour; an S3 bucket only with
+ *   `WebsiteConfiguration`; an ELBv2 load balancer unless its `Scheme` is the literal `internal`),
+ *   so a function URL, API Gateway, AppSync, App Runner, Amplify, a Cognito domain, a public load
+ *   balancer, or any type nobody classified must be proven too. No entry point at all is not a
+ *   proof;
  * - `unverifiable`: a check is declared but cannot prove one of them. A declared check that is
  *   not `verified` is `ACCESS_RESTRICTION_WEAKENED`: the change removes, bypasses or weakens the
  *   restriction (S5 envelope change), a human gate, not an autonomous deploy.
  *
- * Independently of any check, the restriction's credential must never be in the template (S6c):
- * a string that looks like an HTTP Basic credential (`Basic <base64 of user:password>`), or a
- * CloudFront KeyValueStore seeded from the template (`ImportSource`), denies
- * `ACCESS_RESTRICTION_CREDENTIAL_IN_TEMPLATE`. A `{{resolve:...}}` dynamic reference is a pointer,
- * not a value. An assembly that cannot be read denies `ACCESS_RESTRICTION_INPUT_INVALID`.
+ * Independently of any check, a best-effort scan looks for the restriction's credential in the
+ * template (S6c): any base64 token (standard or URL-safe, also after `%`-decoding, at least
+ * MIN_TOKEN_LENGTH characters) that decodes to a printable `user:password` (RFC 7617), a
+ * `user:password` literal after `Basic `, passed to `btoa(...)` / `Buffer.from(...)`, or given to
+ * `Fn::Base64`, over every string and the recursive literal projection of every `Fn::Join` /
+ * `Fn::Sub` / `Fn::Select` / `Fn::Base64` node; and a CloudFront KeyValueStore seeded from the
+ * template (`ImportSource`). Any of these denies `ACCESS_RESTRICTION_CREDENTIAL_IN_TEMPLATE`. A
+ * `{{resolve:...}}` dynamic reference is a pointer, not a value. This is a guard, not a guarantee:
+ * code outside the template (Lambda@Edge / asset bundles) and credentials built at runtime are not
+ * seen. The guarantee is S6c's "only a verifier is deployed, and a human writes it".
+ *
+ * An assembly that cannot be read, or that nests a stack or a cloud assembly (whose templates this
+ * module would not scan), denies `ACCESS_RESTRICTION_INPUT_INVALID`.
  *
  * The decision (`evaluateAccessRestriction`) is pure over the assembly directory. The CLI writes it
  * to DECISION_PATH (exclusive create in the broker-owned output dir) with this execution's id and
@@ -49,14 +61,59 @@ export const RULES = Object.freeze({
  */
 export const PRODUCT_RESTRICTION_CHECK = null;
 
-/** Viewer-facing entry point resource types (S6c: CDN distribution, function URL, API endpoint). */
-const isEntryPointType = (type) =>
-  type === 'AWS::CloudFront::Distribution' || type === 'AWS::Lambda::Url' || /^AWS::ApiGateway(?:V2)?::/.test(type);
+/**
+ * Resource types that cannot themselves serve a viewer request (S6c). Everything else is a possible
+ * entry point that a declared check must prove restricted: an allowlist of the known-internal fails
+ * closed on a type nobody classified, which a list of internet-facing types would let through.
+ * `AWS::S3::Bucket` and `AWS::ElasticLoadBalancingV2::LoadBalancer` are decided per resource
+ * (`isEntryPoint`).
+ */
+export const NON_VIEWER_FACING_TYPES = Object.freeze(new Set([
+  'AWS::CDK::Metadata',
+  'AWS::CloudFront::CachePolicy',
+  'AWS::CloudFront::Function',
+  'AWS::CloudFront::KeyValueStore',
+  'AWS::CloudFront::OriginAccessControl',
+  'AWS::CloudFront::OriginRequestPolicy',
+  'AWS::CloudFront::ResponseHeadersPolicy',
+  'AWS::CloudWatch::Alarm',
+  'AWS::CloudWatch::Dashboard',
+  'AWS::Cognito::UserPool',
+  'AWS::Cognito::UserPoolClient',
+  'AWS::DynamoDB::Table',
+  'AWS::IAM::Policy',
+  'AWS::IAM::Role',
+  'AWS::Lambda::Function',
+  'AWS::Lambda::LayerVersion',
+  'AWS::Lambda::Permission',
+  'AWS::Logs::LogGroup',
+  'AWS::Logs::MetricFilter',
+  'AWS::S3::BucketPolicy',
+  'AWS::SNS::Subscription',
+  'AWS::SNS::Topic',
+  'AWS::SNS::TopicPolicy',
+  'Custom::CDKBucketDeployment',
+  'Custom::CrossRegionExportReader',
+  'Custom::CrossRegionExportWriter',
+  'Custom::S3AutoDeleteObjects',
+]));
 
-// --- copied from trusted-policy.mjs (parseStrictJson, safeTemplatePath) ------------------------
+/** Can this resource serve a viewer request (so a declared check must prove it restricted)? */
+function isEntryPoint(type, props) {
+  if (type === 'AWS::S3::Bucket') return props.WebsiteConfiguration !== undefined;
+  if (type === 'AWS::ElasticLoadBalancingV2::LoadBalancer') return props.Scheme !== 'internal';
+  return !NON_VIEWER_FACING_TYPES.has(type);
+}
+
+// --- copied from trusted-policy.mjs (isRecord, parseStrictJson, safeTemplatePath, joinedLiterals,
+// literalProjection, literalList) ---------------------------------------------------------------
 // Provenance: infra/broker/trusted-policy.mjs at origin/main 9702fb6. Copied, not imported: the
 // broker downloads and verifies each module on its own, so one module cannot import another.
-// Keep in step with the original.
+// Keep in step with the original (byte identity is tested).
+
+function isRecord(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 /**
  * JSON.parse keeps the last of two equal keys; another reader (the CDK CLI, CloudFormation) may
@@ -163,51 +220,126 @@ function safeTemplatePath(assemblyDir, templateFile) {
   return resolved;
 }
 
-// --- end of copy ----------------------------------------------------------------------------
-
-const isRecord = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+/**
+ * Literal projections of `Fn::Join` / `Fn::Sub` values, so a number split across intrinsic parts
+ * (`['...:999999', '999999:...']`, `${A}${B}` with a variable map) is still scanned as one string.
+ * Non-literal parts become a NUL, which is never part of an account id.
+ */
+function joinedLiterals(value, out = []) {
+  if (Array.isArray(value)) {
+    value.forEach((v) => joinedLiterals(v, out));
+    return out;
+  }
+  if (!isRecord(value)) return out;
+  if (['Fn::Join', 'Fn::Sub', 'Fn::Select'].some((k) => Object.hasOwn(value, k))) out.push(literalProjection(value));
+  Object.values(value).forEach((v) => joinedLiterals(v, out));
+  return out;
+}
 
 /**
- * RFC 7617: the scheme is case-insensitive; the token is base64 of `user-id ":" password`. A
- * `{{resolve:...}}` dynamic reference (resolved by CloudFormation at deploy time) is a pointer, not
- * a value, and cannot match: `{` is not a base64 character.
+ * The string an intrinsic evaluates to, as far as literals decide it, with every other part a
+ * NUL: nested `Fn::Join`, `Fn::Sub` variables that are themselves intrinsics, and `Fn::Select` of
+ * a literal list are resolved recursively, so no nesting splits an account id out of view.
  */
-const BASIC_CREDENTIAL = /\bBasic\s+([A-Za-z0-9+/]+={0,2})/gi;
+function literalProjection(value, depth = 0) {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number') return String(value);
+  if (!isRecord(value) || depth > 32) return '\u0000';
+  const j = value['Fn::Join'];
+  if (Array.isArray(j) && j.length === 2 && typeof j[0] === 'string') {
+    const parts = literalList(j[1], depth + 1);
+    if (parts) return parts.map((p) => literalProjection(p, depth + 1)).join(j[0]);
+  }
+  const sub = value['Fn::Sub'];
+  if (typeof sub === 'string' || (Array.isArray(sub) && typeof sub[0] === 'string')) {
+    const [text, vars] = typeof sub === 'string' ? [sub, {}] : [sub[0], isRecord(sub[1]) ? sub[1] : {}];
+    return text.replace(/\$\{([^}]*)\}/g, (_m, name) => (Object.hasOwn(vars, name) ? literalProjection(vars[name], depth + 1) : '\u0000'));
+  }
+  const sel = value['Fn::Select'];
+  if (Array.isArray(sel) && sel.length === 2) {
+    const list = literalList(sel[1], depth + 1);
+    const index = Number(literalProjection(sel[0], depth + 1));
+    return list && Number.isInteger(index) && index >= 0 && index < list.length ? literalProjection(list[index], depth + 1) : '\u0000';
+  }
+  return '\u0000';
+}
 
-/** Does this literal carry something that decodes as an HTTP Basic `user:password` pair? */
-export function looksLikeBasicCredential(text) {
+/** A literal list, or `Fn::Split` of a projectable string; otherwise null. */
+function literalList(value, depth) {
+  if (Array.isArray(value)) return value;
+  const split = isRecord(value) ? value['Fn::Split'] : undefined;
+  if (Array.isArray(split) && split.length === 2 && typeof split[0] === 'string' && split[0] !== '') {
+    return literalProjection(split[1], depth + 1).split(split[0]);
+  }
+  return null;
+}
+
+// --- end of copy ----------------------------------------------------------------------------
+
+/** Shortest base64 token considered (6 decoded bytes, e.g. `a:bcde`); keeps random hits rare. */
+export const MIN_TOKEN_LENGTH = 8;
+/** Standard or URL-safe base64, not part of a longer run of base64 characters. */
+const BASE64_TOKEN = new RegExp(`(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{${MIN_TOKEN_LENGTH},}={0,2}(?![A-Za-z0-9+/=_-])`, 'g');
+/** A `user:password` literal in a credential position: after `Basic `, or passed to an encoder. */
+const PLAIN_IN_CONTEXT = [/\bBasic\s+([^\s'"`]+)/gi, /\b(?:btoa|Buffer\.from)\(\s*(['"`])([^'"`]*)\1/g];
+
+/**
+ * RFC 7617 `user-id ":" password` as it would be sent: printable ASCII, a non-empty user without
+ * whitespace or colon, then a colon. A `{{resolve:...}}` dynamic reference never qualifies (`{` is
+ * not a base64 character, and the reference text is not a user).
+ */
+export function isCredentialText(text) {
+  return typeof text === 'string' && /^[\x20-\x7e]+$/.test(text) && /^[^:\s{}]+:\S*$/.test(text);
+}
+
+const percentDecoded = (text) => text.replace(/%([0-9A-Fa-f]{2})/g, (_m, h) => String.fromCharCode(parseInt(h, 16)));
+
+/** Does this literal carry an HTTP Basic credential (encoded, or plain in a credential position)? */
+export function looksLikeCredential(text) {
   if (typeof text !== 'string') return false;
-  for (const m of text.matchAll(BASIC_CREDENTIAL)) {
-    const token = m[1];
-    const body = token.replace(/=+$/, '');
-    if (body.length < 2 || body.length % 4 === 1) continue;
-    const decoded = Buffer.from(body, 'base64').toString('latin1');
-    if (decoded.includes(':')) return true;
+  for (const variant of new Set([text, percentDecoded(text)])) {
+    for (const m of variant.matchAll(BASE64_TOKEN)) {
+      const body = m[0].replace(/=+$/, '').replace(/-/g, '+').replace(/_/g, '/');
+      if (body.length % 4 === 1) continue;
+      if (isCredentialText(Buffer.from(body, 'base64').toString('latin1'))) return true;
+    }
+    for (const re of PLAIN_IN_CONTEXT) {
+      for (const m of variant.matchAll(re)) if (isCredentialText(m[m.length - 1])) return true;
+    }
   }
   return false;
 }
 
-/**
- * Every literal a template can resolve to without deploy-time input: each string, plus each
- * `Fn::Join` of literals (a credential split across join parts is still in the template). Non-
- * literal join parts become a separator that cannot complete a token.
- */
-function templateLiterals(value, out = []) {
+/** Every string of the template (keys and values) and every literal projection of an intrinsic. */
+function templateStrings(value, out = []) {
   if (typeof value === 'string') {
     out.push(value);
   } else if (Array.isArray(value)) {
-    for (const v of value) templateLiterals(v, out);
+    for (const v of value) templateStrings(v, out);
   } else if (isRecord(value)) {
-    const join = value['Fn::Join'];
-    if (Array.isArray(join) && join.length === 2 && typeof join[0] === 'string' && Array.isArray(join[1])) {
-      out.push(join[1].map((p) => (typeof p === 'string' ? p : '\u0000')).join(join[0]));
-    }
     for (const [k, v] of Object.entries(value)) {
       out.push(k);
-      templateLiterals(v, out);
+      templateStrings(v, out);
     }
   }
   return out;
+}
+
+/** `Fn::Base64` arguments (projected), which deploy as base64 of the argument text. */
+function base64Arguments(value, out = []) {
+  if (Array.isArray(value)) {
+    value.forEach((v) => base64Arguments(v, out));
+  } else if (isRecord(value)) {
+    if (Object.hasOwn(value, 'Fn::Base64')) out.push(literalProjection(value['Fn::Base64']));
+    Object.values(value).forEach((v) => base64Arguments(v, out));
+  }
+  return out;
+}
+
+/** Does the template carry a credential anywhere the scan can see? */
+export function templateCarriesCredential(template) {
+  if ([...templateStrings(template), ...joinedLiterals(template), ...base64Arguments(template)].some(looksLikeCredential)) return true;
+  return base64Arguments(template).some(isCredentialText);
 }
 
 /** Viewer-facing entry points of one template; a distribution's behaviours are each one. */
@@ -215,8 +347,9 @@ function entryPoints(stackName, template) {
   const out = [];
   const resources = isRecord(template?.Resources) ? template.Resources : {};
   for (const [logicalId, resource] of Object.entries(resources)) {
-    const type = isRecord(resource) && typeof resource.Type === 'string' ? resource.Type : null;
-    if (!type || !isEntryPointType(type)) continue;
+    const type = isRecord(resource) && typeof resource.Type === 'string' ? resource.Type : '(no type)';
+    const props = isRecord(resource) && isRecord(resource.Properties) ? resource.Properties : {};
+    if (!isEntryPoint(type, props)) continue;
     const base = { stackName, logicalId, type, resource, template };
     if (type !== 'AWS::CloudFront::Distribution') {
       out.push({ ...base, entry: logicalId });
@@ -248,12 +381,17 @@ function readTemplates(assemblyDir) {
   if (!isRecord(manifest) || !isRecord(manifest.artifacts)) throw new Error('manifest.artifacts must be an object');
   const templates = [];
   for (const [artifactId, artifact] of Object.entries(manifest.artifacts)) {
+    // A nested assembly's templates would not be scanned here (the trusted policy also denies it).
+    if (isRecord(artifact) && artifact.type === 'cdk:cloud-assembly') throw new Error(`nested cloud assembly ${artifactId} is not evaluated`);
     if (!isRecord(artifact) || artifact.type !== 'aws:cloudformation:stack') continue;
     const props = isRecord(artifact.properties) ? artifact.properties : {};
     const file = safeTemplatePath(assemblyDir, props.templateFile);
     if (!file) throw new Error(`template of ${artifactId} is missing or escapes the assembly`);
     const template = parseStrictJson(fs.readFileSync(file, 'utf8'));
     if (!isRecord(template)) throw new Error(`template of ${artifactId} is not an object`);
+    for (const [logicalId, r] of Object.entries(isRecord(template.Resources) ? template.Resources : {})) {
+      if (isRecord(r) && r.Type === 'AWS::CloudFormation::Stack') throw new Error(`nested stack ${artifactId}/${logicalId} is not evaluated`);
+    }
     templates.push({ stackName: typeof props.stackName === 'string' ? props.stackName : artifactId, template });
   }
   if (templates.length === 0) throw new Error('assembly has no stack template');
@@ -287,8 +425,8 @@ export function evaluateAccessRestriction({ assemblyDir, check }) {
   // S6c: the credential never appears in the template, whatever the check (runs unconditionally).
   const findings = [];
   for (const { stackName, template } of templates) {
-    if (templateLiterals(template).some(looksLikeBasicCredential)) {
-      findings.push({ stackName, logicalId: null, why: 'a template string looks like an HTTP Basic credential' });
+    if (templateCarriesCredential(template)) {
+      findings.push({ stackName, logicalId: null, why: 'a template string or intrinsic looks like an HTTP Basic credential' });
     }
     const resources = isRecord(template.Resources) ? template.Resources : {};
     for (const [logicalId, resource] of Object.entries(resources)) {
@@ -326,7 +464,7 @@ export function evaluateAccessRestriction({ assemblyDir, check }) {
   if (results.length > 0 && unproven.length === 0) {
     return decision('allowed', null, null, { state: 'verified' }, { check: checkName, entryPoints: results, findings: [] });
   }
-  const why = results.length === 0 ? 'no viewer-facing entry point was found to prove restricted' : `entry points not proven restricted: ${unproven.map((r) => `${r.stackName}/${r.entry}`).join(', ')}`;
+  const why = results.length === 0 ? 'no possible entry point was found to prove restricted' : `entry points not proven restricted: ${unproven.map((r) => `${r.stackName}/${r.entry}`).join(', ')}`;
   return decision(
     'denied',
     RULES.WEAKENED,

@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -20,7 +20,10 @@ type Mod = {
   BROKER_OUT_DIR: string;
   DENIED_EXIT_CODE: number;
   evaluateAccessRestriction: (i: { assemblyDir: string; check: Check }) => J;
-  looksLikeBasicCredential: (s: unknown) => boolean;
+  looksLikeCredential: (s: unknown) => boolean;
+  isCredentialText: (s: unknown) => boolean;
+  NON_VIEWER_FACING_TYPES: ReadonlySet<string>;
+  MIN_TOKEN_LENGTH: number;
   parseStrictJson: (s: string) => unknown;
   runCli: (argv: string[], o?: J) => { exitCode: number; record: J };
 };
@@ -153,6 +156,42 @@ describe('a declared check verifies only when it proves every entry point', () =
     }
   });
 
+  it.each([
+    ['public load balancer', { Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer', Properties: { Scheme: 'internet-facing' } }],
+    ['load balancer with the default scheme', { Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer', Properties: {} }],
+    ['AppSync API', { Type: 'AWS::AppSync::GraphQLApi', Properties: {} }],
+    ['website bucket', { Type: 'AWS::S3::Bucket', Properties: { WebsiteConfiguration: { IndexDocument: 'index.html' } } }],
+    ['App Runner service', { Type: 'AWS::AppRunner::Service', Properties: {} }],
+    ['Amplify app', { Type: 'AWS::Amplify::App', Properties: {} }],
+    ['Cognito hosted domain', { Type: 'AWS::Cognito::UserPoolDomain', Properties: {} }],
+    ['Lightsail instance', { Type: 'AWS::Lightsail::Instance', Properties: {} }],
+    ['HTTP API', { Type: 'AWS::ApiGatewayV2::Api', Properties: {} }],
+    ['a type nobody classified', { Type: 'AWS::Some::NewThing', Properties: {} }],
+    ['a resource without a type', { Properties: {} }],
+  ])('a declared check must prove a %s too (fail closed)', (_l, resource) => {
+    const proveCdn: Check = { name: 'cdn only', isRestricted: (e) => e.type === 'AWS::CloudFront::Distribution' };
+    const d = M.evaluateAccessRestriction({ assemblyDir: assembly({ Web: { Cdn: distribution(0), X: resource } }), check: proveCdn });
+    expect(d).toMatchObject({ result: 'denied', rule: 'ACCESS_RESTRICTION_WEAKENED' });
+    expect(String(d.reason)).toContain('Web/X');
+    expect(M.evaluateAccessRestriction({ assemblyDir: assembly({ Web: { Cdn: distribution(0), X: resource } }), check: all }).accessRestriction).toEqual({ state: 'verified' });
+  });
+
+  it('internal resources are not entry points: an internal load balancer, a plain bucket, the allowlisted types', () => {
+    const internal = {
+      Lb: { Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer', Properties: { Scheme: 'internal' } },
+      Bucket: { Type: 'AWS::S3::Bucket', Properties: {} },
+      ...Object.fromEntries([...M.NON_VIEWER_FACING_TYPES].map((t, i) => [`R${i}`, { Type: t, Properties: {} }])),
+    };
+    const seen: string[] = [];
+    const d = M.evaluateAccessRestriction({ assemblyDir: assembly({ Web: { Cdn: distribution(0), ...internal } }), check: { name: 'spy', isRestricted: (e) => (seen.push(e.entry), true) } });
+    expect(d.accessRestriction).toEqual({ state: 'verified' });
+    expect(seen).toEqual(['Cdn/DefaultCacheBehavior']);
+    for (const t of ['AWS::S3::Bucket', 'AWS::ElasticLoadBalancingV2::LoadBalancer', 'AWS::Lambda::Url', 'AWS::CloudFront::Distribution', 'AWS::CloudFormation::Stack']) {
+      expect(M.NON_VIEWER_FACING_TYPES.has(t), t).toBe(false);
+    }
+    expect([...M.NON_VIEWER_FACING_TYPES].some((t) => /ApiGateway|AppSync|AppRunner|Amplify|Lightsail|ElasticLoadBalancing|UserPoolDomain/.test(t))).toBe(false);
+  });
+
   it('no entry point at all is not a proof', () => {
     expect(M.evaluateAccessRestriction({ assemblyDir: assembly({ Web: { Bucket: { Type: 'AWS::S3::Bucket' } } }), check: all })).toMatchObject({ result: 'denied', rule: 'ACCESS_RESTRICTION_WEAKENED' });
   });
@@ -171,7 +210,19 @@ describe('the credential never appears in the template (scan runs with or withou
   it.each([
     ['in function code', fnCode(`if (h.authorization.value !== "Basic ${credential}") return deny;`)],
     ['lower-case scheme', fnCode(`basic ${credential}`)],
-    ['unpadded token', fnCode(`Basic ${Buffer.from('a:bc').toString('base64').replace(/=+$/, '')}`)],
+    ['unpadded token', fnCode(`Basic ${Buffer.from('ab:cdefg').toString('base64').replace(/=+$/, '')}`)],
+    ['string concatenation in function code', fnCode(`if (auth !== "Basic " + "${credential}") return deny;`)],
+    ['URL-encoded scheme and padding', fnCode(`Basic%20${credential.replace(/=/g, '%3D')}`)],
+    ['a token anywhere, without the scheme', fnCode(`const expected = '${credential}';`)],
+    ['URL-safe base64', fnCode(`const t = '${Buffer.from('owner:s3cret>>?pass').toString('base64url')}';`)],
+    ['Fn::Base64 of a plain user:password literal', { P: { Type: 'AWS::CloudFront::OriginRequestPolicy', Properties: { V: { 'Fn::Base64': 'owner:s3cret-pass' } } } }],
+    ['Fn::Base64 of a Join that builds user:password', { P: { Type: 'AWS::CloudFront::OriginRequestPolicy', Properties: { V: { 'Fn::Base64': { 'Fn::Join': [':', ['owner', 's3cret-pass']] } } } } }],
+    ['a plain user:password after the scheme', fnCode('if (h !== "Basic owner:s3cret-pass") return deny;')],
+    ['a plain user:password passed to btoa', fnCode('var expected = "Basic " + btoa("owner:s3cret-pass");')],
+    ['a nested Join', fnCode({ 'Fn::Join': ['', ['Basic ', { 'Fn::Join': ['', [credential.slice(0, 5), { 'Fn::Join': ['', [credential.slice(5, 12), credential.slice(12)]] }]] }]] })],
+    ['Fn::Sub with a literal variable', fnCode({ 'Fn::Sub': ['Basic ${A}${B}', { A: credential.slice(0, 9), B: credential.slice(9) }] })],
+    ['Fn::Select of a literal list', fnCode({ 'Fn::Join': ['', ['Basic ', { 'Fn::Select': [1, ['x', credential]] }]] })],
+    ['Fn::Select over Fn::Split', fnCode({ 'Fn::Select': [1, { 'Fn::Split': ['|', `x|${credential}`] }] })],
     ['split across Fn::Join parts', fnCode({ 'Fn::Join': ['', ['Basic ', credential.slice(0, 6), credential.slice(6)]] })],
     ['as a header value elsewhere', { P: { Type: 'AWS::CloudFront::OriginRequestPolicy', Properties: { Headers: [{ Name: 'Authorization', Value: `Basic ${credential}` }] } } }],
     ['a KeyValueStore seeded from the template', { Kvs: { Type: 'AWS::CloudFront::KeyValueStore', Properties: { Name: 'auth', ImportSource: { SourceType: 'S3', SourceArn: 'arn:aws:s3:::b/k' } } } }],
@@ -196,12 +247,37 @@ describe('the credential never appears in the template (scan runs with or withou
     expect(d).toMatchObject({ result: 'allowed', accessRestriction: { state: 'absent' } });
   });
 
-  it('the detector itself: a Basic token that decodes to user:password', () => {
-    expect(M.looksLikeBasicCredential(`Basic ${credential}`)).toBe(true);
-    expect(M.looksLikeBasicCredential(`x Basic\t${credential}==`)).toBe(true);
-    expect(M.looksLikeBasicCredential('Basic YWJj')).toBe(false); // "abc": no colon
-    expect(M.looksLikeBasicCredential('Bearer ' + credential)).toBe(false);
-    expect(M.looksLikeBasicCredential(42)).toBe(false);
+  it('the detector itself: a token that decodes to a printable user:password', () => {
+    expect(M.looksLikeCredential(`Basic ${credential}`)).toBe(true);
+    expect(M.looksLikeCredential(`x Basic\t${credential}`)).toBe(true);
+    expect(M.looksLikeCredential(`Bearer ${credential}`)).toBe(true); // the token, not the scheme, is the secret
+    expect(M.looksLikeCredential('Basic YWJj')).toBe(false); // "abc": no colon
+    expect(M.looksLikeCredential(Buffer.from(':nouser-pass').toString('base64'))).toBe(false); // RFC 7617: empty user
+    expect(M.looksLikeCredential(Buffer.from('us er:pass12').toString('base64'))).toBe(false);
+    expect(M.looksLikeCredential(Buffer.from('owner:\u0001\u0002pass').toString('base64'))).toBe(false); // not printable
+    expect(M.looksLikeCredential(Buffer.from('a:bcd').toString('base64'))).toBe(false); // below the minimum token length
+    expect(M.MIN_TOKEN_LENGTH).toBe(8);
+    expect(M.looksLikeCredential(Buffer.from('a:bcde').toString('base64'))).toBe(true); // exactly the minimum
+    expect(M.looksLikeCredential(`x${credential}`)).toBe(false); // misaligned inside a longer run is not this token
+    expect(M.looksLikeCredential(42)).toBe(false);
+    expect(M.isCredentialText('owner:pass')).toBe(true);
+    expect(M.isCredentialText('{{resolve:ssm:x}}')).toBe(false);
+  });
+
+  it('negative control: ordinary template base64 and hashes are not credentials', () => {
+    const hashes = [
+      'n4bQgYhMfWWaL+qgxVrQFaO/TxsrC4Is0V1sFbDwCgg=', // Lambda CodeSha256 shape
+      'faa95a81ae7d7373f3e1f242268f904eb748d8d0fdd306e8a6fe515a1905a7d6.zip', // asset object key
+      'cdk-hnb659fds-assets-822063948773-ap-northeast-1',
+      'AWSLambdaBasicExecutionRole',
+      'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole',
+      'dynamodb:ConditionCheckItem',
+      'OpenReception-Web-dev/Distribution/Resource',
+      Buffer.from('#!/bin/bash\necho a:b\n').toString('base64'), // user data: not a single printable line
+    ];
+    for (const h of hashes) expect(M.looksLikeCredential(h), h).toBe(false);
+    const d = M.evaluateAccessRestriction({ assemblyDir: assembly({ Web: { Fn: { Type: 'AWS::Lambda::Function', Properties: { CodeSha256: hashes[0], Code: { S3Key: hashes[1] }, UserData: { 'Fn::Base64': '#!/bin/bash\nexit 0\n' } } } } }), check: null });
+    expect(d).toMatchObject({ result: 'allowed', accessRestriction: { state: 'absent' } });
   });
 });
 
@@ -222,6 +298,14 @@ describe('fail closed on an assembly that cannot be read', () => {
     ['template missing', () => {
       const d = scratch();
       writeFileSync(join(d, 'manifest.json'), JSON.stringify({ artifacts: { S: { type: 'aws:cloudformation:stack', properties: { templateFile: 'S.template.json' } } } }));
+      return d;
+    }],
+    ['a nested stack (its template is not scanned)', () => assembly({ S: { Child: { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'https://x/child.json' } } } })],
+    ['a nested cloud assembly', () => {
+      const d = assembly({ S: {} });
+      const m = JSON.parse(readFileSync(join(d, 'manifest.json'), 'utf8'));
+      m.artifacts.Nested = { type: 'cdk:cloud-assembly', properties: { directoryName: 'nested' } };
+      writeFileSync(join(d, 'manifest.json'), JSON.stringify(m));
       return d;
     }],
     ['template with duplicate keys', () => {
@@ -266,11 +350,54 @@ describe('provenance of the copied helpers', () => {
     return text.slice(start, end + 2).replace(/^export /, '');
   };
 
-  it('parseStrictJson and safeTemplatePath are byte-identical to trusted-policy.mjs', () => {
-    for (const name of ['parseStrictJson', 'safeTemplatePath']) expect(fnText(MODULE, name)).toBe(fnText(POLICY, name));
+  it('the copied helpers are byte-identical to trusted-policy.mjs', () => {
+    for (const name of ['isRecord', 'parseStrictJson', 'safeTemplatePath', 'joinedLiterals', 'literalProjection', 'literalList']) expect(fnText(MODULE, name), name).toBe(fnText(POLICY, name));
   });
 
   it('names its source in a provenance comment', () => {
     expect(readFileSync(MODULE, 'utf8')).toMatch(/Provenance: infra\/broker\/trusted-policy\.mjs at origin\/main [0-9a-f]{7}/);
+  });
+});
+
+describe('ordering: a nested stack or assembly never reaches the S6c module unchecked', () => {
+  /** The real assembly, modified: the trusted policy (which runs first in the buildspec) and this module must both refuse it. */
+  const realWith = (mutate: (dir: string) => void) => {
+    const dir = scratch();
+    cpSync(REAL, dir, { recursive: true });
+    mutate(dir);
+    return dir;
+  };
+  const nestedStack = (dir: string) => {
+    const f = join(dir, 'OpenReception-Web-dev.template.json');
+    const t = JSON.parse(readFileSync(f, 'utf8'));
+    t.Resources.Child = { Type: 'AWS::CloudFormation::Stack', Properties: { TemplateURL: 'https://example.invalid/child.json' } };
+    writeFileSync(f, JSON.stringify(t));
+  };
+  const nestedAssembly = (dir: string) => {
+    const f = join(dir, 'manifest.json');
+    const m = JSON.parse(readFileSync(f, 'utf8'));
+    m.artifacts.Nested = { type: 'cdk:cloud-assembly', properties: { directoryName: 'assembly-Nested' } };
+    writeFileSync(f, JSON.stringify(m));
+  };
+
+  it.each([
+    ['nested stack', nestedStack, 'RESOURCE_TYPE_NOT_APPROVED'],
+    ['nested cloud assembly', nestedAssembly, 'NESTED_ASSEMBLY'],
+  ])('a %s is denied by the trusted policy and, independently, by this module', async (_l, mutate, policyRule) => {
+    const policy = (await import(pathToFileURL(POLICY).href)) as { evaluateAssembly: (i: J) => J };
+    const dir = realWith(mutate);
+    const p = policy.evaluateAssembly({ assemblyDir: dir, targetAccount: '822063948773' });
+    expect(p.result).toBe('denied');
+    expect((p.violations as J[]).map((v) => v.rule)).toContain(policyRule);
+    for (const check of [null, all]) {
+      expect(M.evaluateAccessRestriction({ assemblyDir: dir, check })).toMatchObject({ result: 'denied', rule: 'ACCESS_RESTRICTION_INPUT_INVALID' });
+    }
+  });
+
+  it('the unmodified real assembly passes the trusted policy, so the denial above is the nesting', async () => {
+    const policy = (await import(pathToFileURL(POLICY).href)) as { evaluateAssembly: (i: J) => J };
+    const v = (policy.evaluateAssembly({ assemblyDir: realWith(() => {}), targetAccount: '822063948773' }).violations as J[]).map((x) => x.rule);
+    expect(v).not.toContain('RESOURCE_TYPE_NOT_APPROVED');
+    expect(v).not.toContain('NESTED_ASSEMBLY');
   });
 });

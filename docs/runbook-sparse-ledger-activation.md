@@ -112,7 +112,7 @@ stack deploy role は、手順 4 で作る broker 専用 bootstrap の cfn-exec 
     条件式で読む属性である（`infra/broker/sparse-ledger.mjs`）。`successCount`・`lastSuccessAt`・`lastDay`・
     `lastDayAttempts` などは含めないので、attempt を `succeeded` で閉じたり、genesis の累計を書き換えたりはできない。
   - D-5（2026-10-03）で増えた属性（genesis の `lastAttemptId`・`lastReservedAt`・`lastRevision`・`lastCooldownWaived`、
-    `ATTEMPT#` の `cooldownWaived`・`accessProfile`）は **broker の予約だけが書く**。issuer の一覧には足さない
+    `ATTEMPT#` の `cooldownWaived`・`accessProfile`・`softCeiling`）は **broker の予約だけが書く**。issuer の一覧には足さない
     （genesis の初期化と close-as-failed はこれらを書かない。`infra/test/sparse-dev-deploy-ledger.test.ts` がこの一覧と突き合わせる）。
   - これは事故を減らす絞り込みで、完全ではない。たとえば `PutItem` で既存の `REV#` を上書きする操作は、条件式を
     IAM では強制できないので残る。ただし、そうして壊れた counter は ledger が `SPARSE_LEDGER_CORRUPT` として止める（fail closed）。

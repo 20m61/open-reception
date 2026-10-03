@@ -242,6 +242,7 @@ export async function runReserve({ client, env = process.env, now = new Date(), 
     reservedAt: now.toISOString(),
     accessRestriction: accessRestriction.state,
     accessProfile: decision.accessProfile,
+    softCeiling: decision.softCeiling,
     cooldownWaived: decision.cooldownWaived,
     ...(decision.override ? { override: { approver: decision.override.approver, reason: decision.override.reason, expiresAt: decision.override.expiresAt } } : {}),
   };

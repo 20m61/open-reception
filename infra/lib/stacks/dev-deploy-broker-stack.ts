@@ -196,6 +196,8 @@ export const ESCALATION_RULES = [
   'SPARSE_PREVIOUS_ATTEMPT_UNSETTLED',
   'ACCESS_RESTRICTION_WEAKENED',
   'ACCESS_RESTRICTION_INPUT_INVALID',
+  // A credential found in the template has leaked into the repository / assembly: a human rotates it.
+  'ACCESS_RESTRICTION_CREDENTIAL_IN_TEMPLATE',
 ] as const;
 
 /**
@@ -979,7 +981,7 @@ export class DevDeployBrokerStack extends cdk.Stack {
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
       alarmDescription:
-        'A sparse-ledger attempt may be left in_progress (ambiguous reservation / unrecorded outcome / runner error), a denial went unaudited, or a denial needs a human (unstable target stack / repeated failure of one revision, S10a / unsettled previous attempt or weakened access restriction, D-5). See docs/architecture/aws-dev-deploy-broker.md.',
+        'A sparse-ledger attempt may be left in_progress (ambiguous reservation / unrecorded outcome / runner error), a denial went unaudited, or a denial needs a human (unstable target stack / repeated failure of one revision, S10a / unsettled previous attempt, weakened access restriction or credential in the template, D-5). See docs/architecture/aws-dev-deploy-broker.md.',
     });
     ledgerAttentionAlarm.addAlarmAction(new cwActions.SnsAction(brokerAlerts));
     // The topic's resource policy (created for EventBridge / TLS) replaces the default one, so

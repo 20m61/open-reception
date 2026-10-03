@@ -395,7 +395,7 @@ describe('reserve: the access profile comes only from the broker-derived access-
     expect(r.line.accessProfile).toBe(profile);
     expect(writes).toHaveLength(exitCode === 0 ? 1 : 0);
     if (exitCode !== 0) expect(r.line.rule).toBe('SPARSE_DAILY_ATTEMPT_CEILING');
-    else expect(JSON.parse(readFileSync(join(dir, 'r.json'), 'utf8'))).toMatchObject({ accessProfile: 'access_restricted', accessRestriction: 'verified', cooldownWaived: false, attemptNumber: 4 });
+    else expect(JSON.parse(readFileSync(join(dir, 'r.json'), 'utf8'))).toMatchObject({ accessProfile: 'access_restricted', accessRestriction: 'verified', softCeiling: 5, cooldownWaived: false, attemptNumber: 4 });
   });
 
   it('a verified decision for another execution does not select the restricted profile', async () => {

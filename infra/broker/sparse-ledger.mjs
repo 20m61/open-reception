@@ -28,8 +28,12 @@
  * today, a day count above the total, or a clock that went backwards is detected. Otherwise the ledger's integrity cannot be established (S6a).
  *
  * Owner decision D-5 (2026-10-03, Foundation safe-dev-deploy S6 / S6c):
- * - two access profiles. A target that is not access-restricted keeps the rule above unchanged
- *   (soft ceiling 2, no cooldown, no waiver). A target whose restriction the broker VERIFIED over
+ * - two access profiles. A target that is not access-restricted keeps soft ceiling 2, no cooldown
+ *   and no waiver: the same ceiling and override semantics as before D-5. It is NOT byte-for-byte
+ *   the old behaviour: it additionally denies `SPARSE_PREVIOUS_ATTEMPT_UNSETTLED`,
+ *   `SPARSE_LEDGER_CORRUPT` on a previous-attempt pointer mismatch and `SPARSE_LEDGER_CONFLICT` on
+ *   a genesis race between the two reads, and the reservation records `accessProfile` /
+ *   `softCeiling` / `cooldownWaived`. A target whose restriction the broker VERIFIED over
  *   the synthesized template (`access-restriction.mjs`) gets soft ceiling 5 per Tokyo day and a
  *   1 h cooldown measured from when the previous attempt reached the mutation boundary (it does
  *   not reset at midnight). The cooldown may be skipped once, only after a FAILED previous
@@ -45,7 +49,7 @@
 export const PROJECT_KEY = 'PROJECT#open-reception';
 export const LEDGER_TIMEZONE = 'Asia/Tokyo';
 export const TARGET_ATTEMPTS_PER_DAY = 1;
-/** Soft ceiling of the profile that is not access-restricted (the pre-D-5 rule, unchanged). */
+/** Soft ceiling of the profile that is not access-restricted (the pre-D-5 ceiling). */
 export const SOFT_ATTEMPT_CEILING = 2;
 
 /**
@@ -544,6 +548,7 @@ export function buildReserveTransaction({ table, decision, now }) {
     attemptNumber: { N: String(observedAttemptCount + 1) },
     reservedAt: { S: nowIso },
     accessProfile: { S: profile.name },
+    softCeiling: { N: String(profile.softCeiling) },
     cooldownWaived: { BOOL: cooldownWaived },
   };
   const genesisUpdate = {

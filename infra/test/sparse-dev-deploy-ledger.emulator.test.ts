@@ -536,7 +536,7 @@ describe.skipIf(!ENABLED)('sparse deploy ledger × real DynamoDB engine (emulato
     const genesis = await getItem(L.GENESIS_KEY);
     expect(genesis).toMatchObject({ lastAttemptId: { S: a.attemptId }, lastRevision: { S: a.revision }, lastCooldownWaived: { BOOL: false } });
     expect(genesis?.lastReservedAt?.S).toBe(now.toISOString());
-    expect(await getItem(`ATTEMPT#${a.attemptId as string}`)).toMatchObject({ cooldownWaived: { BOOL: false }, accessProfile: { S: 'not_access_restricted' } });
+    expect(await getItem(`ATTEMPT#${a.attemptId as string}`)).toMatchObject({ cooldownWaived: { BOOL: false }, accessProfile: { S: 'not_access_restricted' }, softCeiling: { N: '2' } });
     await settle(a, now);
     const rev = freshRev();
     const decision = L.evaluatePreflight({ revision: rev, attemptId: attemptId(), now, ledgerId: LEDGER_ID, ...(await ledgerState(rev, now)) });
@@ -558,7 +558,7 @@ describe.skipIf(!ENABLED)('sparse deploy ledger × real DynamoDB engine (emulato
     await settle(a, t0, 'failed');
     // Within the cooldown: the same revision is a retry, not a fix.
     expect(await reserve(at(60), revA, attemptId(), verified)).toMatchObject({ result: 'denied', rule: 'SPARSE_COOLDOWN_ACTIVE' });
-    // Not restricted: no cooldown at all (pre-D-5 behaviour).
+    // Not restricted: no cooldown at all (pre-D-5 ceiling semantics).
     const b = await reserve(at(120), freshRev());
     expect(b).toMatchObject({ result: 'allowed', accessProfile: 'not_access_restricted', cooldownWaived: false });
     await settle(b, at(120), 'failed');

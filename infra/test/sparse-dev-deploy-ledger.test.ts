@@ -868,6 +868,8 @@ describe('D-5 decision invariants over the whole input space', () => {
       const tx = L.buildReserveTransaction({ table: 'T', decision: d, now: c.now });
       const put = tx.TransactItems.find((e) => e.Put)!.Put!.Item as Item;
       expect(put.cooldownWaived, label).toEqual({ BOOL: restricted && inCooldown });
+      expect(put.accessProfile, label).toEqual({ S: restricted ? 'access_restricted' : 'not_access_restricted' });
+      expect(put.softCeiling, label).toEqual({ N: String(ceiling) });
       expect(put.attemptNumber, label).toEqual({ N: String(c.count + 1) });
     }
     expect(allows).toBeGreaterThan(100);
@@ -915,7 +917,7 @@ describe('D-5 decision invariants over the whole input space', () => {
     }
   });
 
-  it('not restricted behaves exactly as before D-5: the elapsed time and the previous outcome (once settled) change nothing', () => {
+  it('not restricted keeps the pre-D-5 ceiling and override semantics: the elapsed time and the previous outcome (once settled) change nothing', () => {
     for (const c of cases) {
       if (c.restriction.state === 'verified' || c.outcome === 'in_progress' || c.outcome === 'none') continue;
       const { d, consistent } = build(c);
@@ -923,6 +925,16 @@ describe('D-5 decision invariants over the whole input space', () => {
       const before = c.count < 2 ? 'allowed' : c.withOverride ? 'allowed' : 'denied';
       expect(d.result, JSON.stringify({ ...c, now: c.now.toISOString() })).toBe(before);
     }
+  });
+
+  it('the cooldown boundary is exactly 3_600_000 ms: 3_599_999 ms denies, 3_600_000 ms allows', () => {
+    const at = (ms: number) => {
+      const g = genesisItem({ lastDay: { S: DAY }, lastDayAttempts: { N: '1' }, lastReservedAt: { S: new Date(NOW.getTime() - ms).toISOString() } });
+      return preflight({ genesisItem: g, previousAttemptItem: previousAttemptFor(g), dayItem: dayItem(1), accessRestriction: { state: 'verified' } });
+    };
+    expect(at(3_599_999)).toMatchObject({ result: 'denied', rule: 'SPARSE_COOLDOWN_ACTIVE' });
+    expect(at(3_600_000)).toMatchObject({ result: 'allowed', cooldownWaived: false });
+    expect(at(0)).toMatchObject({ result: 'denied', rule: 'SPARSE_COOLDOWN_ACTIVE' });
   });
 
   it('the cooldown does not reset at Tokyo midnight', () => {
@@ -935,7 +947,7 @@ describe('D-5 decision invariants over the whole input space', () => {
   it('a previous attempt reserved after now is a clock regression under the restricted profile', () => {
     const g = genesisItem({ lastDay: { S: DAY }, lastDayAttempts: { N: '1' }, lastReservedAt: { S: new Date(NOW.getTime() + 1000).toISOString() } });
     expect(preflight({ genesisItem: g, previousAttemptItem: previousAttemptFor(g), dayItem: dayItem(1), accessRestriction: { state: 'verified' } })).toMatchObject({ result: 'denied', rule: 'SPARSE_LEDGER_CORRUPT' });
-    // Not restricted: no time is read, exactly as before D-5 (only lastDay after today is a regression there).
+    // Not restricted: no time is read (only lastDay after today is a regression there).
     for (const accessRestriction of [{ state: 'absent' }, { state: 'unverifiable', reason: 'x' }]) {
       expect(preflight({ genesisItem: g, previousAttemptItem: previousAttemptFor(g), dayItem: dayItem(1), accessRestriction })).toMatchObject({ result: 'allowed', mode: 'normal' });
     }
@@ -1064,6 +1076,6 @@ describe('issuer role attribute allowlist (runbook step 2) stays valid', () => {
 
   it('the D-5 pointer, waiver and profile are broker-only (not on any issuer list)', () => {
     const all = new Set([...allowed('GenesisAndOverride'), ...allowed('CloseAttemptAsFailed')]);
-    for (const n of ['lastAttemptId', 'lastReservedAt', 'lastRevision', 'lastCooldownWaived', 'cooldownWaived', 'accessProfile', 'lastDay', 'lastDayAttempts']) expect(all.has(n), n).toBe(false);
+    for (const n of ['lastAttemptId', 'lastReservedAt', 'lastRevision', 'lastCooldownWaived', 'cooldownWaived', 'accessProfile', 'softCeiling', 'lastDay', 'lastDayAttempts']) expect(all.has(n), n).toBe(false);
   });
 });

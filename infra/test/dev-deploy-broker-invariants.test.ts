@@ -1884,6 +1884,16 @@ describe('access-restriction gate (S6c, D-5): broker-derived, pinned, before BRO
     expect(ACCESS_RESTRICTION_COMMAND).toBe(`node ${ACCESS_RESTRICTION_LOCAL_PATH} --assembly ${BROKER_ASSEMBLY_DIR}`);
   });
 
+  it('runs only after the trusted policy, whose denial (nested stacks / assemblies included) stops the build first', () => {
+    const c = commands();
+    const policyRun = c.findIndex((x) => x.startsWith(`node ${TRUSTED_POLICY_LOCAL_PATH} --assembly ${BROKER_ASSEMBLY_DIR} `));
+    expect(policyRun).toBeGreaterThan(0);
+    // A plain command: a non-zero exit (41 = denied) fails the phase; nothing swallows it.
+    expect(c[policyRun]).not.toMatch(/\|\||;|&$/);
+    expect(policyRun).toBeLessThan(c.indexOf(ACCESS_RESTRICTION_COMMAND));
+    expect(c.slice(policyRun, c.indexOf(ACCESS_RESTRICTION_COMMAND)).some((x) => x.includes('|| true'))).toBe(false);
+  });
+
   it('still never reserves or records an outcome while unarmed; BROKER_NOT_ARMED is the last gate', () => {
     const c = commands();
     expect(c.some((x) => / reserve\b| outcome\b/.test(x))).toBe(false);
@@ -1948,7 +1958,9 @@ describe('access-restriction gate (S6c, D-5): broker-derived, pinned, before BRO
     const pattern = filter.Properties.FilterPattern as string;
     const m = (await import(pathToFileURL(ACCESS_RESTRICTION_SOURCE_PATH).href)) as { RULES: Record<string, string> };
     const ledger = (await import(pathToFileURL(LEDGER_MODULE_SOURCE_PATH).href)) as { RULES: Record<string, string> };
-    for (const r of [m.RULES.WEAKENED!, m.RULES.INPUT_INVALID!, ledger.RULES.PREVIOUS_ATTEMPT_UNSETTLED!]) {
+    // A leaked credential needs human rotation, so every access-restriction rule escalates.
+    expect(Object.values(m.RULES).sort()).toEqual(['ACCESS_RESTRICTION_CREDENTIAL_IN_TEMPLATE', 'ACCESS_RESTRICTION_INPUT_INVALID', 'ACCESS_RESTRICTION_WEAKENED']);
+    for (const r of [...Object.values(m.RULES), ledger.RULES.PREVIOUS_ATTEMPT_UNSETTLED!]) {
       expect(ESCALATION_RULES as readonly string[], r).toContain(r);
       expect(pattern).toContain(`($.rule = "${r}")`);
     }
