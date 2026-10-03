@@ -94,6 +94,10 @@ export const KNOWN_VIOLATIONS: Readonly<Record<string, string>> = {
   '90b150518894931d5ea578aee5ca834cd29ce14c': ARMING_INTEGRATION_INNER_MERGE,
   '02b1c227af3a4f22de144a81c5776bb79b4e6d18': ARMING_INTEGRATION_INNER_MERGE,
   '5d63fc8b193b52dc32571797148aba54c63c3574': ARMING_INTEGRATION_INNER_MERGE,
+  f98437188cef104ca5ff73024898ad74d20292c7:
+    '2026-09-29 の PR #1207 を owner が merge commit で merge した。理由は owner の記憶では不明（2026-10-03 に確認）。同じ日の直前に #1197 が --merge で merge されている。',
+  '9702fb64d265aac945c94ffb37189f9cdf82f10a':
+    '2026-09-29 の PR #1208 を owner が merge commit で merge した。理由は owner の記憶では不明（2026-10-03 に確認）。同じ日の直前に #1197 と #1207 が merge commit で merge されている。',
 };
 
 /** `git log --merges` の 1 行を読む。 */
