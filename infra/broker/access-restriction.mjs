@@ -14,8 +14,9 @@
  *   every resource whose type is not on the short NON_VIEWER_FACING_TYPES allowlist is an entry
  *   point (CloudFront distributions count once per behaviour; an S3 bucket only with
  *   `WebsiteConfiguration`, `AccessControl` or non-literal `Properties`, a bucket policy only when
- *   it may Allow anyone, a CDK bucket deployment only when it may set a public object ACL; an ELBv2
- *   load balancer unless its `Scheme` is the literal `internal`),
+ *   it may Allow anyone, a CDK bucket deployment only when its `SystemMetadata` is not on a
+ *   known-safe allowlist (it may set a public object ACL or grant); an ELBv2 load balancer unless its
+ *   `Scheme` is the literal `internal`),
  *   so a function URL, API Gateway, AppSync, App Runner, Amplify, a Cognito domain, a public load
  *   balancer, or any type nobody classified must be proven too. No entry point at all is not a
  *   proof;
@@ -31,8 +32,9 @@
  * `Fn::Base64`, over every string and the recursive literal projection of every `Fn::Join` /
  * `Fn::Sub` / `Fn::Select` / `Fn::Base64` node, under every combination of the values the projection
  * reads as a NUL inside it (the branches of an `Fn::If`, the elements of an `Fn::Select` whose index
- * is not a literal; more than MAX_PROJECTED_COMBINATIONS per outermost node is not projected and
- * denies `ACCESS_RESTRICTION_INPUT_INVALID` unless a credential is found anyway); and a CloudFront
+ * is not a literal, also when the choice only appears after another is substituted; more than
+ * MAX_PROJECTED_COMBINATIONS per outermost node is not fully projected and denies
+ * `ACCESS_RESTRICTION_INPUT_INVALID` unless a credential is found anyway); and a CloudFront
  * KeyValueStore seeded from the template (`ImportSource`). Any of these denies
  * `ACCESS_RESTRICTION_CREDENTIAL_IN_TEMPLATE`. A
  * `{{resolve:...}}` dynamic reference is a pointer, not a value. This is a guard, not a guarantee:
@@ -40,8 +42,9 @@
  * seen. The guarantee is S6c's "only a verifier is deployed, and a human writes it".
  *
  * An assembly that cannot be read, that nests a stack or a cloud assembly (whose templates this
- * module would not scan), or whose evaluation fails for any other reason, denies
- * `ACCESS_RESTRICTION_INPUT_INVALID`.
+ * module would not scan), whose projections could exceed MAX_PROJECTED_LENGTH, or whose evaluation
+ * throws for any other reason, denies `ACCESS_RESTRICTION_INPUT_INVALID`. A process that dies without
+ * writing a decision (heap exhaustion) fails the build: the buildspec requires an allowed decision.
  *
  * The decision (`evaluateAccessRestriction`) is pure over the assembly directory. The CLI writes it
  * to DECISION_PATH (exclusive create in the broker-owned output dir) with this execution's id and
@@ -153,10 +156,27 @@ function namesOnePrincipal(value) {
 }
 
 /**
- * CDK's `BucketDeployment` emits `accessControl` as `SystemMetadata.acl` (the handler lower-cases the
- * key and passes it to `aws s3 sync --acl`). Only a canned ACL that grants nobody outside the bucket
- * owner is private; anything else, or metadata that is not literal, may make the objects public.
+ * CDK's `BucketDeployment` handler lower-cases every `SystemMetadata` key and passes it to
+ * `aws s3 sync` as `--<key> <value>` (aws-cdk-lib bucket-deployment handler `create_metadata_args`),
+ * so any key is a CLI option: `grants` (`read=uri=.../AllUsers`) makes the objects public as surely
+ * as `acl`. An allowlist, then: the keys CDK's `mapSystemMetadata` emits that cannot grant access,
+ * each with a literal string value, and `acl` only with a canned ACL that grants nobody outside the
+ * bucket owner. Anything else — `grants`, an unknown or abbreviated key, a key with `=`, an
+ * `Fn::` key, a value that is not a literal string, metadata or `Properties` that are not
+ * literal — may make the objects public.
  */
+const SAFE_SYSTEM_METADATA_KEYS = new Set([
+  'cache-control',
+  'content-disposition',
+  'content-encoding',
+  'content-language',
+  'content-type',
+  'expires',
+  'sse',
+  'sse-kms-key-id',
+  'storage-class',
+  'website-redirect',
+]);
 const PRIVATE_OBJECT_ACLS = new Set(['private', 'bucket-owner-read', 'bucket-owner-full-control']);
 function maySetPublicAcl(rawProps) {
   if (rawProps === undefined) return false;
@@ -164,7 +184,11 @@ function maySetPublicAcl(rawProps) {
   const metadata = rawProps.SystemMetadata;
   if (metadata === undefined) return false;
   if (!isRecord(metadata)) return true;
-  return Object.entries(metadata).some(([k, v]) => k.startsWith('Fn::') || (k.toLowerCase() === 'acl' && !PRIVATE_OBJECT_ACLS.has(v)));
+  return Object.entries(metadata).some(([k, v]) => {
+    if (typeof v !== 'string') return true;
+    const key = k.toLowerCase();
+    return key === 'acl' ? !PRIVATE_OBJECT_ACLS.has(v) : !SAFE_SYSTEM_METADATA_KEYS.has(key);
+  });
 }
 
 // --- copied from trusted-policy.mjs (isRecord, parseStrictJson, safeTemplatePath, joinedLiterals,
@@ -495,57 +519,106 @@ function projectedRoots(value, out = []) {
   return out;
 }
 
-/** Every node of `value`, itself included, that offers choices. */
-function choiceNodes(value, out = []) {
-  if (Array.isArray(value)) {
-    value.forEach((v) => choiceNodes(v, out));
-  } else if (isRecord(value)) {
-    if (choicesOf(value)) out.push(value);
-    Object.values(value).forEach((v) => choiceNodes(v, out));
-  }
-  return out;
-}
-
-/** `value` with each choice node replaced by the value `pickOf(node)` names (a node it names none for is kept). */
-function withChoices(value, pickOf) {
-  if (Array.isArray(value)) return value.map((v) => withChoices(v, pickOf));
+/** `value` with the one node `target` (by identity) replaced by `replacement`. */
+function withChoice(value, target, replacement) {
+  if (value === target) return replacement;
+  if (Array.isArray(value)) return value.map((v) => withChoice(v, target, replacement));
   if (!isRecord(value)) return value;
-  const picked = pickOf(value);
-  if (picked !== undefined) return withChoices(picked, pickOf);
-  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, withChoices(v, pickOf)]));
+  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, withChoice(v, target, replacement)]));
 }
 
 const carriesLiteralCredential = (value) =>
   [...templateStrings(value), ...joinedLiterals(value), ...base64Arguments(value)].some(looksLikeCredential) || base64Arguments(value).some(isCredentialText);
 
 /**
+ * Scan `value` under every combination of its choices, one choice node at a time: an innermost one
+ * (no choice node inside it) is replaced by each of its values in turn and the result is collected
+ * again, so a choice that only exists after a substitution (an `Fn::Select` with a non-literal index
+ * whose list is an `Fn::If`; an `Fn::Select` over an `Fn::Split` whose text holds an `Fn::If`) is
+ * expanded too. Each replacement is a strict part of the node it replaces, so this ends. `budget.left`
+ * counts the fully substituted values still allowed; returns 'credential', 'clean' or 'tooComplex'
+ * (more than the budget, after scanning as many as it allowed).
+ */
+function scanChoices(value, budget) {
+  const node = innermostChoice(value);
+  if (node === null) {
+    if (budget.left === 0) return 'tooComplex';
+    budget.left -= 1;
+    return carriesLiteralCredential(value) ? 'credential' : 'clean';
+  }
+  for (const option of choicesOf(node)) {
+    const r = scanChoices(withChoice(value, node, option), budget);
+    if (r !== 'clean') return r;
+  }
+  return 'clean';
+}
+
+/** A node of `value` that offers choices and has no such node inside it, or null (post-order, linear). */
+function innermostChoice(value) {
+  const children = Array.isArray(value) ? value : isRecord(value) ? Object.values(value) : [];
+  for (const child of children) {
+    const found = innermostChoice(child);
+    if (found !== null) return found;
+  }
+  return isRecord(value) && choicesOf(value) ? value : null;
+}
+
+/**
+ * The longest string the copied projection helpers could build anywhere in `template`, under any
+ * choice, without building it: an `Fn::Sub` that names a variable twice per level doubles per level
+ * (`literalProjection` recomputes each occurrence), so 32 levels of a short template would exhaust
+ * the heap, or the CPU when the strings stay empty, before any decision. Computed once per node
+ * (linear), as an upper bound (no depth cut-off, the longer `Fn::If` branch, every `Fn::Select`
+ * element counted), and refused above MAX_PROJECTED_LENGTH by a throw, which `evaluateAccessRestriction`
+ * turns into a named deny. Lives here so the copied helpers stay byte-identical.
+ */
+export const MAX_PROJECTED_LENGTH = 8 * 1024 * 1024;
+function assertProjectionBounded(template) {
+  const memo = new WeakMap();
+  const bound = (value) => {
+    if (typeof value === 'string') return value.length;
+    if (typeof value === 'number') return String(value).length;
+    if (Array.isArray(value)) return value.reduce((n, v) => n + bound(v), 1);
+    if (!isRecord(value)) return 1;
+    if (memo.has(value)) return memo.get(value);
+    let n = 1;
+    const j = value['Fn::Join'];
+    if (Array.isArray(j) && j.length === 2) n += bound(j[1]) * (1 + (typeof j[0] === 'string' ? j[0].length : 0));
+    const sub = value['Fn::Sub'];
+    if (typeof sub === 'string' || (Array.isArray(sub) && typeof sub[0] === 'string')) {
+      const [text, vars] = typeof sub === 'string' ? [sub, {}] : [sub[0], isRecord(sub[1]) ? sub[1] : {}];
+      n += text.length;
+      for (const [, name] of text.matchAll(/\$\{([^}]*)\}/g)) if (Object.hasOwn(vars, name)) n += bound(vars[name]);
+    }
+    const sel = value['Fn::Select'];
+    if (Array.isArray(sel) && sel.length === 2) n += bound(sel[0]) + bound(sel[1]);
+    const split = value['Fn::Split'];
+    if (Array.isArray(split) && split.length === 2) n += bound(split[1]);
+    if (isIf(value)) n += Math.max(...value['Fn::If'].slice(1).map(bound));
+    memo.set(value, n);
+    if (n > MAX_PROJECTED_LENGTH) throw new Error(`an Fn::Join / Fn::Sub / Fn::Select projection may exceed ${MAX_PROJECTED_LENGTH} characters (template too large to project)`);
+    for (const v of Object.values(value)) bound(v); // every node is projected on its own too
+    return n;
+  };
+  bound(template);
+}
+
+/**
  * Scan one template for a credential (S6c). The projections read a choice as a NUL, so each outermost
  * projected intrinsic is also scanned under every combination of the choices inside it (a credential
  * split across the branches of two `Fn::If` is seen). Returns `{ credential, tooComplex }`, where
  * `tooComplex` names the outermost intrinsics with more than MAX_PROJECTED_COMBINATIONS combinations,
- * which were not projected.
+ * which were not fully projected. Throws when a projection could exceed MAX_PROJECTED_LENGTH.
  */
 export function scanTemplate(template) {
+  assertProjectionBounded(template);
   const tooComplex = [];
   if (carriesLiteralCredential(template)) return { credential: true, tooComplex };
   for (const root of projectedRoots(template)) {
-    const nodes = choiceNodes(root);
-    if (nodes.length === 0) continue;
-    const options = nodes.map(choicesOf);
-    const combinations = options.reduce((n, o) => n * o.length, 1);
-    if (combinations > MAX_PROJECTED_COMBINATIONS) {
-      tooComplex.push(root);
-      continue;
-    }
-    for (let combo = 0; combo < combinations; combo += 1) {
-      const picks = new Map();
-      let rest = combo;
-      nodes.forEach((node, i) => {
-        picks.set(node, options[i][rest % options[i].length]);
-        rest = Math.floor(rest / options[i].length);
-      });
-      if (carriesLiteralCredential(withChoices(root, (node) => picks.get(node)))) return { credential: true, tooComplex };
-    }
+    if (innermostChoice(root) === null) continue;
+    const r = scanChoices(root, { left: MAX_PROJECTED_COMBINATIONS });
+    if (r === 'credential') return { credential: true, tooComplex };
+    if (r === 'tooComplex') tooComplex.push(root);
   }
   return { credential: false, tooComplex };
 }
@@ -622,7 +695,8 @@ export function evaluateAccessRestriction({ assemblyDir, check }) {
   try {
     return evaluate(assemblyDir, check);
   } catch (error) {
-    // Unreadable, nested, or any internal failure: a named deny, never a crash without a decision.
+    // Unreadable, nested, too large to project, or any internal exception: a named deny. (A process
+    // that dies before this, e.g. out of heap, writes no decision, and the buildspec fails closed on that.)
     return decision('denied', RULES.INPUT_INVALID, `assembly could not be read or evaluated: ${error instanceof Error ? error.message : String(error)}`, {
       state: 'unverifiable',
       reason: 'assembly not evaluated',

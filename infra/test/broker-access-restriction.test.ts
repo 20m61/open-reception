@@ -25,6 +25,7 @@ type Mod = {
   NON_VIEWER_FACING_TYPES: ReadonlySet<string>;
   MIN_TOKEN_LENGTH: number;
   MAX_PROJECTED_COMBINATIONS: number;
+  MAX_PROJECTED_LENGTH: number;
   parseStrictJson: (s: string) => unknown;
   runCli: (argv: string[], o?: J) => { exitCode: number; record: J };
 };
@@ -187,7 +188,20 @@ describe('a declared check verifies only when it proves every entry point', () =
     ['bucket deployment whose metadata is not an object', { Type: 'Custom::CDKBucketDeployment', Properties: { SystemMetadata: ['public-read'] } }],
     ['bucket deployment whose Properties are an intrinsic', { Type: 'Custom::CDKBucketDeployment', Properties: { 'Fn::If': ['C', { SystemMetadata: { acl: 'public-read' } }, {}] } }],
     ['bucket deployment whose Properties are not an object', { Type: 'Custom::CDKBucketDeployment', Properties: 'x' }],
+    // #1219 HIGH: every SystemMetadata key is an `aws s3 sync --<key>` option, so only known-safe keys are not entry points.
+    ['bucket deployment with object grants', { Type: 'Custom::CDKBucketDeployment', Properties: { SystemMetadata: { grants: 'read=uri=http://acs.amazonaws.com/groups/global/AllUsers' } } }],
+    ['bucket deployment with an unknown metadata key', { Type: 'Custom::CDKBucketDeployment', Properties: { SystemMetadata: { 'some-new-option': 'x' } } }],
+    ['bucket deployment with an abbreviated metadata key', { Type: 'Custom::CDKBucketDeployment', Properties: { SystemMetadata: { gr: 'read=uri=http://acs.amazonaws.com/groups/global/AllUsers' } } }],
+    ['bucket deployment with a metadata key containing "="', { Type: 'Custom::CDKBucketDeployment', Properties: { SystemMetadata: { 'acl=public-read': 'x' } } }],
+    ['bucket deployment with a non-ASCII metadata key', { Type: 'Custom::CDKBucketDeployment', Properties: { SystemMetadata: { 'cache-control\u00a0': 'x' } } }],
+    ['bucket deployment with a non-literal safe-key value', { Type: 'Custom::CDKBucketDeployment', Properties: { SystemMetadata: { 'cache-control': { Ref: 'Cc' } } } }],
+    ['bucket deployment with a non-string safe-key value', { Type: 'Custom::CDKBucketDeployment', Properties: { SystemMetadata: { 'content-type': ['text/html'] } } }],
+    ['bucket deployment with an Fn:: metadata key', { Type: 'Custom::CDKBucketDeployment', Properties: { SystemMetadata: { 'cache-control': 'x', 'Fn::If': ['C', { acl: 'public-read' }, {}] } } }],
     ['bucket policy allowing {AWS: "*"}', { Type: 'AWS::S3::BucketPolicy', Properties: { PolicyDocument: { Statement: [{ Effect: 'Allow', Principal: { AWS: '*' }, Action: 's3:GetObject' }] } } }],
+    // #1219 NIT: the object form also counts any value containing `*`, not only exactly `*`.
+    ['bucket policy allowing {AWS: "arn:aws:iam::*:root"}', { Type: 'AWS::S3::BucketPolicy', Properties: { PolicyDocument: { Statement: [{ Effect: 'Allow', Principal: { AWS: 'arn:aws:iam::*:root' }, Action: 's3:GetObject' }] } } }],
+    // #1219 NIT: an Fn::GetAtt names one principal only when it is the node's only key.
+    ['bucket policy allowing an Arn Fn::GetAtt with an extra key', { Type: 'AWS::S3::BucketPolicy', Properties: { PolicyDocument: { Statement: [{ Effect: 'Allow', Principal: { AWS: { 'Fn::GetAtt': ['Role', 'Arn'], Ref: 'Who' } }, Action: 's3:GetObject' }] } } }],
     ['bucket policy allowing {AWS: ["*"]}', { Type: 'AWS::S3::BucketPolicy', Properties: { PolicyDocument: { Statement: [{ Effect: 'Allow', Principal: { AWS: ['arn:aws:iam::1:role/r', '*'] }, Action: 's3:GetObject' }] } } }],
     ['bucket policy with an Allow and NotPrincipal', { Type: 'AWS::S3::BucketPolicy', Properties: { PolicyDocument: { Statement: [{ Effect: 'Allow', NotPrincipal: { AWS: 'arn:aws:iam::1:root' }, Action: 's3:GetObject' }] } } }],
     ['bucket policy with a non-literal Effect', { Type: 'AWS::S3::BucketPolicy', Properties: { PolicyDocument: { Statement: [{ Effect: { 'Fn::If': ['C', 'Allow', 'Deny'] }, Principal: '*', Action: 's3:GetObject' }] } } }],
@@ -228,6 +242,26 @@ describe('a declared check verifies only when it proves every entry point', () =
       DeployPrivate: { Type: 'Custom::CDKBucketDeployment', Properties: { SystemMetadata: { acl: 'private' } } },
       DeployOwner: { Type: 'Custom::CDKBucketDeployment', Properties: { SystemMetadata: { acl: 'bucket-owner-full-control' } } },
       DeployNoProps: { Type: 'Custom::CDKBucketDeployment' },
+      // #1219: every key CDK's mapSystemMetadata emits that grants nothing (any key case), with literal values.
+      DeploySafeKeys: {
+        Type: 'Custom::CDKBucketDeployment',
+        Properties: {
+          SystemMetadata: {
+            'Cache-Control': 'no-cache',
+            'content-type': 'text/html',
+            'content-disposition': 'inline',
+            'content-encoding': 'gzip',
+            'content-language': 'ja',
+            expires: 'Thu, 01 Jan 2026 00:00:00 GMT',
+            'storage-class': 'STANDARD',
+            sse: 'aws:kms',
+            'sse-kms-key-id': 'alias/k',
+            'website-redirect': '/index.html',
+            ACL: 'bucket-owner-read',
+          },
+          UserMetadata: { a: 'b' },
+        },
+      },
     };
     const seen: string[] = [];
     const d = M.evaluateAccessRestriction({ assemblyDir: assembly({ Web: { Cdn: distribution(0), ...internal } }), check: { name: 'spy', isRestricted: (e) => (seen.push(e.entry), true) } });
@@ -298,6 +332,10 @@ describe('the credential never appears in the template (scan runs with or withou
     ['Fn::Select with an Fn::FindInMap index', fnCode({ 'Fn::Join': ['', ['Basic ', credential.slice(0, 6), { 'Fn::Select': [{ 'Fn::FindInMap': ['M', 'K', 'V'] }, ['x', credential.slice(6)]] }]] })],
     ['Fn::Select with an Fn::If index', fnCode({ 'Fn::Join': ['', ['Basic ', credential.slice(0, 6), { 'Fn::Select': [{ 'Fn::If': ['C', 0, 1] }, ['x', credential.slice(6)]] }]] })],
     ['Fn::Select with a Ref index over Fn::Split', fnCode({ 'Fn::Join': ['', ['Basic ', credential.slice(0, 6), { 'Fn::Select': [{ Ref: 'Index' }, { 'Fn::Split': ['|', `x|${credential.slice(6)}|y`] }] }]] })],
+    // #1219 MEDIUM: a choice that only exists after another is substituted is expanded too.
+    ['Fn::Select with a Ref index over an Fn::If list (index and list both non-literal)', fnCode({ 'Fn::Join': ['', ['Basic ', credential.slice(0, 6), { 'Fn::Select': [{ Ref: 'Index' }, { 'Fn::If': ['C', ['x', credential.slice(6)], ['y', 'z']] }] }]] })],
+    ['Fn::Select with an Fn::If index over an Fn::If list', fnCode({ 'Fn::Join': ['', ['Basic ', credential.slice(0, 6), { 'Fn::Select': [{ 'Fn::If': ['C', 0, 1] }, { 'Fn::If': ['D', ['y', 'z'], ['x', credential.slice(6)]] }] }]] })],
+    ['Fn::Select with a Ref index over Fn::Split of a text holding an Fn::If', fnCode({ 'Fn::Join': ['', ['Basic ', credential.slice(0, 6), { 'Fn::Select': [{ Ref: 'Index' }, { 'Fn::Split': ['|', { 'Fn::Join': ['|', ['x', { 'Fn::If': ['C', 'y', credential.slice(6)] }]] }] }] }]] })],
     ['Fn::Base64 of an Fn::Select with a Ref index', { P: { Type: 'AWS::CloudFront::OriginRequestPolicy', Properties: { V: { 'Fn::Base64': { 'Fn::Select': [{ Ref: 'Index' }, ['x', 'owner:s3cret-pass']] } } } } }],
     ['as a header value elsewhere', { P: { Type: 'AWS::CloudFront::OriginRequestPolicy', Properties: { Headers: [{ Name: 'Authorization', Value: `Basic ${credential}` }] } } }],
     ['a KeyValueStore seeded from the template', { Kvs: { Type: 'AWS::CloudFront::KeyValueStore', Properties: { Name: 'auth', ImportSource: { SourceType: 'S3', SourceArn: 'arn:aws:s3:::b/k' } } } }],
@@ -498,13 +536,35 @@ describe('the credential never appears in the template (scan runs with or withou
       expect(d).toMatchObject({ result: 'denied', rule: 'ACCESS_RESTRICTION_CREDENTIAL_IN_TEMPLATE' });
     });
 
+    it('#1219: choices revealed by a substitution count against the same bound', () => {
+      const list = (n: number, p: string) => Array.from({ length: n }, (_, i) => `${p}${i}`);
+      // Old count: one Fn::If (2). Real count: 40 + 40 once the list is chosen.
+      expect(run(fnCode(join([{ 'Fn::Select': [{ Ref: 'I' }, { 'Fn::If': ['C', list(40, 'a'), list(40, 'b')] }] }])))).toMatchObject(tooComplex);
+      expect(run(fnCode(join([{ 'Fn::Select': [{ Ref: 'I' }, { 'Fn::If': ['C', list(32, 'a'), list(32, 'b')] }] }])))).toMatchObject({ result: 'allowed' });
+    });
+
+    it('#1219 MINOR: a choice-free intrinsic before a choice-bearing one does not end the scan', () => {
+      const plain = join(['x-', 'y']);
+      const split = join(['Basic ', { 'Fn::If': ['A', credential.slice(0, 6), 'x'] }, { 'Fn::If': ['B', 'y', credential.slice(6)] }]);
+      for (const check of [null, all]) expect(run(fnCode([plain, split]), check)).toMatchObject({ result: 'denied', rule: 'ACCESS_RESTRICTION_CREDENTIAL_IN_TEMPLATE' });
+    });
+
+    it('#1219 MINOR: "too complex" shares ACCESS_RESTRICTION_INPUT_INVALID with an unreadable assembly; the reason tells them apart', () => {
+      const complex = run(fnCode(join(ifs(7))));
+      const unreadable = M.evaluateAccessRestriction({ assemblyDir: scratch(), check: null });
+      expect(complex.rule).toBe('ACCESS_RESTRICTION_INPUT_INVALID');
+      expect(unreadable.rule).toBe('ACCESS_RESTRICTION_INPUT_INVALID');
+      expect(complex.accessRestriction.reason).toBe('template too complex to scan');
+      expect(unreadable.accessRestriction.reason).toBe('assembly not evaluated');
+    });
+
     it('an Fn::Select with a literal index or a non-literal list offers no choice', () => {
       expect(run(fnCode(join([{ 'Fn::Select': [0, Array.from({ length: 100 }, (_, i) => `e${i}`)] }])))).toMatchObject({ result: 'allowed' });
       expect(run(fnCode(join([{ 'Fn::Select': [{ Ref: 'I' }, { 'Fn::GetAZs': '' }] }])))).toMatchObject({ result: 'allowed' });
     });
   });
 
-  it('#1217 AC1: an internal failure is a named deny that escalates, never a crash without a decision', () => {
+  it('#1217 AC1: an internal exception is a named deny that escalates (a written decision, not a bare crash)', () => {
     const throwingName = {
       get name(): string {
         throw new RangeError('boom');
@@ -517,6 +577,40 @@ describe('the credential never appears in the template (scan runs with or withou
     const decisionPath = join(out, 'd.json');
     expect(M.runCli(['--assembly', dir], { env: {}, check: throwingName, decisionPath }).exitCode).toBe(M.DENIED_EXIT_CODE);
     expect(JSON.parse(readFileSync(decisionPath, 'utf8'))).toMatchObject({ result: 'denied', rule: 'ACCESS_RESTRICTION_INPUT_INVALID' });
+  });
+
+  it('#1219: a projection that could outgrow MAX_PROJECTED_LENGTH is a named deny decided quickly, not a heap or CPU exhaustion', () => {
+    expect(M.MAX_PROJECTED_LENGTH).toBe(8 * 1024 * 1024);
+    // Doubling per level: 40 levels would be 2^40 characters, also through each intrinsic the projection reads through
+    // (an Fn::If is read through once a combination substitutes it).
+    const wrappers: Array<(x: unknown) => unknown> = [
+      (x) => x,
+      (x) => ({ 'Fn::Join': ['', [x]] }),
+      (x) => ({ 'Fn::Select': [0, [x]] }),
+      (x) => ({ 'Fn::Select': [0, { 'Fn::Split': ['|', x] }] }),
+      (x) => ({ 'Fn::If': ['C', x, 'x'] }),
+    ];
+    const doubling = wrappers.map((wrap) => {
+      let v: unknown = 'ab';
+      for (let i = 0; i < 40; i += 1) v = { 'Fn::Sub': ['${A}${A}', { A: wrap(v) }] };
+      return v;
+    });
+    // Empty strings: nothing to allocate, but 20^6 recomputations.
+    let empty: unknown = '';
+    for (let i = 0; i < 6; i += 1) empty = { 'Fn::Sub': ['${A}'.repeat(20), { A: empty }] };
+    for (const code of [...doubling, empty]) {
+      for (const check of [null, all]) {
+        const t = Date.now();
+        const d = M.evaluateAccessRestriction({ assemblyDir: assembly({ Web: { ...fnCode(code), Cdn: distribution(0) } }), check });
+        expect(Date.now() - t).toBeLessThan(2000);
+        expect(d).toMatchObject({ result: 'denied', rule: 'ACCESS_RESTRICTION_INPUT_INVALID', accessRestriction: { state: 'unverifiable', reason: 'assembly not evaluated' } });
+        expect(String(d.reason)).toContain('too large to project');
+      }
+    }
+    // A projection just inside the bound is still decided normally.
+    let inside: unknown = 'ab';
+    for (let i = 0; i < 18; i += 1) inside = { 'Fn::Sub': ['${A}${A}', { A: inside }] };
+    expect(M.evaluateAccessRestriction({ assemblyDir: assembly({ Web: { ...fnCode(inside), Cdn: distribution(0) } }), check: null })).toMatchObject({ result: 'allowed' });
   });
 
   it('a credential used as an object KEY (e.g. under Mappings) is found', () => {
