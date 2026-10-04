@@ -348,6 +348,7 @@ stack deploy role は、2 つの resource policy で**例外扱い**になる。
 
 ```bash
 cd infra
+export AWS_REGION=ap-northeast-1  # bootstrap も app を synth する。app は ap-northeast-1 以外を拒否する（#1221）
 npx cdk bootstrap --show-template > /tmp/broker-bootstrap.yaml
 ```
 
@@ -364,6 +365,8 @@ npx cdk bootstrap --show-template > /tmp/broker-bootstrap.yaml
 ### 4c. bootstrap する（owner の admin credential で）
 
 ```bash
+# cdk bootstrap も infra/cdk.json の app を synth する。app は ap-northeast-1 以外を拒否する（#1221）
+export AWS_REGION=ap-northeast-1
 npx cdk bootstrap aws://822063948773/ap-northeast-1 \
   --qualifier orbrkr01 --toolkit-stack-name CDKToolkit-orbrkr01 \
   --cloudformation-execution-policies <4a の policy の ARN> \

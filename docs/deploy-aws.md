@@ -57,7 +57,7 @@ npm install
 ```bash
 cd infra
 export CDK_DEFAULT_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
-export CDK_DEFAULT_REGION=ap-northeast-1
+export AWS_REGION=ap-northeast-1  # CDK_DEFAULT_REGION は CLI が上書きするので AWS_REGION で指定する（#1221）
 npx cdk bootstrap
 ```
 
