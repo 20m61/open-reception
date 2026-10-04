@@ -429,9 +429,14 @@ npx cdk deploy --app "npx ts-node --prefer-ts-exts bin/dev-deploy-broker.ts" Ope
   **y と答えてよい。** このとき作られるのは change set だけで、実行はされない。
 - **`--no-rollback`**: 初回の作成が失敗しても、stack は `CREATE_FAILED` のまま残る。table・監査 bucket などの
   `RETAIN` の resource も stack が持ち続けるので、stack から外れた resource（孤児）にならない。
-  原因を直してから、change set を作り直して実行する。やめるときは
-  `aws cloudformation rollback-stack --stack-name OpenReception-DevDeployBroker` で戻す。
+  原因（多くは手順 4a の policy の不足）を `create-policy-version` で直してから、change set を作り直して実行する。
+  **live では未確認:** `CREATE_FAILED`（rollback 無効）の stack に、update の change set が通るかは確かめていない。
+  通らなければ、コンソールの「Retry」か `aws cloudformation update-stack` を使う。`cdk deploy` を無思慮に再実行しない。
+  やめるときは `aws cloudformation rollback-stack --stack-name OpenReception-DevDeployBroker` で戻す。
   ただし rollback や stack の削除では、`RETAIN` の resource は stack から外れて残る（table には削除保護も付いている）。
+  **`rollback-stack` の後は `ROLLBACK_COMPLETE` になり、次の `cdk deploy` は確認なしで stack を消して作り直そうとする。**
+  残った `RETAIN` の resource（名前の固定された trail・table など）と衝突して失敗するので、
+  再挑戦の前に、残った resource を手で片付ける（または import する）こと。
 
 - 既存の table・bucket に `Remove` や `Replacement: True` が無いこと。あれば実行せず、change set を消して止める。
 - 初回（stack が無い）なら、すべて `Add` になる。
@@ -585,6 +590,10 @@ git push origin "$SHA:refs/heads/dev-deploy"
   0 なら、`BROKER_NOT_ARMED` の deny が ledger に `denied_before_mutation` として監査記録される。
   記録されていなければ、その事実を書く（genesis 前の table に対する挙動も含めて）。
 - 3 stack の `DescribeStacks` が、stack ARN で絞った権限の下でどう答えるか。
+- 警報の EventBridge rule（build の `STOPPED` など）から SNS への publish が、topic policy の
+  `aws:SourceArn` / `aws:SourceAccount` の条件の下で受け付けられるか（#1218）。拒否されても何も出ないので、
+  1 回通しとは別に broker の build を 1 度だけ止めて（`aws codebuild stop-build --id <build id>`）メールが届くことと、
+  `aws cloudwatch get-metric-statistics --namespace AWS/Events --metric-name FailedInvocations --dimensions Name=RuleName,Value=<rule 名> ...` が 0 であることを見る。
 
 記録は #1146 に残す: 実施日時、`SHA`、pipeline の execution id、各段の結果、上の確認点の結果。
 失敗したら、同じ revision で再度 push しない。原因を local / 静的な検証へ戻して直す（`.claude/rules/aws-dev-promotion.md`）。
