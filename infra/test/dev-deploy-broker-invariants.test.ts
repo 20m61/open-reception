@@ -1738,6 +1738,45 @@ describe('alerts for attempts that may stay in_progress (#1153)', () => {
     const [alarmId] = byType('AWS::CloudWatch::Alarm')[0]!;
     expect(cw[0]!.Condition).toEqual({ ArnEquals: { 'aws:SourceArn': { 'Fn::GetAtt': [alarmId, 'Arn'] } }, StringEquals: { 'aws:SourceAccount': { Ref: 'AWS::AccountId' } } });
   });
+
+  /** Every statement of every policy attached to the alert topic (all `AWS::SNS::TopicPolicy`). */
+  const topicStatements = (): Statement[] =>
+    byType('AWS::SNS::TopicPolicy')
+      .filter(([, p]) => (p.Properties.Topics as unknown[]).some((t) => JSON.stringify(t) === JSON.stringify({ Ref: topicId })))
+      .flatMap(([, p]) => documentStatements(p.Properties.PolicyDocument));
+
+  it('🔴 every Allow on the alert topic is bound to its source ARN and this account (no confused deputy, #1218)', () => {
+    // CDK's EventBridge SNS target adds an unconditioned `events.amazonaws.com` Allow (Sid "2"):
+    // any account's rule could then publish fake alerts, or drown a real one.
+    const allows = topicStatements().filter((s) => s.Effect === 'Allow');
+    expect(allows.length).toBeGreaterThan(0);
+    for (const s of allows) {
+      const c = s.Condition as Record<string, Record<string, unknown>> | undefined;
+      // Exact operators only: `ArnLike` with a wildcard or an `…IfExists` variant would not bind.
+      expect(c?.ArnEquals?.['aws:SourceArn'], JSON.stringify(s)).toBeDefined();
+      expect(JSON.stringify(c!.ArnEquals!['aws:SourceArn'])).not.toContain('*');
+      expect(c?.StringEquals?.['aws:SourceAccount'], JSON.stringify(s)).toEqual({ Ref: 'AWS::AccountId' });
+      expect(s.Principal, JSON.stringify(s)).toEqual({ Service: expect.stringMatching(/^[a-z]+\.amazonaws\.com$/) });
+      expect(s.NotPrincipal).toBeUndefined();
+    }
+  });
+
+  it('EventBridge may publish to the topic only from the two abort rules (#1218)', () => {
+    const ev = topicStatements().filter((s) => JSON.stringify(s.Principal) === JSON.stringify({ Service: 'events.amazonaws.com' }));
+    // Exactly one, and it is still there: without it the abort alerts would be silently dropped.
+    expect(ev).toHaveLength(1);
+    expect(ev[0]).toMatchObject({ Effect: 'Allow', Action: 'sns:Publish', Resource: { Ref: topicId } });
+    const ruleIds = byType('AWS::Events::Rule').map(([id]) => id);
+    expect(ruleIds).toHaveLength(2);
+    expect(ev[0]!.Condition).toEqual({
+      ArnEquals: { 'aws:SourceArn': ruleIds.map((id) => ({ 'Fn::GetAtt': [id, 'Arn'] })) },
+      StringEquals: { 'aws:SourceAccount': { Ref: 'AWS::AccountId' } },
+    });
+    // Resource-policy publish only: no rule role (no new IAM role or permission).
+    for (const [, rule] of byType('AWS::Events::Rule')) {
+      for (const t of rule.Properties.Targets as Json[]) expect(t.RoleArn).toBeUndefined();
+    }
+  });
 });
 
 describe('target-stack stability gate (S10a): a failed or busy target stack blocks automated attempts', () => {
