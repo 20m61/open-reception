@@ -13,8 +13,10 @@
  * - `verified`: a check is declared and proves EVERY possible entry point restricted. Fail closed:
  *   every resource whose type is not on the short NON_VIEWER_FACING_TYPES allowlist is an entry
  *   point (CloudFront distributions count once per behaviour; an S3 bucket only with
- *   `WebsiteConfiguration`, `AccessControl` or non-literal `Properties`, and a bucket policy only
- *   when it may Allow anyone; an ELBv2 load balancer unless its `Scheme` is the literal `internal`),
+ *   `WebsiteConfiguration`, `AccessControl` or non-literal `Properties`, a bucket policy only when
+ *   it may Allow anyone, a CDK bucket deployment only when its `SystemMetadata` is not on a
+ *   known-safe allowlist (it may set a public object ACL or grant); an ELBv2 load balancer unless its
+ *   `Scheme` is the literal `internal`),
  *   so a function URL, API Gateway, AppSync, App Runner, Amplify, a Cognito domain, a public load
  *   balancer, or any type nobody classified must be proven too. No entry point at all is not a
  *   proof;
@@ -28,15 +30,21 @@
  * printable `user:password` (RFC 7617), a
  * `user:password` literal after `Basic `, passed to `btoa(...)` / `Buffer.from(...)`, or given to
  * `Fn::Base64`, over every string and the recursive literal projection of every `Fn::Join` /
- * `Fn::Sub` / `Fn::Select` / `Fn::Base64` node, under every combination of branches of the `Fn::If`
- * inside them (more than MAX_PROJECTED_IFS fails closed); and a CloudFront KeyValueStore seeded from the
- * template (`ImportSource`). Any of these denies `ACCESS_RESTRICTION_CREDENTIAL_IN_TEMPLATE`. A
+ * `Fn::Sub` / `Fn::Select` / `Fn::Base64` node, under every combination of the values the projection
+ * reads as a NUL inside it (the branches of an `Fn::If`, the elements of an `Fn::Select` whose index
+ * is not a literal, also when the choice only appears after another is substituted; more than
+ * MAX_PROJECTED_COMBINATIONS per outermost node is not fully projected and denies
+ * `ACCESS_RESTRICTION_INPUT_INVALID` unless a credential is found anyway); and a CloudFront
+ * KeyValueStore seeded from the template (`ImportSource`). Any of these denies
+ * `ACCESS_RESTRICTION_CREDENTIAL_IN_TEMPLATE`. A
  * `{{resolve:...}}` dynamic reference is a pointer, not a value. This is a guard, not a guarantee:
  * code outside the template (Lambda@Edge / asset bundles) and credentials built at runtime are not
  * seen. The guarantee is S6c's "only a verifier is deployed, and a human writes it".
  *
- * An assembly that cannot be read, or that nests a stack or a cloud assembly (whose templates this
- * module would not scan), denies `ACCESS_RESTRICTION_INPUT_INVALID`.
+ * An assembly that cannot be read, that nests a stack or a cloud assembly (whose templates this
+ * module would not scan), whose projections could exceed MAX_PROJECTED_LENGTH, or whose evaluation
+ * throws for any other reason, denies `ACCESS_RESTRICTION_INPUT_INVALID`. A process that dies without
+ * writing a decision (heap exhaustion) fails the build: the buildspec requires an allowed decision.
  *
  * The decision (`evaluateAccessRestriction`) is pure over the assembly directory. The CLI writes it
  * to DECISION_PATH (exclusive create in the broker-owned output dir) with this execution's id and
@@ -95,7 +103,7 @@ export const NON_VIEWER_FACING_TYPES = Object.freeze(new Set([
   'AWS::SNS::Subscription',
   'AWS::SNS::Topic',
   'AWS::SNS::TopicPolicy',
-  'Custom::CDKBucketDeployment',
+  'Custom::CDKBucketDeployment', // unless it may set a public object ACL (isEntryPoint)
   'Custom::CrossRegionExportReader',
   'Custom::CrossRegionExportWriter',
   'Custom::S3AutoDeleteObjects',
@@ -106,8 +114,9 @@ export const NON_VIEWER_FACING_TYPES = Object.freeze(new Set([
  * bucket and its policy are decided here, not by relying on the trusted policy's S3 property
  * allowlist and `RESOURCE_POLICY_PRINCIPAL_NOT_REVIEWED`: a bucket with `WebsiteConfiguration` or
  * `AccessControl` (a canned ACL may be public-read), or whose `Properties` are not a literal object,
- * and a bucket policy that may Allow anyone (a `*` principal, no literal `Principal` — e.g.
- * `NotPrincipal` — or a statement that is not literal) are entry points.
+ * a bucket policy that may Allow anyone (a `*` principal, no literal `Principal` — e.g.
+ * `NotPrincipal` — or a statement that is not literal), and a CDK bucket deployment that may give
+ * the objects it copies a public ACL are entry points.
  */
 function isEntryPoint(type, rawProps) {
   const props = isRecord(rawProps) ? rawProps : {};
@@ -116,11 +125,16 @@ function isEntryPoint(type, rawProps) {
     return Object.keys(props).some((k) => k.startsWith('Fn::')) || props.WebsiteConfiguration !== undefined || props.AccessControl !== undefined;
   }
   if (type === 'AWS::S3::BucketPolicy') return mayAllowAnyone(props.PolicyDocument);
+  if (type === 'Custom::CDKBucketDeployment') return maySetPublicAcl(rawProps);
   if (type === 'AWS::ElasticLoadBalancingV2::LoadBalancer') return props.Scheme !== 'internal';
   return !NON_VIEWER_FACING_TYPES.has(type);
 }
 
-/** Could this policy document Allow a public principal? Anything not literal counts as yes. */
+/**
+ * Could this policy document Allow a public principal? Anything not literal counts as yes. Only the
+ * `Arn` or `S3CanonicalUserId` of a resource in the template names one principal; any other
+ * `Fn::GetAtt` is not known to.
+ */
 function mayAllowAnyone(document) {
   if (document === undefined) return false; // grants nothing
   if (!isRecord(document) || !Array.isArray(document.Statement)) return true;
@@ -131,8 +145,49 @@ function mayAllowAnyone(document) {
     if (typeof principal === 'string') return principal.includes('*');
     if (!isRecord(principal)) return true;
     return Object.values(principal).some((value) =>
-      (Array.isArray(value) ? value : [value]).some((v) => (typeof v === 'string' ? v.includes('*') : !(isRecord(v) && Object.keys(v).length === 1 && Object.hasOwn(v, 'Fn::GetAtt')))),
+      (Array.isArray(value) ? value : [value]).some((v) => (typeof v === 'string' ? v.includes('*') : !namesOnePrincipal(v))),
     );
+  });
+}
+
+function namesOnePrincipal(value) {
+  const att = isRecord(value) && Object.keys(value).length === 1 ? value['Fn::GetAtt'] : undefined;
+  return Array.isArray(att) && att.length === 2 && ['Arn', 'S3CanonicalUserId'].includes(att[1]);
+}
+
+/**
+ * CDK's `BucketDeployment` handler lower-cases every `SystemMetadata` key and passes it to
+ * `aws s3 sync` as `--<key> <value>` (aws-cdk-lib bucket-deployment handler `create_metadata_args`),
+ * so any key is a CLI option: `grants` (`read=uri=.../AllUsers`) makes the objects public as surely
+ * as `acl`. An allowlist, then: the keys CDK's `mapSystemMetadata` emits that cannot grant access,
+ * each with a literal string value, and `acl` only with a canned ACL that grants nobody outside the
+ * bucket owner. Anything else — `grants`, an unknown or abbreviated key, a key with `=`, an
+ * `Fn::` key, a value that is not a literal string, metadata or `Properties` that are not
+ * literal — may make the objects public.
+ */
+const SAFE_SYSTEM_METADATA_KEYS = new Set([
+  'cache-control',
+  'content-disposition',
+  'content-encoding',
+  'content-language',
+  'content-type',
+  'expires',
+  'sse',
+  'sse-kms-key-id',
+  'storage-class',
+  'website-redirect',
+]);
+const PRIVATE_OBJECT_ACLS = new Set(['private', 'bucket-owner-read', 'bucket-owner-full-control']);
+function maySetPublicAcl(rawProps) {
+  if (rawProps === undefined) return false;
+  if (!isRecord(rawProps) || Object.keys(rawProps).some((k) => k.startsWith('Fn::'))) return true;
+  const metadata = rawProps.SystemMetadata;
+  if (metadata === undefined) return false;
+  if (!isRecord(metadata)) return true;
+  return Object.entries(metadata).some(([k, v]) => {
+    if (typeof v !== 'string') return true;
+    const key = k.toLowerCase();
+    return key === 'acl' ? !PRIVATE_OBJECT_ACLS.has(v) : !SAFE_SYSTEM_METADATA_KEYS.has(key);
   });
 }
 
@@ -309,8 +364,11 @@ function literalList(value, depth) {
 
 /** Shortest base64 token considered (6 decoded bytes, e.g. `a:bcde`); keeps random hits rare. */
 export const MIN_TOKEN_LENGTH = 8;
-/** Standard or URL-safe base64, not part of a longer run of base64 characters. */
-const BASE64_TOKEN = new RegExp(`(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{${MIN_TOKEN_LENGTH},}={0,2}(?![A-Za-z0-9+/=_-])`, 'g');
+/**
+ * Standard or URL-safe base64, not part of a longer run of base64 characters; its padding may be
+ * followed by `/` (`/auth/<padded token>/x`).
+ */
+const BASE64_TOKEN = new RegExp(`(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{${MIN_TOKEN_LENGTH},}={0,2}(?![A-Za-z0-9+=_-])`, 'g');
 /** A `user:password` literal in a credential position: after `Basic `, or passed to an encoder. */
 const PLAIN_IN_CONTEXT = [/\bBasic\s+([^\s'"`]+)/gi, /\b(?:btoa|Buffer\.from)\(\s*(['"`])([^'"`]*)\1/g];
 
@@ -324,21 +382,67 @@ export function isCredentialText(text) {
   return typeof text === 'string' && /^[\x20-\x7e]+$/.test(text) && /^[^:\s{}]+:[\x20-\x7e]*$/.test(text);
 }
 
-/**
- * The run itself and every part of it between `/` boundaries: `/` is a base64 character, so a token
- * after a path separator (`/dXNlcjpwYXNz`) would otherwise only be read misaligned inside the run.
- */
-function slashSpans(run) {
-  const starts = [0];
-  const ends = [];
-  for (let i = 0; i < run.length; i += 1) {
-    if (run[i] === '/') {
-      ends.push(i);
-      starts.push(i + 1);
-    }
+/** For each byte index, the first index at or after it whose byte matches (`bytes.length` if none). */
+function nextMatching(bytes, matches) {
+  const next = new Int32Array(bytes.length + 1).fill(bytes.length);
+  for (let i = bytes.length - 1; i >= 0; i -= 1) next[i] = matches(bytes[i]) ? i : next[i + 1];
+  return next;
+}
+
+/** The first element of an ascending list that is at least `min`, or undefined. */
+function firstAtLeast(list, min) {
+  let lo = 0;
+  let hi = list.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (list[mid] < min) lo = mid + 1;
+    else hi = mid;
   }
-  ends.push(run.length);
-  return starts.flatMap((s) => ends.filter((e) => e - s >= MIN_TOKEN_LENGTH).map((e) => run.slice(s, e)));
+  return list[lo];
+}
+
+/**
+ * Does the run itself, or a part of it between `/` boundaries, decode to a credential? `/` is a
+ * base64 character, so a token after a path separator (`/dXNlcjpwYXNz`) would otherwise only be read
+ * misaligned inside the run. Every part from the run's start or a `/` to a later `/` or the run's end
+ * is tried, in time linear in the run (a run of 60 KB with a thousand `/` is otherwise seconds, and a
+ * list of every part does not fit in memory): parts whose starts are equal modulo 4 share their
+ * 4-character groups, so the run is decoded once per alignment; and from each start, only the
+ * shortest part (of a decodable length) that reaches past the first colon needs checking, since a
+ * longer one only adds bytes that must also be printable.
+ */
+function runCarriesCredential(run) {
+  const text = run.replace(/=+$/, '');
+  const body = text.replace(/-/g, '+').replace(/_/g, '/');
+  const starts = [0];
+  const endsByResidue = [[], [], [], []];
+  for (let i = 0; i <= text.length; i += 1) {
+    if (i === text.length || text[i] === '/') endsByResidue[i % 4].push(i);
+    if (text[i] === '/') starts.push(i + 1);
+  }
+  const lanes = [];
+  const laneOf = (a) => {
+    if (lanes[a]) return lanes[a];
+    const bytes = Buffer.from(body.slice(a), 'base64');
+    return (lanes[a] = {
+      nonPrintable: nextMatching(bytes, (b) => b < 0x20 || b > 0x7e),
+      colon: nextMatching(bytes, (b) => b === 0x3a),
+      notInUser: nextMatching(bytes, (b) => b === 0x20 || b === 0x7b || b === 0x7d), // RFC 7617 user: no space; `{}`: not a dynamic reference
+      length: bytes.length,
+    });
+  };
+  return starts.some((start) => {
+    const lane = laneOf(start % 4);
+    const from = ((start - (start % 4)) / 4) * 3;
+    const colon = lane.colon[from];
+    if (!(colon < lane.length) || colon === from || lane.notInUser[from] < colon) return false;
+    // Characters needed to decode through the colon; a length of 1 modulo 4 decodes nothing more.
+    const min = start + Math.max(MIN_TOKEN_LENGTH, Math.ceil(((colon - from + 1) * 4) / 3));
+    const ends = [0, 1, 2, 3].filter((r) => (r - (start % 4) + 4) % 4 !== 1).map((r) => firstAtLeast(endsByResidue[r], min)).filter((e) => e !== undefined);
+    if (ends.length === 0) return false;
+    const end = Math.min(...ends);
+    return lane.nonPrintable[from] >= from + Math.floor(((end - start) * 3) / 4);
+  });
 }
 
 const percentDecoded = (text) => text.replace(/%([0-9A-Fa-f]{2})/g, (_m, h) => String.fromCharCode(parseInt(h, 16)));
@@ -347,13 +451,7 @@ const percentDecoded = (text) => text.replace(/%([0-9A-Fa-f]{2})/g, (_m, h) => S
 export function looksLikeCredential(text) {
   if (typeof text !== 'string') return false;
   for (const variant of new Set([text, percentDecoded(text)])) {
-    for (const m of variant.matchAll(BASE64_TOKEN)) {
-      for (const token of slashSpans(m[0])) {
-        const body = token.replace(/=+$/, '').replace(/-/g, '+').replace(/_/g, '/');
-        if (body.length < MIN_TOKEN_LENGTH || body.length % 4 === 1) continue;
-        if (isCredentialText(Buffer.from(body, 'base64').toString('latin1'))) return true;
-      }
-    }
+    for (const m of variant.matchAll(BASE64_TOKEN)) if (runCarriesCredential(m[0])) return true;
     for (const re of PLAIN_IN_CONTEXT) {
       for (const m of variant.matchAll(re)) if (isCredentialText(m[m.length - 1])) return true;
     }
@@ -388,55 +486,143 @@ function base64Arguments(value, out = []) {
 }
 
 /**
- * At most this many `Fn::If` inside `Fn::Join` / `Fn::Sub` / `Fn::Select` / `Fn::Base64` nodes are
- * projected (2^6 = 64 branch combinations); a template with more fails closed.
+ * At most this many combinations of choices (below) are projected per outermost `Fn::Join` /
+ * `Fn::Sub` / `Fn::Select` / `Fn::Base64` node, e.g. six `Fn::If` (2^6). Nodes never combine with
+ * one another, so unrelated `Fn::If` across a template do not add up.
  */
-export const MAX_PROJECTED_IFS = 6;
+export const MAX_PROJECTED_COMBINATIONS = 64;
 
 const PROJECTED_INTRINSICS = ['Fn::Join', 'Fn::Sub', 'Fn::Select', 'Fn::Base64'];
 const isIf = (value) => isRecord(value) && Object.keys(value).length === 1 && Array.isArray(value['Fn::If']) && value['Fn::If'].length === 3;
 
-/** Every `Fn::If` node inside a projected intrinsic (an `Fn::If` elsewhere cannot split a projection). */
-function projectedIfs(value, inside = false, out = new Set()) {
+/**
+ * The values a node may evaluate to that the projections read as a NUL: the two branches of an
+ * `Fn::If`, or every element of the literal list of an `Fn::Select` whose index is not a literal
+ * (`Ref`, `Fn::If`, ...). Otherwise null.
+ */
+function choicesOf(value) {
+  if (isIf(value)) return value['Fn::If'].slice(1);
+  const sel = isRecord(value) ? value['Fn::Select'] : undefined;
+  if (!Array.isArray(sel) || sel.length !== 2 || !literalProjection(sel[0]).includes('\u0000')) return null;
+  const list = literalList(sel[1], 1);
+  return list && list.length > 0 ? list : null;
+}
+
+/** The outermost projected intrinsics (each projected with every node inside it). */
+function projectedRoots(value, out = []) {
   if (Array.isArray(value)) {
-    value.forEach((v) => projectedIfs(v, inside, out));
+    value.forEach((v) => projectedRoots(v, out));
   } else if (isRecord(value)) {
-    if (inside && isIf(value)) out.add(value);
-    const nowInside = inside || PROJECTED_INTRINSICS.some((k) => Object.hasOwn(value, k));
-    Object.values(value).forEach((v) => projectedIfs(v, nowInside, out));
+    if (PROJECTED_INTRINSICS.some((k) => Object.hasOwn(value, k))) out.push(value);
+    else Object.values(value).forEach((v) => projectedRoots(v, out));
   }
   return out;
 }
 
-/**
- * The template with each `Fn::If` replaced by the branch `pickOf(node)` names (1 or 2); one it
- * names none for is kept, so both of its branches are still walked.
- */
-function withIfBranch(value, pickOf) {
-  if (Array.isArray(value)) return value.map((v) => withIfBranch(v, pickOf));
+/** `value` with the one node `target` (by identity) replaced by `replacement`. */
+function withChoice(value, target, replacement) {
+  if (value === target) return replacement;
+  if (Array.isArray(value)) return value.map((v) => withChoice(v, target, replacement));
   if (!isRecord(value)) return value;
-  const pick = isIf(value) ? pickOf(value) : undefined;
-  if (pick !== undefined) return withIfBranch(value['Fn::If'][pick], pickOf);
-  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, withIfBranch(v, pickOf)]));
+  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, withChoice(v, target, replacement)]));
+}
+
+const carriesLiteralCredential = (value) =>
+  [...templateStrings(value), ...joinedLiterals(value), ...base64Arguments(value)].some(looksLikeCredential) || base64Arguments(value).some(isCredentialText);
+
+/**
+ * Scan `value` under every combination of its choices, one choice node at a time: an innermost one
+ * (no choice node inside it) is replaced by each of its values in turn and the result is collected
+ * again, so a choice that only exists after a substitution (an `Fn::Select` with a non-literal index
+ * whose list is an `Fn::If`; an `Fn::Select` over an `Fn::Split` whose text holds an `Fn::If`) is
+ * expanded too. Each replacement is a strict part of the node it replaces, so this ends. `budget.left`
+ * counts the fully substituted values still allowed; returns 'credential', 'clean' or 'tooComplex'
+ * (more than the budget, after scanning as many as it allowed).
+ */
+function scanChoices(value, budget) {
+  const node = innermostChoice(value);
+  if (node === null) {
+    if (budget.left === 0) return 'tooComplex';
+    budget.left -= 1;
+    return carriesLiteralCredential(value) ? 'credential' : 'clean';
+  }
+  for (const option of choicesOf(node)) {
+    const r = scanChoices(withChoice(value, node, option), budget);
+    if (r !== 'clean') return r;
+  }
+  return 'clean';
+}
+
+/** A node of `value` that offers choices and has no such node inside it, or null (post-order, linear). */
+function innermostChoice(value) {
+  const children = Array.isArray(value) ? value : isRecord(value) ? Object.values(value) : [];
+  for (const child of children) {
+    const found = innermostChoice(child);
+    if (found !== null) return found;
+  }
+  return isRecord(value) && choicesOf(value) ? value : null;
 }
 
 /**
- * Does the template carry a credential anywhere the scan can see? The projections read an `Fn::If`
- * as a NUL, so the template is also scanned under every combination of branches of the `Fn::If`
- * nodes inside projected intrinsics (a credential split across branches of two of them is seen);
- * more than MAX_PROJECTED_IFS of them fails closed (true).
+ * The longest string the copied projection helpers could build anywhere in `template`, under any
+ * choice, without building it: an `Fn::Sub` that names a variable twice per level doubles per level
+ * (`literalProjection` recomputes each occurrence), so 32 levels of a short template would exhaust
+ * the heap, or the CPU when the strings stay empty, before any decision. Computed once per node
+ * (linear), as an upper bound (no depth cut-off, the longer `Fn::If` branch, every `Fn::Select`
+ * element counted, every list element at least 1), and refused above MAX_PROJECTED_LENGTH by a throw, which `evaluateAccessRestriction`
+ * turns into a named deny. Lives here so the copied helpers stay byte-identical.
  */
-export function templateCarriesCredential(template) {
-  const ifs = [...projectedIfs(template)];
-  if (ifs.length > MAX_PROJECTED_IFS) return true;
-  const variants = [template];
-  for (let combo = 0; ifs.length > 0 && combo < 2 ** ifs.length; combo += 1) {
-    variants.push(withIfBranch(template, (node) => (ifs.includes(node) ? ((combo >> ifs.indexOf(node)) & 1) + 1 : undefined)));
+export const MAX_PROJECTED_LENGTH = 8 * 1024 * 1024;
+function assertProjectionBounded(template) {
+  const memo = new WeakMap();
+  const bound = (value) => {
+    if (typeof value === 'string') return value.length;
+    if (typeof value === 'number') return String(value).length;
+    // At least 1 per element: k empty parts still cost k units of work, and an Fn::Join puts its separator
+    // between them, so (sum + 1) * (1 + separator length) stays above (k - 1) * separator length.
+    if (Array.isArray(value)) return value.reduce((n, v) => n + Math.max(1, bound(v)), 1);
+    if (!isRecord(value)) return 1;
+    if (memo.has(value)) return memo.get(value);
+    let n = 1;
+    const j = value['Fn::Join'];
+    if (Array.isArray(j) && j.length === 2) n += bound(j[1]) * (1 + (typeof j[0] === 'string' ? j[0].length : 0));
+    const sub = value['Fn::Sub'];
+    if (typeof sub === 'string' || (Array.isArray(sub) && typeof sub[0] === 'string')) {
+      const [text, vars] = typeof sub === 'string' ? [sub, {}] : [sub[0], isRecord(sub[1]) ? sub[1] : {}];
+      n += text.length;
+      for (const [, name] of text.matchAll(/\$\{([^}]*)\}/g)) if (Object.hasOwn(vars, name)) n += bound(vars[name]);
+    }
+    const sel = value['Fn::Select'];
+    if (Array.isArray(sel) && sel.length === 2) n += bound(sel[0]) + bound(sel[1]);
+    const split = value['Fn::Split'];
+    if (Array.isArray(split) && split.length === 2) n += bound(split[1]);
+    if (isIf(value)) n += Math.max(...value['Fn::If'].slice(1).map(bound));
+    memo.set(value, n);
+    if (n > MAX_PROJECTED_LENGTH) throw new Error(`an Fn::Join / Fn::Sub / Fn::Select projection may exceed ${MAX_PROJECTED_LENGTH} characters (template too large to project)`);
+    for (const v of Object.values(value)) bound(v); // every node is projected on its own too
+    return n;
+  };
+  bound(template);
+}
+
+/**
+ * Scan one template for a credential (S6c). The projections read a choice as a NUL, so each outermost
+ * projected intrinsic is also scanned under every combination of the choices inside it (a credential
+ * split across the branches of two `Fn::If` is seen). Returns `{ credential, tooComplex }`, where
+ * `tooComplex` names the outermost intrinsics with more than MAX_PROJECTED_COMBINATIONS combinations,
+ * which were not fully projected. Throws when a projection could exceed MAX_PROJECTED_LENGTH.
+ */
+export function scanTemplate(template) {
+  assertProjectionBounded(template);
+  const tooComplex = [];
+  if (carriesLiteralCredential(template)) return { credential: true, tooComplex };
+  for (const root of projectedRoots(template)) {
+    if (innermostChoice(root) === null) continue;
+    const r = scanChoices(root, { left: MAX_PROJECTED_COMBINATIONS });
+    if (r === 'credential') return { credential: true, tooComplex };
+    if (r === 'tooComplex') tooComplex.push(root);
   }
-  return variants.some((t) => {
-    if ([...templateStrings(t), ...joinedLiterals(t), ...base64Arguments(t)].some(looksLikeCredential)) return true;
-    return base64Arguments(t).some(isCredentialText);
-  });
+  return { credential: false, tooComplex };
 }
 
 /** Viewer-facing entry points of one template; a distribution's behaviours are each one. */
@@ -508,25 +694,29 @@ const decision = (result, rule, reason, accessRestriction, extra = {}) => ({
  * Returns `{ result: 'allowed' | 'denied', rule, reason, accessRestriction: { state, reason? }, ... }`.
  */
 export function evaluateAccessRestriction({ assemblyDir, check }) {
-  let templates;
   try {
-    templates = readTemplates(assemblyDir);
+    return evaluate(assemblyDir, check);
   } catch (error) {
-    return decision('denied', RULES.INPUT_INVALID, `assembly could not be read: ${error instanceof Error ? error.message : String(error)}`, {
+    // Unreadable, nested, too large to project, or any internal exception: a named deny. (A process
+    // that dies before this, e.g. out of heap, writes no decision, and the buildspec fails closed on that.)
+    return decision('denied', RULES.INPUT_INVALID, `assembly could not be read or evaluated: ${error instanceof Error ? error.message : String(error)}`, {
       state: 'unverifiable',
-      reason: 'assembly unreadable',
+      reason: 'assembly not evaluated',
     });
   }
+}
+
+function evaluate(assemblyDir, check) {
+  const templates = readTemplates(assemblyDir);
 
   // S6c: the credential never appears in the template, whatever the check (runs unconditionally).
   const findings = [];
+  const tooComplex = [];
   for (const { stackName, template } of templates) {
-    if (templateCarriesCredential(template)) {
-      const why =
-        projectedIfs(template).size > MAX_PROJECTED_IFS
-          ? `more than ${MAX_PROJECTED_IFS} Fn::If inside Fn::Join / Fn::Sub / Fn::Select / Fn::Base64: their branch combinations are not projected (fail closed)`
-          : 'a template string or intrinsic looks like an HTTP Basic credential';
-      findings.push({ stackName, logicalId: null, why });
+    const scan = scanTemplate(template);
+    if (scan.credential) findings.push({ stackName, logicalId: null, why: 'a template string or intrinsic looks like an HTTP Basic credential' });
+    if (scan.tooComplex.length > 0) {
+      tooComplex.push({ stackName, logicalId: null, why: `${scan.tooComplex.length} Fn::Join / Fn::Sub / Fn::Select / Fn::Base64 node(s) with more than ${MAX_PROJECTED_COMBINATIONS} combinations of Fn::If branches / Fn::Select elements were not projected` });
     }
     const resources = isRecord(template.Resources) ? template.Resources : {};
     for (const [logicalId, resource] of Object.entries(resources)) {
@@ -543,6 +733,16 @@ export function evaluateAccessRestriction({ assemblyDir, check }) {
       `the access restriction's credential must not appear in the synthesized template: ${findings.map((f) => `${f.stackName}${f.logicalId ? `/${f.logicalId}` : ''}: ${f.why}`).join('; ')}`,
       { state: 'unverifiable', reason: 'credential in template' },
       { check: checkName, findings },
+    );
+  }
+  // Checked after the credential, so a leak is reported as one even in a template too complex to project.
+  if (tooComplex.length > 0) {
+    return decision(
+      'denied',
+      RULES.INPUT_INVALID,
+      `the credential scan could not project the template (fail closed): ${tooComplex.map((f) => `${f.stackName}: ${f.why}`).join('; ')}`,
+      { state: 'unverifiable', reason: 'template too complex to scan' },
+      { check: checkName, findings: tooComplex },
     );
   }
 
