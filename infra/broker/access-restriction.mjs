@@ -569,7 +569,7 @@ function innermostChoice(value) {
  * (`literalProjection` recomputes each occurrence), so 32 levels of a short template would exhaust
  * the heap, or the CPU when the strings stay empty, before any decision. Computed once per node
  * (linear), as an upper bound (no depth cut-off, the longer `Fn::If` branch, every `Fn::Select`
- * element counted), and refused above MAX_PROJECTED_LENGTH by a throw, which `evaluateAccessRestriction`
+ * element counted, every list element at least 1), and refused above MAX_PROJECTED_LENGTH by a throw, which `evaluateAccessRestriction`
  * turns into a named deny. Lives here so the copied helpers stay byte-identical.
  */
 export const MAX_PROJECTED_LENGTH = 8 * 1024 * 1024;
@@ -578,7 +578,9 @@ function assertProjectionBounded(template) {
   const bound = (value) => {
     if (typeof value === 'string') return value.length;
     if (typeof value === 'number') return String(value).length;
-    if (Array.isArray(value)) return value.reduce((n, v) => n + bound(v), 1);
+    // At least 1 per element: k empty parts still cost k units of work, and an Fn::Join puts its separator
+    // between them, so (sum + 1) * (1 + separator length) stays above (k - 1) * separator length.
+    if (Array.isArray(value)) return value.reduce((n, v) => n + Math.max(1, bound(v)), 1);
     if (!isRecord(value)) return 1;
     if (memo.has(value)) return memo.get(value);
     let n = 1;

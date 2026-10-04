@@ -598,7 +598,12 @@ describe('the credential never appears in the template (scan runs with or withou
     // Empty strings: nothing to allocate, but 20^6 recomputations.
     let empty: unknown = '';
     for (let i = 0; i < 6; i += 1) empty = { 'Fn::Sub': ['${A}'.repeat(20), { A: empty }] };
-    for (const code of [...doubling, empty]) {
+    // Many empty parts: the bound counts each element as at least 1, so neither a long separator between them
+    // (60M characters from a 60 KB template) nor doubling them per level (CPU, not heap) slips under it.
+    const longSeparator = { 'Fn::Join': ['A'.repeat(3000), Array(20000).fill('')] };
+    let doubledEmpties: unknown = { 'Fn::Join': ['', Array(100000).fill('')] };
+    for (let i = 0; i < 10; i += 1) doubledEmpties = { 'Fn::Sub': ['${A}${A}', { A: doubledEmpties }] };
+    for (const code of [...doubling, empty, longSeparator, doubledEmpties]) {
       for (const check of [null, all]) {
         const t = Date.now();
         const d = M.evaluateAccessRestriction({ assemblyDir: assembly({ Web: { ...fnCode(code), Cdn: distribution(0) } }), check });
@@ -611,6 +616,8 @@ describe('the credential never appears in the template (scan runs with or withou
     let inside: unknown = 'ab';
     for (let i = 0; i < 18; i += 1) inside = { 'Fn::Sub': ['${A}${A}', { A: inside }] };
     expect(M.evaluateAccessRestriction({ assemblyDir: assembly({ Web: { ...fnCode(inside), Cdn: distribution(0) } }), check: null })).toMatchObject({ result: 'allowed' });
+    const fewEmpties = { 'Fn::Join': ['A'.repeat(3000), Array(100).fill('')] };
+    expect(M.evaluateAccessRestriction({ assemblyDir: assembly({ Web: { ...fnCode(fewEmpties), Cdn: distribution(0) } }), check: null })).toMatchObject({ result: 'allowed' });
   });
 
   it('a credential used as an object KEY (e.g. under Mappings) is found', () => {
