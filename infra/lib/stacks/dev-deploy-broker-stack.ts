@@ -10,7 +10,6 @@ import * as cloudtrail from 'aws-cdk-lib/aws-cloudtrail';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as cwActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as events from 'aws-cdk-lib/aws-events';
-import * as eventTargets from 'aws-cdk-lib/aws-events-targets';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -987,7 +986,7 @@ export class DevDeployBrokerStack extends cdk.Stack {
         'A sparse-ledger attempt may be left in_progress (ambiguous reservation / unrecorded outcome / runner error), a denial went unaudited, or a denial needs a human (unstable target stack / repeated failure of one revision, S10a / unsettled previous attempt or corrupt ledger, weakened access restriction or credential in the template, D-5). See docs/architecture/aws-dev-deploy-broker.md.',
     });
     ledgerAttentionAlarm.addAlarmAction(new cwActions.SnsAction(brokerAlerts));
-    // The topic's resource policy (created for EventBridge / TLS) replaces the default one, so
+    // The topic's resource policy (created for TLS) replaces the default one, so
     // CloudWatch is named explicitly, bound to this alarm.
     brokerAlerts.addToResourcePolicy(
       new iam.PolicyStatement({
@@ -1070,8 +1069,15 @@ export class DevDeployBrokerStack extends cdk.Stack {
       ],
     });
 
+    // `aws-events-targets` `SnsTopic` grants `events.amazonaws.com` an unconditioned `sns:Publish` on the
+    // topic (#1218): any account's EventBridge rule could then publish a fake (or drown a real)
+    // alert. The target is bound without that grant; the publish is allowed below, bound to these
+    // two rules and this account.
+    const brokerAlertsTarget: events.IRuleTarget = {
+      bind: () => ({ arn: brokerAlerts.topicArn, targetResource: brokerAlerts }),
+    };
     // A broker build that times out, is stopped or faults never reaches its own bookkeeping.
-    new events.Rule(this, 'BrokerBuildAbortedRule', {
+    const brokerBuildAbortedRule = new events.Rule(this, 'BrokerBuildAbortedRule', {
       description: 'Broker build ended without finishing (a reserved attempt may stay in_progress).',
       eventPattern: {
         source: ['aws.codebuild'],
@@ -1081,9 +1087,9 @@ export class DevDeployBrokerStack extends cdk.Stack {
           'build-status': [...BROKER_ABORT_STATES],
         },
       },
-      targets: [new eventTargets.SnsTopic(brokerAlerts)],
+      targets: [brokerAlertsTarget],
     });
-    new events.Rule(this, 'BrokerPhaseAbortedRule', {
+    const brokerPhaseAbortedRule = new events.Rule(this, 'BrokerPhaseAbortedRule', {
       description: 'A broker build phase timed out, was stopped or faulted (its bookkeeping may not have run).',
       eventPattern: {
         source: ['aws.codebuild'],
@@ -1093,8 +1099,20 @@ export class DevDeployBrokerStack extends cdk.Stack {
           'completed-phase-status': [...BROKER_ABORT_STATES],
         },
       },
-      targets: [new eventTargets.SnsTopic(brokerAlerts)],
+      targets: [brokerAlertsTarget],
     });
+    brokerAlerts.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: 'AllowBrokerAbortRulesPublish',
+        principals: [new iam.ServicePrincipal('events.amazonaws.com')],
+        actions: ['sns:Publish'],
+        resources: [brokerAlerts.topicArn],
+        conditions: {
+          ArnEquals: { 'aws:SourceArn': [brokerBuildAbortedRule.ruleArn, brokerPhaseAbortedRule.ruleArn] },
+          StringEquals: { 'aws:SourceAccount': cdk.Aws.ACCOUNT_ID },
+        },
+      }),
+    );
 
     brokerRole.addToPolicy(
       new iam.PolicyStatement({

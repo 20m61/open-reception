@@ -231,20 +231,31 @@ candidate のコードを実行する build には接続の token を渡さな�
 
 - **既存の別用途の接続は使わない。** 2026-10-03 の棚卸し（#1153）で `AVAILABLE` だったのは `amplify_test` だけで、
   owner の判断で broker には使わない。
-- account `822063948773` の safe-dev-deploy の consumer（Foundation `safe-dev-deploy`）は、**1 つの接続を共有してよい**。
-  どの repo を読めるかは、GitHub App の対象 repo の選択で決まる。pipeline の Source action は
-  `owner` / `repo` / `branch` を固定している（`infra/lib/stacks/dev-deploy-broker-stack.ts` の `PromotionBranch`）。
+- account `822063948773` の safe-dev-deploy の consumer（Foundation `safe-dev-deploy`）は、**repo ごとに 1 つの接続**を作る。
+  GitHub App（AWS Connector for GitHub）は `20m61` に 1 回だけ install され、その対象 repo の選択は接続の間で共有される。
+  そのため、接続を分けても読める repo の範囲は分かれない。repo ごとの分離は、各 pipeline の Source action が
+  `owner` / `repo` / `branch` を固定していることで保証する（この stack では
+  `infra/lib/stacks/dev-deploy-broker-stack.ts` の `PromotionBranch`）。
 - 接続そのものは secret ではない。ARN は記録してよい。
 
 ### 3.5a. 接続を作る（`PENDING` になる）
 
+**実施済み**（owner の記録、controltower#158 comment 5973993355）。open-reception の接続は次で、状態は `AVAILABLE`:
+
+```text
+arn:aws:codestar-connections:ap-northeast-1:822063948773:connection/262f84e8-b307-46c8-bafd-e5d5121d01b7
+```
+
+作り直すとき・別の consumer の接続を作るときのコマンド:
+
 ```bash
-aws codestar-connections create-connection --provider-type GitHub \
-  --connection-name safe-dev-deploy-github \
+aws codestar-connections create-connection --region ap-northeast-1 --provider-type GitHub \
+  --connection-name open-reception-github \
   --query ConnectionArn --output text
 ```
 
-- 名前は 32 文字以内。上の名前は例である。
+- 名前は 32 文字以内。open-reception の接続名は `open-reception-github`。
+- `--region ap-northeast-1` を付ける。接続は region ごとの資源で、broker stack と同じ region に要る。
 - `codestar-connections` の名前空間で作る。この stack の pipeline は CDK の `CodeStarConnectionsSourceAction` を使っており、
   pipeline role に付く権限も `codestar-connections:UseConnection` だからである。
   `codeconnections` の名前空間で作った接続（ARN が `arn:aws:codeconnections:...`）でも同じ権限で使えるかは、
@@ -312,8 +323,10 @@ stack deploy role は、2 つの resource policy で**例外扱い**になる。
   次の点を守り、`aws iam simulate-custom-policy` か最初の change set 作成で確かめる。
 
   - IAM は、この stack が作る role（`OpenReceptionDevDeployValidationRole`・`OpenReceptionTrustedDevDeployBrokerRole`・
-    生成名の `OpenReception-DevDeployBr*`）に限る。role 名は 64 文字で stack 名ごと切られ、
-    `OpenReception-DevDeployBr-...` になる。
+    生成名の `OpenReception-DevDeployB*`）に限る。role 名は 64 文字で stack 名ごと切られる。
+    乱数サフィックスが 13 文字だと stack 名の部分は 24 文字の `OpenReception-DevDeployB` になる
+    （`src/domain/governance/cfn-generated-name.ts` のモデル。12 文字なら `OpenReception-DevDeployBr`）。
+    `OpenReception-DevDeployBr` で始まる名前に絞ると、13 文字の場合を覆えない。
   - `iam:PassRole` は、pipeline role を CodePipeline に、2 つの build role を CodeBuild に渡す分だけ
     （`iam:PassedToService` で絞る）。EventBridge の rule は SNS へ直接送り、role を使わない。
   - 名前で絞る:
@@ -322,7 +335,7 @@ stack deploy role は、2 つの resource policy で**例外扱い**になる。
     - trail: `OpenReceptionSparseLedgerAudit`
   - CloudFormation が付ける物理名は、接頭辞で絞る:
     - DynamoDB・log group・alarm・SNS: `OpenReception-DevDeployBroker-*`
-    - Events rule（上限 64 文字）: `OpenReception-DevDeployBr*`
+    - Events rule（上限 64 文字。role と同じ理由で切られる）: `OpenReception-DevDeployB*`
     - S3 bucket（上限 63 文字・小文字。stack 名ごと切られる）: `openreception-devdeploy*`
   - pipeline の作成には、GitHub 接続（`GitHubConnectionArn`）への `codestar-connections:PassConnection`
     （または `codeconnections:PassConnection`）が要る。
@@ -389,6 +402,7 @@ parameter を含めた変更は、**実行しない change set** を作って確
 
 ```bash
 cd infra
+export AWS_REGION=ap-northeast-1   # 他の region だと synth が止まる（下記）
 ARGS=(--app "npx ts-node --prefer-ts-exts bin/dev-deploy-broker.ts" OpenReception-DevDeployBroker
   --parameters SparseLedgerOverrideIssuerRoleArn=<issuer role ARN>
   --parameters SparseLedgerStackDeployRoleArn=arn:aws:iam::822063948773:role/cdk-orbrkr01-cfn-exec-role-822063948773-ap-northeast-1
@@ -399,9 +413,25 @@ ARGS=(--app "npx ts-node --prefer-ts-exts bin/dev-deploy-broker.ts" OpenReceptio
 npx cdk deploy "${ARGS[@]}" --method=prepare-change-set          # 作るだけ。実行しない
 aws cloudformation describe-change-set --stack-name OpenReception-DevDeployBroker --change-set-name ledger-activation \
   --query 'Changes[].ResourceChange.{Action:Action,Id:LogicalResourceId,Type:ResourceType,Replace:Replacement}' --output table
-# 確認してから実行する
-npx cdk deploy "${ARGS[@]}" --method=execute-change-set
+# 確認してから実行する。--parameters は付けない（parameter は change set に入っている）
+npx cdk deploy --app "npx ts-node --prefer-ts-exts bin/dev-deploy-broker.ts" OpenReception-DevDeployBroker \
+  --method=execute-change-set --change-set-name ledger-activation --no-rollback
 ```
+
+- **region**: broker stack は `ap-northeast-1` に固定してある（`infra/lib/config/broker-bootstrap.ts` の
+  `brokerStackRegion`）。CDK CLI は `CDK_DEFAULT_REGION` を必ず渡し、region が設定されていなければ `us-east-1` になる。
+  そのため、`ap-northeast-1` 以外なら synth は黙って上書きせずに止まる（`must be synthesized for ap-northeast-1`）。
+  止まったら `AWS_REGION=ap-northeast-1` を設定し直す。同じ shell の `aws cloudformation ...` も同じ region を使う。
+- **execute は別のコマンドにする**: CDK CLI は `--method=execute-change-set` と `--parameters` の併用を拒否する
+  （`--parameters cannot be used with --method=execute-change-set`。credential 無しの引数解析で確かめた）。
+  `ARGS` をそのまま渡すと必ず失敗する。
+- **`prepare-change-set` も「Do you wish to deploy these changes?」と聞く**（IAM の権限が広がる変更があるため）。
+  **y と答えてよい。** このとき作られるのは change set だけで、実行はされない。
+- **`--no-rollback`**: 初回の作成が失敗しても、stack は `CREATE_FAILED` のまま残る。table・監査 bucket などの
+  `RETAIN` の resource も stack が持ち続けるので、stack から外れた resource（孤児）にならない。
+  原因を直してから、change set を作り直して実行する。やめるときは
+  `aws cloudformation rollback-stack --stack-name OpenReception-DevDeployBroker` で戻す。
+  ただし rollback や stack の削除では、`RETAIN` の resource は stack から外れて残る（table には削除保護も付いている）。
 
 - 既存の table・bucket に `Remove` や `Replacement: True` が無いこと。あれば実行せず、change set を消して止める。
 - 初回（stack が無い）なら、すべて `Add` になる。
@@ -418,6 +448,8 @@ change set で確認すること:
   selector は ledger table の書き込み data events だけ。
 - **警報**: SNS topic 1 つ（購読は無し）、broker log の metric filter と alarm、EventBridge rule 2 つ
   （build の `STOPPED` / `TIMED_OUT` / `FAULT`）。
+  topic policy の Allow は 2 つだけで、どちらも `aws:SourceArn`（`ArnEquals`）と `aws:SourceAccount` で縛られている:
+  CloudWatch はこの alarm から、EventBridge はこの 2 つの rule からだけ publish できる（#1218）。
 - **権限の範囲**: Validation role には table・trail・監査 bucket への権限が**無い**。
   broker role に `cloudformation:` として付くのは、3 stack の `DescribeStacks` だけ。
 - **buildspec**: broker は、trusted policy・provenance module・ledger module・runner・target-stacks module の SHA-256 を検証してから使う。
