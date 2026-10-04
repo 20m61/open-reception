@@ -58,7 +58,7 @@ describe('broker stack region (pinned, fail-closed)', () => {
       }
     }).toThrow();
     expect(stderr).toContain('must be synthesized for ap-northeast-1');
-  });
+  }, 120_000);
 
   it('🔴 the app entry point synthesizes the stack for ap-northeast-1, with or without CDK_DEFAULT_REGION', () => {
     for (const region of ['ap-northeast-1', undefined]) {
@@ -72,5 +72,7 @@ describe('broker stack region (pinned, fail-closed)', () => {
       );
       rmSync(outdir, { recursive: true, force: true });
     }
-  });
+    // Two ts-node synths in series; the 60s default timed out under the parallel infra suite once the
+    // app entry-point synth (app-stack-region.test.ts, #1221) ran beside it.
+  }, 240_000);
 });

@@ -8,6 +8,7 @@ import { NotificationStack } from '../lib/stacks/notification-stack';
 import { MonitoringStack } from '../lib/stacks/monitoring-stack';
 import { RealtimeRuntimeStack, RealtimeRuntimeDnsConfig } from '../lib/stacks/realtime-runtime-stack';
 import { resolveEnv } from '../lib/config/environments';
+import { appStackRegion } from '../lib/config/stack-region';
 import { applyClaudeDeployBoundary } from '../lib/config/claude-deploy-boundary';
 import { configureCostExplorerAccess } from '../lib/constructs/cost-explorer-access';
 import { overrideComponentTag } from '../lib/constructs/cost-tags';
@@ -28,8 +29,9 @@ import { COST_TAG_COMPONENTS } from '../lib/config/cost-components';
  *     `config.realtime.enabled`（既定 false, 全環境）が true の場合のみ app へ追加する。
  *     ADR は `docs/adr/0003-realtime-runtime-ec2-phase0.md`。**deploy は本 increment のスコープ外**。
  *
- * デプロイ先アカウント/リージョンは CDK 既定の環境変数
- * (CDK_DEFAULT_ACCOUNT / CDK_DEFAULT_REGION) を使用する。
+ * デプロイ先アカウントは CDK 既定の環境変数 CDK_DEFAULT_ACCOUNT を使用する。
+ * リージョンは ap-northeast-1 固定（CfMon のみ us-east-1）で、CDK_DEFAULT_REGION が
+ * 別リージョンなら synth を拒否する (#1221, `../lib/config/stack-region.ts`)。
  */
 const app = new cdk.App();
 
@@ -46,7 +48,12 @@ const envName = app.node.tryGetContext('env') as string | undefined;
 const config = resolveEnv(envName);
 
 const account = process.env.CDK_DEFAULT_ACCOUNT;
-const region = process.env.CDK_DEFAULT_REGION ?? 'ap-northeast-1';
+// 🔴 **region は ap-northeast-1 固定 (#1221)。** CDK CLI は `CDK_DEFAULT_REGION` を必ず渡す
+// （`AWS_REGION` / プロファイルから。無ければ us-east-1）ので、`?? 'ap-northeast-1'` は
+// フォールバックにならず、別リージョンのプロファイルで全 app stack が黙って移っていた。
+// 別リージョンは上書きせずに拒否する（broker の `brokerStackRegion` と同じ。#1220）。
+// CfMon の us-east-1 は下で明示しており、この固定の対象外。
+const region = appStackRegion(process.env);
 
 // アプリ環境変数を context から集約する。
 // CDK CLI の `-c appEnv='{"KEY":"VALUE",...}'` は文字列として渡るため JSON.parse する。
