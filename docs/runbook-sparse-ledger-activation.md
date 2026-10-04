@@ -580,7 +580,7 @@ git push origin "$SHA:refs/heads/dev-deploy"
 |---|---|---|
 | Source | 7.5a の `SHA` と同じ完全な commit id を取り込む | CodePipeline の execution の source revision |
 | Validation | 成功する。credential を消した状態で、typecheck・lint・unit・`build:open-next`・`aws:local:test`・infra のテストと 3 stack の synth が通る | `OpenReceptionDevDeployValidation` の build log |
-| Broker | `BROKER_NOT_ARMED` で止まる（exit 42）。`broker-result.json` は `result: denied`、`rule: BROKER_NOT_ARMED`、`source_revision` が `SHA` と一致 | `OpenReceptionTrustedDevDeployBroker` の build log と artifact |
+| Broker | `BROKER_NOT_ARMED` で止まる（exit 42）。`broker-result.json` は `result: denied`、`rule: BROKER_NOT_ARMED`、`source_revision` が `SHA` と一致。owner は broker の build id（`broker-result.json` の `attempt_id`。`CODEBUILD_BUILD_ID` と同じ）を記録する | `OpenReceptionTrustedDevDeployBroker` の build log と artifact |
 | mutation | 起きない。3 stack（`OpenReception-Web-dev` など）の `LastUpdatedTime` が変わらない | `describe-stacks` |
 | ledger | budget を消費しない（mutation boundary に達していない） | 下の「live で確かめる点」 |
 
@@ -597,8 +597,19 @@ git push origin "$SHA:refs/heads/dev-deploy"
   `aws:SourceArn` / `aws:SourceAccount` の条件の下で受け付けられるか（#1218）。拒否されても何も出ないので、
   1 回通しとは別に broker の build を 1 度だけ止めて（`aws codebuild stop-build --id <build id>`）メールが届くことと、
   `aws cloudwatch get-metric-statistics --namespace AWS/Events --metric-name FailedInvocations --dimensions Name=RuleName,Value=<rule 名> ...` が 0 であることを見る。
+  - **7.5 の 1 回通しの broker build そのものは止めない。** 止める build は、7.5 の execution の
+    `BrokerBoundary` stage を `--retry-mode FAILED_ACTIONS` で 1 度だけ retry して得る
+    （`aws codepipeline retry-stage-execution --pipeline-name OpenReceptionSparseDevDeploy --stage-name BrokerBoundary --pipeline-execution-id <execution id> --retry-mode FAILED_ACTIONS`。
+    owner 判断 2026-10-04、controltower#158 comment 5976060720）。retry の前に promotion reason を #1146 へ記録する。
+  - retry は execution の開始から 12 時間以内に行う。broker の run-provenance は、その execution が
+    pipeline の最新でないか、開始から 12 時間を超えていれば retry された build を拒否する
+    （`infra/broker/run-provenance.mjs` の Blocker 4、`MAX_EXECUTION_AGE_MS`）。
+  - 止めた build が 7.5 の build と別物であることは、下で記録する 7.5 の broker build id と突き合わせて確かめる。
 
-記録は #1146 に残す: 実施日時、`SHA`、pipeline の execution id、各段の結果、上の確認点の結果。
+記録は #1146 に残す: 実施日時、`SHA`、pipeline の execution id と execution の開始時刻、
+broker の build id（`broker-result.json` の `attempt_id`）、各段の結果、上の確認点の結果。
+execution id・開始時刻・build id は、上の「broker の build を 1 度だけ止める」確認（controltower#158 の U21）が 7.5 の build を
+取り違えないための固定点で、retry が 12 時間の窓に収まるかもこの開始時刻で判断する。
 失敗したら、同じ revision で再度 push しない。原因を local / 静的な検証へ戻して直す（`.claude/rules/aws-dev-promotion.md`）。
 
 **Rollback**: `git push origin --delete dev-deploy`。broker stack はそのままでよい（branch が無ければ pipeline は起動しない）。
