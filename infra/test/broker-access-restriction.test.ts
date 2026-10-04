@@ -24,7 +24,7 @@ type Mod = {
   isCredentialText: (s: unknown) => boolean;
   NON_VIEWER_FACING_TYPES: ReadonlySet<string>;
   MIN_TOKEN_LENGTH: number;
-  MAX_PROJECTED_IFS: number;
+  MAX_PROJECTED_COMBINATIONS: number;
   parseStrictJson: (s: string) => unknown;
   runCli: (argv: string[], o?: J) => { exitCode: number; record: J };
 };
@@ -174,6 +174,19 @@ describe('a declared check verifies only when it proves every entry point', () =
     ['bucket whose Properties are an intrinsic', { Type: 'AWS::S3::Bucket', Properties: { 'Fn::If': ['C', { WebsiteConfiguration: { IndexDocument: 'i' } }, {}] } }],
     ['bucket whose Properties are not an object', { Type: 'AWS::S3::Bucket', Properties: ['x'] }],
     ['bucket policy allowing Principal "*"', { Type: 'AWS::S3::BucketPolicy', Properties: { PolicyDocument: { Statement: [{ Effect: 'Allow', Principal: '*', Action: 's3:GetObject' }] } } }],
+    // #1217 AC4: a string principal is public whenever it contains `*`, not only when it is exactly `*`.
+    ['bucket policy allowing a string principal with a wildcard', { Type: 'AWS::S3::BucketPolicy', Properties: { PolicyDocument: { Statement: [{ Effect: 'Allow', Principal: 'arn:aws:iam::*:root', Action: 's3:GetObject' }] } } }],
+    // #1217 AC4: only the Arn / S3CanonicalUserId of a template resource names one principal.
+    ['bucket policy allowing an Fn::GetAtt that is not an Arn', { Type: 'AWS::S3::BucketPolicy', Properties: { PolicyDocument: { Statement: [{ Effect: 'Allow', Principal: { AWS: { 'Fn::GetAtt': ['Thing', 'Name'] } }, Action: 's3:GetObject' }] } } }],
+    ['bucket policy allowing an Fn::GetAtt without an attribute', { Type: 'AWS::S3::BucketPolicy', Properties: { PolicyDocument: { Statement: [{ Effect: 'Allow', Principal: { AWS: { 'Fn::GetAtt': 'Thing.Arn' } }, Action: 's3:GetObject' }] } } }],
+    // #1217 AC4: CDK emits BucketDeployment `accessControl` as `SystemMetadata.acl`.
+    ['bucket deployment with a public-read object ACL', { Type: 'Custom::CDKBucketDeployment', Properties: { SystemMetadata: { acl: 'public-read' } } }],
+    ['bucket deployment with an upper-case ACL key', { Type: 'Custom::CDKBucketDeployment', Properties: { SystemMetadata: { ACL: 'authenticated-read' } } }],
+    ['bucket deployment with a non-literal ACL', { Type: 'Custom::CDKBucketDeployment', Properties: { SystemMetadata: { acl: { Ref: 'Acl' } } } }],
+    ['bucket deployment with non-literal metadata', { Type: 'Custom::CDKBucketDeployment', Properties: { SystemMetadata: { 'Fn::If': ['C', { acl: 'public-read' }, {}] } } }],
+    ['bucket deployment whose metadata is not an object', { Type: 'Custom::CDKBucketDeployment', Properties: { SystemMetadata: ['public-read'] } }],
+    ['bucket deployment whose Properties are an intrinsic', { Type: 'Custom::CDKBucketDeployment', Properties: { 'Fn::If': ['C', { SystemMetadata: { acl: 'public-read' } }, {}] } }],
+    ['bucket deployment whose Properties are not an object', { Type: 'Custom::CDKBucketDeployment', Properties: 'x' }],
     ['bucket policy allowing {AWS: "*"}', { Type: 'AWS::S3::BucketPolicy', Properties: { PolicyDocument: { Statement: [{ Effect: 'Allow', Principal: { AWS: '*' }, Action: 's3:GetObject' }] } } }],
     ['bucket policy allowing {AWS: ["*"]}', { Type: 'AWS::S3::BucketPolicy', Properties: { PolicyDocument: { Statement: [{ Effect: 'Allow', Principal: { AWS: ['arn:aws:iam::1:role/r', '*'] }, Action: 's3:GetObject' }] } } }],
     ['bucket policy with an Allow and NotPrincipal', { Type: 'AWS::S3::BucketPolicy', Properties: { PolicyDocument: { Statement: [{ Effect: 'Allow', NotPrincipal: { AWS: 'arn:aws:iam::1:root' }, Action: 's3:GetObject' }] } } }],
@@ -203,12 +216,18 @@ describe('a declared check verifies only when it proves every entry point', () =
             Statement: [
               { Effect: 'Deny', Principal: { AWS: '*' }, Action: 's3:*' },
               { Effect: 'Allow', Principal: { AWS: { 'Fn::GetAtt': ['Role', 'Arn'] } }, Action: 's3:DeleteObject*' },
+              { Effect: 'Allow', Principal: { CanonicalUser: { 'Fn::GetAtt': ['Oai', 'S3CanonicalUserId'] } }, Action: 's3:GetObject' },
               { Effect: 'Allow', Principal: { Service: 'cloudfront.amazonaws.com' }, Action: 's3:GetObject' },
             ],
           },
         },
       },
       ...Object.fromEntries([...M.NON_VIEWER_FACING_TYPES].map((t, i) => [`R${i}`, { Type: t, Properties: {} }])),
+      // The real assembly's deployment shape, and the canned ACLs that grant nobody outside the owner.
+      Deploy: { Type: 'Custom::CDKBucketDeployment', Properties: { SystemMetadata: { 'cache-control': 'public,max-age=31536000,immutable' } } },
+      DeployPrivate: { Type: 'Custom::CDKBucketDeployment', Properties: { SystemMetadata: { acl: 'private' } } },
+      DeployOwner: { Type: 'Custom::CDKBucketDeployment', Properties: { SystemMetadata: { acl: 'bucket-owner-full-control' } } },
+      DeployNoProps: { Type: 'Custom::CDKBucketDeployment' },
     };
     const seen: string[] = [];
     const d = M.evaluateAccessRestriction({ assemblyDir: assembly({ Web: { Cdn: distribution(0), ...internal } }), check: { name: 'spy', isRestricted: (e) => (seen.push(e.entry), true) } });
@@ -269,8 +288,17 @@ describe('the credential never appears in the template (scan runs with or withou
     ['a password with a space', fnCode(`const t = '${Buffer.from('owner:s3cret pass').toString('base64')}';`)],
     // #1214 AC3: `/` is a base64 character, so a token after a path separator is tried on its own.
     ['a token right after a slash', fnCode(`if (uri === "/${Buffer.from('owner:s3cret-pass').toString('base64')}") return ok;`)],
-    // Unpadded: a padded token followed by more base64 characters (`...=/x`) is a documented miss.
     ['a token between path separators', fnCode(`fetch("https://h/auth/${Buffer.from('owner:s3cret-pa').toString('base64')}/check")`)],
+    // #1217 NIT: padding may be followed by `/` (about 2/3 of credential lengths are padded).
+    ['a padded token between path separators', fnCode(`fetch("https://h/auth/${Buffer.from('owner:s3cret-pass').toString('base64')}/check")`)],
+    ['a doubly padded token between path separators', fnCode(`fetch("https://h/auth/${Buffer.from('owner:s3cret-pas').toString('base64')}/check")`)],
+    // #1217 AC3: an Fn::Select whose index is not a literal may pick any element of its literal list.
+    ['Fn::Select with a Ref index, credential completed by the second element', fnCode({ 'Fn::Join': ['', ['Basic ', credential.slice(0, 6), { 'Fn::Select': [{ Ref: 'Index' }, ['x', credential.slice(6)]] }]] })],
+    // Any non-literal index, not only `Ref` (an Fn::If index is also covered by its own branches).
+    ['Fn::Select with an Fn::FindInMap index', fnCode({ 'Fn::Join': ['', ['Basic ', credential.slice(0, 6), { 'Fn::Select': [{ 'Fn::FindInMap': ['M', 'K', 'V'] }, ['x', credential.slice(6)]] }]] })],
+    ['Fn::Select with an Fn::If index', fnCode({ 'Fn::Join': ['', ['Basic ', credential.slice(0, 6), { 'Fn::Select': [{ 'Fn::If': ['C', 0, 1] }, ['x', credential.slice(6)]] }]] })],
+    ['Fn::Select with a Ref index over Fn::Split', fnCode({ 'Fn::Join': ['', ['Basic ', credential.slice(0, 6), { 'Fn::Select': [{ Ref: 'Index' }, { 'Fn::Split': ['|', `x|${credential.slice(6)}|y`] }] }]] })],
+    ['Fn::Base64 of an Fn::Select with a Ref index', { P: { Type: 'AWS::CloudFront::OriginRequestPolicy', Properties: { V: { 'Fn::Base64': { 'Fn::Select': [{ Ref: 'Index' }, ['x', 'owner:s3cret-pass']] } } } } }],
     ['as a header value elsewhere', { P: { Type: 'AWS::CloudFront::OriginRequestPolicy', Properties: { Headers: [{ Name: 'Authorization', Value: `Basic ${credential}` }] } } }],
     ['a KeyValueStore seeded from the template', { Kvs: { Type: 'AWS::CloudFront::KeyValueStore', Properties: { Name: 'auth', ImportSource: { SourceType: 'S3', SourceArn: 'arn:aws:s3:::b/k' } } } }],
   ])('denies: %s', (_l, resources) => {
@@ -333,18 +361,162 @@ describe('the credential never appears in the template (scan runs with or withou
     expect(M.looksLikeCredential(withSlash)).toBe(true);
     // A piece shorter than the minimum token length is not tried.
     expect(M.looksLikeCredential(`/${Buffer.from('a:bcd').toString('base64')}`)).toBe(false);
+    // A padded token may be followed by `/`; a padded token followed by any other base64 character is still a miss.
+    const padded = Buffer.from('user:passwd').toString('base64');
+    expect(padded).toMatch(/[^=]=$/);
+    expect(M.looksLikeCredential(`/a/${padded}/b`)).toBe(true);
+    expect(M.looksLikeCredential(`${padded}/`)).toBe(true);
+    expect(M.looksLikeCredential(`${padded}x`)).toBe(false);
   });
 
-  it('more Fn::If inside projected intrinsics than MAX_PROJECTED_IFS fails closed; up to it, and outside them, is scanned', () => {
-    expect(M.MAX_PROJECTED_IFS).toBe(6);
-    const ifs = (n: number): J => ({ 'Fn::Join': ['', Array.from({ length: n }, (_, i) => ({ 'Fn::If': [`C${i}`, 'a', 'b'] }))] });
-    const run = (code: unknown) => M.evaluateAccessRestriction({ assemblyDir: assembly({ Web: { ...fnCode(code), Cdn: distribution(0) } }), check: null });
-    const over = run(ifs(M.MAX_PROJECTED_IFS + 1));
-    expect(over).toMatchObject({ result: 'denied', rule: 'ACCESS_RESTRICTION_CREDENTIAL_IN_TEMPLATE' });
-    expect(String(over.reason)).toContain('fail closed');
-    expect(run(ifs(M.MAX_PROJECTED_IFS))).toMatchObject({ result: 'allowed' });
-    // Fn::If outside any projected intrinsic cannot split a projection and does not count.
-    expect(run(Array.from({ length: 10 }, (_, i) => ({ 'Fn::If': [`C${i}`, 'a', 'b'] })))).toMatchObject({ result: 'allowed' });
+  /** The definition the linear scan must agree with: every part between `/` boundaries, decoded on its own (base64 path only). */
+  const naive = (text: string): boolean => {
+    for (const m of text.matchAll(/(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{8,}={0,2}(?![A-Za-z0-9+=_-])/g)) {
+      const run = m[0];
+      const starts = [0, ...[...run].flatMap((c, i) => (c === '/' ? [i + 1] : []))];
+      const ends = [...[...run].flatMap((c, i) => (c === '/' ? [i] : [])), run.length];
+      for (const s of starts) {
+        for (const e of ends) {
+          const body = run.slice(s, e).replace(/=+$/, '').replace(/-/g, '+').replace(/_/g, '/');
+          if (e - s < M.MIN_TOKEN_LENGTH || body.length < M.MIN_TOKEN_LENGTH || body.length % 4 === 1) continue;
+          if (M.isCredentialText(Buffer.from(body, 'base64').toString('latin1'))) return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  it('#1217 AC1: the linear scan agrees with decoding every part between `/` on its own', () => {
+    let seed = 1217;
+    const next = (n: number) => {
+      seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+      return (seed >>> 8) % n;
+    };
+    const pieces = [
+      () => Buffer.from(Array.from({ length: 2 + next(10) }, () => 'ab:: {}?>~-_x01'[next(15)]).join('')).toString(next(3) === 0 ? 'base64url' : 'base64'),
+      () => '/',
+      () => Array.from({ length: 1 + next(5) }, () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'[next(64)]).join(''),
+      () => ['=', ' ', 'x', '"', '.'][next(5)], // no `%` or `Basic `: those paths are pinned on their own above
+      () => `/${Buffer.from(`u:${'p'.repeat(next(9))}`).toString('base64')}`,
+    ];
+    let positives = 0;
+    for (let i = 0; i < 20000; i += 1) {
+      const text = Array.from({ length: 1 + next(8) }, () => pieces[next(pieces.length)]!()).join('');
+      const expected = naive(text);
+      if (expected) positives += 1;
+      expect(M.looksLikeCredential(text), JSON.stringify(text)).toBe(expected);
+    }
+    expect(positives).toBeGreaterThan(2000); // the comparison is not vacuous
+    // Found by that comparison: a part of length 1 modulo 4 after a `/` at an unaligned start decodes nothing.
+    // Built at runtime (not a literal) so secret scanners do not flag a fixture: `owner:pass53` in base64.
+    expect(M.looksLikeCredential(`aDF9Pn4/${Buffer.from('owner:pass53').toString('base64')}x`)).toBe(false);
+    // A long user: the part checked must reach past the colon, so a byte before it that is not printable is seen.
+    expect(M.looksLikeCredential(Buffer.from('abcdefghijklmnopqrstu:pass').toString('base64'))).toBe(true);
+    expect(M.looksLikeCredential(Buffer.from('abcdefghijklmnopq\u0001stu:pass').toString('base64'))).toBe(false);
+    expect(M.looksLikeCredential(`/x/${Buffer.from('abcdefghijklmnopq\u0001stu:pass').toString('base64')}`)).toBe(false);
+    // The part ending at the `/` decodes to `abcdefghijklmnopqr` (no colon); the colon is only in a longer part,
+    // after bytes that are not printable. Checking the part that ends before the colon would call it a credential.
+    expect(M.looksLikeCredential(`${Buffer.from('abcdefghijklmnopqr').toString('base64')}/QEpOtn4Y`)).toBe(false);
+  });
+
+  it('#1217 AC1: a long base64 run with many `/` is scanned in bounded time and decides without throwing', () => {
+    let seed = 60;
+    const bytes = Buffer.from(
+      Array.from({ length: 45000 }, () => {
+        seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+        return seed >>> 24;
+      }),
+    );
+    const random = bytes.toString('base64'); // 60 KB, about one `/` in 64
+    expect(random.length).toBe(60000);
+    expect(random.split('/').length).toBeGreaterThan(500);
+    const userPass = Buffer.from('user:pass').toString('base64');
+    for (const [text, expected] of [
+      [random, false],
+      ['ab/'.repeat(20000), false], // a list of every part did not fit in memory (RangeError)
+      ['Pz8/'.repeat(15000), false], // every part decodes to printable `???...` up to the run's end
+      [`${random}/${userPass}`, true], // the fast path still finds the token at the end
+    ] as const) {
+      const t = Date.now();
+      expect(M.looksLikeCredential(text)).toBe(expected);
+      expect(Date.now() - t, text.slice(0, 16)).toBeLessThan(2000);
+    }
+    const d = M.evaluateAccessRestriction({ assemblyDir: assembly({ Web: { ...fnCode('ab/'.repeat(20000)), Cdn: distribution(0) } }), check: null });
+    expect(d).toMatchObject({ result: 'allowed', rule: null, accessRestriction: { state: 'absent' } });
+  });
+
+  describe('#1217 AC2: the projection bound is counted per outermost projected intrinsic', () => {
+    const ifs = (n: number, prefix = 'C'): J[] => Array.from({ length: n }, (_, i) => ({ 'Fn::If': [`${prefix}${i}`, 'a', 'b'] }));
+    const join = (parts: unknown[]): J => ({ 'Fn::Join': ['', parts] });
+    const run = (resources: J, check: Check = null) => M.evaluateAccessRestriction({ assemblyDir: assembly({ Web: { ...resources, Cdn: distribution(0) } }), check });
+    const tooComplex = { result: 'denied', rule: 'ACCESS_RESTRICTION_INPUT_INVALID', accessRestriction: { state: 'unverifiable', reason: 'template too complex to scan' } };
+
+    it('more combinations than the bound in one intrinsic is not projected: a named deny of its own reason, not a credential alarm', () => {
+      expect(M.MAX_PROJECTED_COMBINATIONS).toBe(64);
+      for (const check of [null, all]) {
+        const over = run(fnCode(join(ifs(7))), check);
+        expect(over).toMatchObject(tooComplex);
+        expect(String(over.reason)).toContain('fail closed');
+        expect(String(over.reason)).toContain('Web: 1 ');
+      }
+      expect(run(fnCode(join(ifs(6))))).toMatchObject({ result: 'allowed' });
+      // An Fn::Select with a non-literal index offers one choice per element.
+      expect(run(fnCode(join([{ 'Fn::Select': [{ Ref: 'I' }, Array.from({ length: 65 }, (_, i) => `e${i}`)] }])))).toMatchObject(tooComplex);
+      expect(run(fnCode(join([{ 'Fn::Select': [{ Ref: 'I' }, Array.from({ length: 64 }, (_, i) => `e${i}`)] }])))).toMatchObject({ result: 'allowed' });
+      expect(run(fnCode(join([...ifs(5), { 'Fn::Select': [{ Ref: 'I' }, ['a', 'b', 'c']] }])))).toMatchObject(tooComplex); // 32 x 3
+    });
+
+    it('Fn::If nested under an intrinsic inside the outermost one count towards the outermost one', () => {
+      expect(run(fnCode(join([...ifs(3), join(ifs(4, 'D'))])))).toMatchObject(tooComplex);
+      expect(run(fnCode({ 'Fn::Base64': join([...ifs(3), { 'Fn::Sub': ['${A}', { A: join(ifs(4, 'D')) }] }]) }))).toMatchObject(tooComplex);
+    });
+
+    it('seven unrelated resources with one Fn::If each are allowed; Fn::If under different intrinsics never combine', () => {
+      const resources = Object.fromEntries(
+        Array.from({ length: 7 }, (_, i) => [`P${i}`, { Type: 'AWS::CloudFront::OriginRequestPolicy', Properties: { V: join(['x-', { 'Fn::If': [`C${i}`, 'a', 'b'] }]) } }]),
+      );
+      expect(run(resources)).toMatchObject({ result: 'allowed', rule: null });
+      expect(run(fnCode([join(ifs(6)), join(ifs(6, 'D')), join(ifs(6, 'E'))]))).toMatchObject({ result: 'allowed' });
+      // Fn::If outside any projected intrinsic cannot split a projection and does not count.
+      expect(run(fnCode(ifs(10)))).toMatchObject({ result: 'allowed' });
+    });
+
+    it('credential first: a credential anywhere is reported as one even when an intrinsic is too complex to project', () => {
+      const credentialInBranches = join(['Basic ', { 'Fn::If': ['A', credential.slice(0, 6), 'x'] }, { 'Fn::If': ['B', 'y', credential.slice(6)] }]);
+      const cases: J[] = [
+        { ...fnCode(join(ifs(7))), Plain: { Type: 'AWS::CloudFront::OriginRequestPolicy', Properties: { V: `Basic ${credential}` } } },
+        // Only visible under one combination of another intrinsic, listed after the complex one.
+        { ...fnCode([join(ifs(7)), credentialInBranches]) },
+        // Inside the complex intrinsic itself, as a literal.
+        { ...fnCode(join([...ifs(7), `Basic ${credential}`])) },
+      ];
+      for (const resources of cases) {
+        for (const check of [null, all]) expect(run(resources, check), JSON.stringify(resources).slice(0, 80)).toMatchObject({ result: 'denied', rule: 'ACCESS_RESTRICTION_CREDENTIAL_IN_TEMPLATE' });
+      }
+      // In another stack of the same assembly.
+      const d = M.evaluateAccessRestriction({ assemblyDir: assembly({ A: fnCode(join(ifs(7))), B: fnCode(`Basic ${credential}`) }), check: null });
+      expect(d).toMatchObject({ result: 'denied', rule: 'ACCESS_RESTRICTION_CREDENTIAL_IN_TEMPLATE' });
+    });
+
+    it('an Fn::Select with a literal index or a non-literal list offers no choice', () => {
+      expect(run(fnCode(join([{ 'Fn::Select': [0, Array.from({ length: 100 }, (_, i) => `e${i}`)] }])))).toMatchObject({ result: 'allowed' });
+      expect(run(fnCode(join([{ 'Fn::Select': [{ Ref: 'I' }, { 'Fn::GetAZs': '' }] }])))).toMatchObject({ result: 'allowed' });
+    });
+  });
+
+  it('#1217 AC1: an internal failure is a named deny that escalates, never a crash without a decision', () => {
+    const throwingName = {
+      get name(): string {
+        throw new RangeError('boom');
+      },
+      isRestricted: () => true,
+    } as unknown as Check;
+    const dir = assembly({ Web: { Cdn: distribution(0) } });
+    expect(M.evaluateAccessRestriction({ assemblyDir: dir, check: throwingName })).toMatchObject({ result: 'denied', rule: 'ACCESS_RESTRICTION_INPUT_INVALID', accessRestriction: { state: 'unverifiable' } });
+    const out = scratch();
+    const decisionPath = join(out, 'd.json');
+    expect(M.runCli(['--assembly', dir], { env: {}, check: throwingName, decisionPath }).exitCode).toBe(M.DENIED_EXIT_CODE);
+    expect(JSON.parse(readFileSync(decisionPath, 'utf8'))).toMatchObject({ result: 'denied', rule: 'ACCESS_RESTRICTION_INPUT_INVALID' });
   });
 
   it('a credential used as an object KEY (e.g. under Mappings) is found', () => {
