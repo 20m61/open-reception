@@ -2,26 +2,36 @@
 
 受付端末（kiosk）の待機〜案内で表示する VRM アバターのモデルファイル置き場です。
 
-## 既定モデル: AvatarSample_A
+## 既定モデル: receptiom
 
-`default.vrm` には、VRoid Project 公式の `AvatarSample_A` から書き出した VRM を配置します。
+`default.vrm` は、owner（@20m61）が VRoid Studio 2.11.0 で作成・書き出した `receptiom`（VRM 0.0）です
+（2026-10-05、#399 の AvatarSample_A 導入計画を置き換え）。
 
-- 権利者: VRoid Project / pixiv
-- ライセンス: CC0 ではない（著作権は放棄されていない）
-- 許可される用途: 法人利用、商用利用、再配布、改変
-- クレジット表記: 不要
-- 公式利用条件: https://vroid.pixiv.help/hc/ja/articles/4402394424089-AvatarSample-A-Z
-- 公式モデルページ: https://hub.vroid.com/characters/2843975675147313744/models/5644550979324015604
+- 作者: 20m61（このリポジトリの owner）
+- SHA-256: `925b2fcbaa815dd5e352a7dbefcef9a73041c9be58f78472e8987d7955017a5f`（12,425,848 bytes）
+- head ボーンのワールド高さ（rest pose）: 1.4046m（`camera-framing.test.ts` の実測値）
+- 記録: `provenance.json`
 
-利用条件は変更される可能性があるため、取得日・取得元・ファイルハッシュを `provenance.json` に記録し、リリース前にも再確認します。
+### 埋め込みメタデータと使い方の食い違い（owner 判断で受容）
 
-## 取得・配置手順
+VRM に埋め込まれた利用条件は `allowedUserName: OnlyAuthor` / `commercialUssageName: Disallow` /
+`licenseName: Redistribution_Prohibited` です。一方、このリポジトリは public で、受付製品として
+商用に使います。**作者本人である owner が、メタデータを変えずにこのまま commit すると判断しました**
+（2026-10-05）。
 
-1. VRoid Studio または公式 VRoid Hub から `AvatarSample_A` を取得する。
-2. VRoid StudioからVRM形式で書き出す場合は、埋め込みメタデータの利用条件が公式条件と一致することを確認する。
-3. ファイル名を `default.vrm` に統一し、このディレクトリへ配置する。
-4. SHA-256を計算し、`provenance.json` の `sha256` と `acquiredAt` を更新する。
-5. `npm run test`、`npm run build`、iPad実機でのVRM・表情・リップシンク・モーション確認を実施する。
+- このファイルは public に置かれていますが、**第三者にライセンスされたものではありません**。
+  第三者は埋め込みメタデータ（作者のみ・商用不可・再配布禁止）に従ってください。
+- メタデータを実際の使い方に合わせる場合は、VRoid Studio で利用条件を変えて書き出し直し、
+  `default.vrm` と `provenance.json`（`sha256` / `embeddedMeta` / `verificationStatus`）を更新します。
+
+## モデルを差し替えるとき
+
+1. ライセンス・出所を確認し、埋め込みメタデータの利用条件が実際の使い方と一致するか確かめる。
+   一致しない場合は owner の判断を `provenance.json` に記録する。
+2. ファイル名を `default.vrm` に統一し、このディレクトリへ配置する。
+3. SHA-256 を計算し、`provenance.json` を更新する。`THIRD_PARTY_NOTICES.md` も合わせる。
+4. head ボーンのワールド高さを測り、`src/domain/avatar/camera-framing.test.ts` の実測値を更新する。
+5. `npm run test`、`npm run build`、`npm run vrm:check`、iPad 実機での VRM・表情・リップシンク・モーション確認を実施する。
 
 ## 使い方
 
@@ -52,12 +62,11 @@ KIOSK_DEFAULT_VRM_URL=/avatar/default.vrm
 
 ## ライセンス運用
 
-VRMモデルは著作物です。出所不明・ライセンス不明のモデルをコミット／配信しません。
-AvatarSample_Aは再配布が許可されていますがCC0ではないため、次を必須とします。
+VRMモデルは著作物です。出所不明・ライセンス不明のモデルをコミット／配信しません。次を必須とします。
 
-- 公式利用条件のURLと取得日を保存
+- 作者・取得元と取得日を保存
 - 配布対象VRMのSHA-256を保存
-- VRM埋め込みメタデータを検査
+- VRM埋め込みメタデータを検査し、実際の使い方との食い違いがあれば owner 判断を記録
 - モデル差し替え時に `THIRD_PARTY_NOTICES.md` と `provenance.json` を更新
 - 宗教・政治・反社会的・差別的な演出へ転用しない
 
