@@ -36,6 +36,11 @@ const DEFAULT_ENDPOINTS: Readonly<Record<Exclude<AwsRuntime, 'aws'>, string>> = 
 
 const DEFAULT_REGION = 'ap-northeast-1';
 
+/** AWS region の単一解決点。runtime / adapter factory は独自 fallback を持たない。 */
+export function resolveAwsRegion(env: Env): string {
+  return env.AWS_REGION ?? env.AWS_DEFAULT_REGION ?? DEFAULT_REGION;
+}
+
 /**
  * エミュレータへ渡す dummy 資格情報。
  *
@@ -175,7 +180,7 @@ export function resolveAwsRuntimeConfig(env: Env): AwsRuntimeConfig {
   const violations = checkAwsRuntimeSafety(env);
   if (violations.length > 0) throw new AwsRuntimeSafetyError(runtime, violations);
 
-  const region = env.AWS_REGION ?? env.AWS_DEFAULT_REGION ?? DEFAULT_REGION;
+  const region = resolveAwsRegion(env);
   if (runtime === 'aws') {
     return { runtime, emulated: false, region };
   }
