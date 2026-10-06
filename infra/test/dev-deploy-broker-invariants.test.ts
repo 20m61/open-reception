@@ -383,34 +383,47 @@ describe('dev deploy broker invariants: build environment allowlist', () => {
   });
 });
 
-/** Commands of a buildspec in execution order (CodeBuild runs the phases in this order). */
+/**
+ * Commands of a buildspec in execution order: phases in CodeBuild's order, each phase's `finally`
+ * right after its commands (a `finally` runs before the next phase starts).
+ */
 const PHASE_ORDER = ['install', 'pre_build', 'build', 'post_build'] as const;
 const orderedCommands = (name: string): string[] => {
-  const phases = buildSpec(name).phases as Record<string, { commands?: string[] } | undefined>;
-  return PHASE_ORDER.flatMap((p) => phases[p]?.commands ?? []);
+  const phases = buildSpec(name).phases as Record<string, { commands?: string[]; finally?: string[] } | undefined>;
+  return PHASE_ORDER.flatMap((p) => [...(phases[p]?.commands ?? []), ...(phases[p]?.finally ?? [])]);
 };
 const runsNode = (command: string): boolean => /(^|[\s;&|(])(npm|npx|node)(\s|$)/.test(command);
 const HEAP_COMMAND = /^export NODE_OPTIONS=--max-old-space-size=([1-9][0-9]*)$/;
+const touchesHeap = (c: string): boolean => c.includes('NODE_OPTIONS') || c.includes('max-old-space-size');
 
 const computeOf = (computeType: unknown) => CODEBUILD_LINUX_COMPUTE.find((c) => c.type === computeType);
+const runFor = (c: (typeof CODEBUILD_LINUX_COMPUTE)[number]) => VALIDATION_MEASURED_RUNS.find((r) => r.vcpus === c.vcpus);
 /**
- * Does a build with `heapMiB` per Node process fit the compute type? Only a measured replay on the
- * same number of vCPUs counts (no measurement = not known to fit): its anon peak, plus the extra
- * heap if the configured heap is larger than the measured one, plus the OS reserve, must fit memory.
+ * Does the measured build fit the compute type with `heapMiB` per Node process, within the project
+ * timeout? Only a replay on the same number of vCPUs counts (more vCPUs mean more test workers, so a
+ * smaller machine's measurement does not carry over; no measurement = not known to fit):
+ * - memory: its anon peak, plus the extra heap if the configured heap is larger than the measured
+ *   one, plus the OS reserve;
+ * - time: no test exceeded its own timeout, and the build phase used at most half of the project
+ *   timeout (npm ci, aws:local:test and provisioning are not in the replay).
  */
-const fits = (c: (typeof CODEBUILD_LINUX_COMPUTE)[number], heapMiB: number): boolean => {
-  const run = VALIDATION_MEASURED_RUNS.find((r) => r.vcpus === c.vcpus);
+const fits = (c: (typeof CODEBUILD_LINUX_COMPUTE)[number], heapMiB: number, timeoutMinutes: number): boolean => {
+  const run = runFor(c);
   if (!run) return false;
-  return run.anonPeakMiB + Math.max(0, heapMiB - run.heapMiB) + VALIDATION_OS_RESERVE_MIB <= c.memoryGiB * 1024;
+  const memory = run.anonPeakMiB + Math.max(0, heapMiB - run.heapMiB) + VALIDATION_OS_RESERVE_MIB <= c.memoryGiB * 1024;
+  const time = run.testTimeoutsExceeded === 0 && run.buildPhaseSeconds <= (timeoutMinutes * 60) / 2;
+  return memory && time;
 };
+const validationTimeout = (): number => project(VALIDATION_PROJECT).TimeoutInMinutes as number;
 
-/** The single heap the Validation buildspec gives Node, or a reason why there is not exactly one. */
+/** The single heap the Validation buildspec gives Node (and where), asserting there is exactly one. */
 const validationHeap = (): { heapMiB: number; index: number } => {
-  const commands = orderedCommands(VALIDATION_PROJECT);
-  const mentions = commands
+  const mentions = orderedCommands(VALIDATION_PROJECT)
     .map((c, i) => [c, i] as const)
-    .filter(([c]) => c.includes('NODE_OPTIONS') || c.includes('max-old-space-size'));
-  expect(mentions.map(([c]) => c), 'exactly one command may touch NODE_OPTIONS / the heap').toHaveLength(1);
+    .filter(([c]) => touchesHeap(c));
+  // allCommands also covers phases outside PHASE_ORDER: nothing anywhere may touch the heap twice.
+  expect(allCommands(VALIDATION_PROJECT).filter(touchesHeap), 'exactly one command may touch NODE_OPTIONS / the heap').toHaveLength(1);
+  expect(mentions).toHaveLength(1);
   const [command, index] = mentions[0]!;
   const m = HEAP_COMMAND.exec(command);
   expect(m, `${command} must only set --max-old-space-size (no other Node flags)`).not.toBeNull();
@@ -426,12 +439,21 @@ describe('dev deploy broker invariants: validation build memory (7.5 OOM, 2026-1
       // A replay that ran with less heap than the minimum could not have passed: a typo, not data.
       expect(run.heapMiB).toBeGreaterThanOrEqual(VALIDATION_MIN_HEAP_MIB);
       expect(run.anonPeakMiB).toBeGreaterThan(0);
+      expect(run.buildPhaseSeconds).toBeGreaterThan(0);
     }
     const memories = CODEBUILD_LINUX_COMPUTE.map((c) => c.memoryGiB);
     expect([...memories].sort((x, y) => x - y)).toEqual(memories);
   });
 
-  it('gives every Node process an explicit heap, set once before the first npm / node command', () => {
+  it('the chosen compute type and every cheaper one were measured ("cheapest" is backed by data)', () => {
+    const chosen = CODEBUILD_LINUX_COMPUTE.findIndex((c) => c.type === (project(VALIDATION_PROJECT).Environment as Json).ComputeType);
+    expect(chosen, 'known compute type').toBeGreaterThanOrEqual(0);
+    for (const c of CODEBUILD_LINUX_COMPUTE.slice(0, chosen + 1)) {
+      expect(runFor(c), `no replay measured on ${c.vcpus} vCPUs (${c.type})`).toBeDefined();
+    }
+  });
+
+  it('sets the heap once, before the first npm / node command, and nothing unsets it afterwards', () => {
     const { index } = validationHeap();
     const firstNode = orderedCommands(VALIDATION_PROJECT).findIndex(runsNode);
     expect(firstNode, 'the validation buildspec runs npm').toBeGreaterThanOrEqual(0);
@@ -443,21 +465,21 @@ describe('dev deploy broker invariants: validation build memory (7.5 OOM, 2026-1
     expect(heapMiB).toBeGreaterThanOrEqual(Math.ceil(VALIDATION_MIN_HEAP_MIB * VALIDATION_HEAP_HEADROOM));
   });
 
-  it('the heap is at most half of the machine (the ratio Node itself uses), so two processes at their cap still fit', () => {
+  it('the heap is at most half of the machine memory (the rest of the measured tree needs the other half)', () => {
     const c = computeOf((project(VALIDATION_PROJECT).Environment as Json).ComputeType);
     expect(c, 'known compute type').toBeDefined();
     expect(validationHeap().heapMiB).toBeLessThanOrEqual((c!.memoryGiB * 1024) / 2);
   });
 
-  it('the compute type has room for the heaviest measured stage with that heap (else the kernel kills it)', () => {
+  it('the compute type fits the measured build: memory with that heap, and time within the project timeout', () => {
     const c = computeOf((project(VALIDATION_PROJECT).Environment as Json).ComputeType);
     expect(c, 'known compute type').toBeDefined();
-    expect(fits(c!, validationHeap().heapMiB)).toBe(true);
+    expect(fits(c!, validationHeap().heapMiB, validationTimeout())).toBe(true);
   });
 
   it('the compute type is the cheapest one that fits (cost: no over-provisioning)', () => {
     const { heapMiB } = validationHeap();
-    const cheapest = CODEBUILD_LINUX_COMPUTE.find((c) => fits(c, heapMiB));
+    const cheapest = CODEBUILD_LINUX_COMPUTE.find((c) => fits(c, heapMiB, validationTimeout()));
     expect(cheapest, 'some listed compute type must fit').toBeDefined();
     expect((project(VALIDATION_PROJECT).Environment as Json).ComputeType).toBe(cheapest!.type);
   });
