@@ -17,6 +17,7 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3assets from 'aws-cdk-lib/aws-s3-assets';
 import { BROKER_STACK_DEPLOY_ROLE_ARN_PATTERN } from '../config/broker-bootstrap';
+import { VALIDATION_NODE_OPTIONS_COMMAND } from '../config/validation-build-resources';
 
 export const DEV_DEPLOY_PROMOTION_BRANCH = 'dev-deploy';
 
@@ -800,7 +801,9 @@ export class DevDeployBrokerStack extends cdk.Stack {
       queuedTimeout: cdk.Duration.minutes(5),
       environment: {
         buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
-        computeType: codebuild.ComputeType.SMALL,
+        // MEDIUM: the cheapest compute type that fits the measured build with a 1 GiB reserve
+        // (SMALL left ~0.6 GiB at the build:open-next peak). See validation-build-resources.ts.
+        computeType: codebuild.ComputeType.MEDIUM,
         privileged: false,
         environmentVariables: {
           OR_BROKER_TARGET_ACCOUNT: { value: DEV_DEPLOY_TARGET_ACCOUNT },
@@ -824,6 +827,9 @@ export class DevDeployBrokerStack extends cdk.Stack {
               // preserves the MiniStack/Moto hermeticity contract.
               'unset AWS_SESSION_TOKEN AWS_PROFILE AWS_CREDENTIAL_EXPIRATION AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE AWS_CONTAINER_CREDENTIALS_RELATIVE_URI AWS_CONTAINER_CREDENTIALS_FULL_URI AWS_CONTAINER_AUTHORIZATION_TOKEN AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
               'export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_EC2_METADATA_DISABLED=true',
+              // Node's default heap follows machine memory (~1.5 GiB on SMALL, ~2 GiB on MEDIUM), not
+              // the build: typecheck OOMed on SMALL in runbook 7.5 (2026-10-06). Set it explicitly.
+              VALIDATION_NODE_OPTIONS_COMMAND,
               'npm ci',
               'npm --prefix infra ci',
             ],
