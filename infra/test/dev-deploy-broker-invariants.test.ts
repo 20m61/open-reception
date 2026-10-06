@@ -68,6 +68,10 @@ import {
   trustedPolicySha256,
 } from '../lib/stacks/dev-deploy-broker-stack';
 import { BROKER_BOOTSTRAP_QUALIFIER } from '../lib/config/broker-bootstrap';
+import {
+  DYNAMODB_TABLE_RESOURCE_POLICY_ACTIONS,
+  DYNAMODB_TABLE_RESOURCE_POLICY_REJECTED,
+} from '../lib/config/dynamodb-resource-policy-actions';
 
 /**
  * Adversarial Phase 1 invariants for the dev deploy broker (#1146).
@@ -611,6 +615,40 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
     expect(allowedActions(VALIDATION_ROLE).some((a) => a.startsWith('dynamodb:'))).toBe(false);
   });
 
+  // DynamoDB rejects the whole table when its resource policy names an action it does not accept
+  // there (2026-10-06: `RestoreTableFromBackup` failed the first create). The emulators do not
+  // check this, so every action of every table / stream policy must be on the documented list.
+  it('every action in a DynamoDB resource policy is one DynamoDB accepts there (allowlist, not a hand-written set)', () => {
+    const allowed = new Set(DYNAMODB_TABLE_RESOURCE_POLICY_ACTIONS.map((a) => a.toLowerCase()));
+    const policies = byType('AWS::DynamoDB::Table').flatMap(([id, r]) => {
+      const stream = r.Properties.StreamSpecification as { ResourcePolicy?: unknown } | undefined;
+      return [
+        [id, r.Properties.ResourcePolicy],
+        [`${id}/stream`, stream?.ResourcePolicy],
+      ].filter(([, p]) => p !== undefined) as Array<[string, { PolicyDocument: unknown }]>;
+    });
+    // Lower bound: the ledger policy is really inspected (an empty scan would pass vacuously).
+    expect(policies.map(([id]) => id)).toEqual(LEDGER_TABLES);
+    for (const [id, policy] of policies) {
+      const statements = documentStatements(policy.PolicyDocument);
+      expect(statements.length, id).toBeGreaterThan(0);
+      for (const statement of statements) {
+        // NotAction would expand to actions DynamoDB may reject; only explicit names are checkable.
+        expect(statement.NotAction, id).toBeUndefined();
+        const actions = actionsOf(statement);
+        expect(actions.length, id).toBeGreaterThan(0);
+        expect(actions.filter((a) => !allowed.has(a)), `${id} ${statement.Effect}`).toEqual([]);
+      }
+    }
+  });
+
+  it('the allowlist excludes every action AWS was observed to reject in a table policy', () => {
+    const allowed = DYNAMODB_TABLE_RESOURCE_POLICY_ACTIONS.map((a) => a.toLowerCase());
+    for (const rejected of DYNAMODB_TABLE_RESOURCE_POLICY_REJECTED) {
+      expect(allowed).not.toContain(rejected.toLowerCase());
+    }
+  });
+
   it('the table resource policy denies every write except from the broker role and the human issuer role', () => {
     const table = resources[LEDGER_TABLES[0]!]!;
     const doc = (table.Properties.ResourcePolicy as { PolicyDocument: unknown }).PolicyDocument;
@@ -627,7 +665,6 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
         'dynamodb:updatetable',
         'dynamodb:deletetable',
         'dynamodb:updatecontinuousbackups',
-        'dynamodb:restoretablefrombackup',
         'dynamodb:restoretabletopointintime',
         'dynamodb:updatekinesisstreamingdestination',
         'dynamodb:enablekinesisstreamingdestination',

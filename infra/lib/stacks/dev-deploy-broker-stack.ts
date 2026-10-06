@@ -76,6 +76,12 @@ export const SPARSE_LEDGER_PROTECTED_WRITES = [
  * disable deletion protection, and so on. Denied to every principal except the human override
  * issuer and the human stack-deploy (CloudFormation execution) role, which needs them to update
  * this stack.
+ *
+ * Every entry must be one DynamoDB accepts in a table policy
+ * (`config/dynamodb-resource-policy-actions.ts`; a bad name fails the whole table at create).
+ * `RestoreTableFromBackup` is not one: it acts on the backup and writes a *new* table, so this
+ * policy could never govern it, and it cannot touch the ledger (an existing table name is refused,
+ * and DeleteTable is denied here and blocked by deletion protection).
  */
 export const SPARSE_LEDGER_PROTECTED_CONTROL = [
   'dynamodb:UpdateTimeToLive',
@@ -84,7 +90,6 @@ export const SPARSE_LEDGER_PROTECTED_CONTROL = [
   'dynamodb:UpdateTable',
   'dynamodb:DeleteTable',
   'dynamodb:UpdateContinuousBackups',
-  'dynamodb:RestoreTableFromBackup',
   'dynamodb:RestoreTableToPointInTime',
   'dynamodb:UpdateKinesisStreamingDestination',
   'dynamodb:EnableKinesisStreamingDestination',
