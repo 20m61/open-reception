@@ -15,6 +15,7 @@ import {
   AwsSecretsManagerBackend,
   SecretsManagerTenantSecretStore,
 } from '@/domain/provider-config/secrets-manager-store';
+import { resolveAwsRegion } from '@/domain/governance/aws-runtime';
 
 let store: TenantSecretStore | undefined;
 
@@ -31,7 +32,7 @@ export function createTenantSecretStore(
       return new InMemoryTenantSecretStore();
     case 'secrets-manager':
       return new SecretsManagerTenantSecretStore(
-        new AwsSecretsManagerBackend(env.AWS_REGION ?? 'ap-northeast-1'),
+        new AwsSecretsManagerBackend(resolveAwsRegion(env)),
         env.PROVIDER_SECRET_PREFIX ?? '',
       );
     default:
