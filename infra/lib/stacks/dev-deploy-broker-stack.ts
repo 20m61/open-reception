@@ -801,8 +801,8 @@ export class DevDeployBrokerStack extends cdk.Stack {
       queuedTimeout: cdk.Duration.minutes(5),
       environment: {
         buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
-        // MEDIUM (7 GiB): the measured build (build:open-next peaks at ~3.8 GiB of process tree)
-        // does not fit SMALL's 3 GiB even with a larger heap. See validation-build-resources.ts.
+        // MEDIUM: the cheapest compute type that fits the measured build with a 1 GiB reserve
+        // (SMALL left ~0.6 GiB at the build:open-next peak). See validation-build-resources.ts.
         computeType: codebuild.ComputeType.MEDIUM,
         privileged: false,
         environmentVariables: {

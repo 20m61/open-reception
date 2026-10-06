@@ -10,46 +10,49 @@
  * Node sizes its default heap from the machine's memory, not from what the build needs: half of the
  * physical (or cgroup) memory, capped at 2 GiB below 16 GiB (measured 2026-10-06, node 22 in a
  * container: 3 GiB limit -> heap_size_limit 1584 MiB, 4 and 7 GiB -> 2096 MiB; a 16 GiB Mac ->
- * 4144 MiB). So SMALL gives a ~1.5–2 GiB heap, and any compute type below 16 GiB gives ~2 GiB. The heap
- * is therefore set explicitly (`--max-old-space-size`), and the compute type is chosen so that the
- * whole build fits in memory with that heap.
+ * 4144 MiB). So the heap is set explicitly (`--max-old-space-size`), and the compute type is chosen
+ * so that the build fits in memory with that heap.
  *
- * ## Measured requirement (2f1ed92, node 22, 2026-10-06/07; ct-run0-g10)
+ * ## Measured (2f1ed92, node 22, 2026-10-06/07; ct-run0-g10)
  *
- * Reproduction (positive control): `tsc --noEmit` of the repo in a node:22 Linux container limited to
- * 3 GiB / 2 CPUs exits 134 with `node::OOMErrorHandler` — the CodeBuild failure. With a 4 or 7 GiB
- * limit (default heap 2096 MiB) it passes; the margin over the bisected minimum is ~15 %.
+ * - Reproduction (positive control): `tsc --noEmit` of the repo in a node:22 Linux container
+ *   limited to 3 GiB / 2 CPUs exits 134 with `node::OOMErrorHandler` — the CodeBuild failure. With a
+ *   4 or 7 GiB limit (default heap 2096 MiB) it passes.
+ * - Minimum heap, bisected with `--max-old-space-size` on clean trees (no tsbuildinfo / `.next`;
+ *   OOM at the lower bound, pass at the upper one): `npm run typecheck` 1665..1792 MiB,
+ *   `npm run build:open-next` 1537..1792 MiB (it dies in Next's "Running TypeScript" step).
+ * - Whole buildspec replayed in a node:22 Linux container (all stages except `aws:local:test`,
+ *   which needs Python; cgroup `anon` peak sampled every 0.5 s, per stage). See
+ *   `VALIDATION_MEASURED_RUNS`. Two observations beyond memory:
+ *   - on 2 CPUs the build phase took ~20 min (the project timeout is 30 min), and one infra test
+ *     (`the app entry point synthesizes the stack for ap-northeast-1 …`, 60 s timeout) timed out
+ *     at 87 s; on 4 CPUs the phase took ~13 min and that test passed;
+ *   - `build:open-next` downloads Google Fonts (`next/font`), so the build needs that network path.
  *
- * Each Validation stage was then run on its own (macOS, 4 CPUs, clean: no tsbuildinfo / `.next`)
- * under `/usr/bin/time -l`, sampling the summed RSS of the whole process tree every 0.5 s. The minimum
- * heap was bisected with `--max-old-space-size` (OOM at the lower bound, pass at the upper one):
- *
- * | stage                         | min heap (MiB) | tree peak RSS (MiB) |
- * | ----------------------------- | -------------- | ------------------- |
- * | `npm run typecheck`           | 1665..1792     | 1934                |
- * | `npm run lint`                | (not bisected) | 1009                |
- * | `npm test` (3 workers)        | (not bisected) | 738                 |
- * | `npm run build:open-next`     | 1537..1792     | 3823                |
- * | `npm run aws:local:test`      | (not bisected) | 265 (+ MiniStack)   |
- * | infra typecheck / infra test  | (not bisected) | 939 / 2031          |
- * | 3-stack `cdk synth`           | (not bisected) | 1526                |
- *
- * `build:open-next` is the binding stage for memory: with a 1536 MiB heap it dies with
- * `Reached heap limit` in Next's "Running TypeScript" step, and its process tree peaks at ~3.8 GiB
- * (on 4 CPUs, as on MEDIUM). In a 3 GiB / 2 CPU container (SMALL as observed) the build fails even
- * with a 2560 MiB heap, at the memory limit. Raising NODE_OPTIONS on SMALL cannot make it fit.
- *
- * The invariant tests take these numbers as the *requirement* and derive whether the synthesized
- * template satisfies it; they do not pin the chosen compute type or heap as literals.
+ * The invariant tests take these measurements as the requirement and check the synthesized template
+ * against them; they do not pin the chosen compute type or heap as literals.
  */
-export const VALIDATION_MEASURED_REQUIREMENT = Object.freeze({
-  /** Smallest `--max-old-space-size` (MiB) at which every bisected stage passed. */
-  minHeapMiB: 1792,
-  /** Largest summed RSS of one stage's process tree (MiB): build:open-next on 4 CPUs. */
-  treePeakRssMiB: 3823,
-  /** RSS of the largest single process within that tree (MiB). */
-  largestProcessRssMiB: 1907,
-});
+
+/** Smallest `--max-old-space-size` (MiB) at which every bisected stage passed (upper bounds above). */
+export const VALIDATION_MIN_HEAP_MIB = 1792;
+
+/** One replay of the Validation buildspec in a Linux container (2026-10-07). */
+export interface ValidationMeasuredRun {
+  /** CPUs given to the container (= vCPUs of the compute type it stands for). */
+  readonly vcpus: number;
+  /** `--max-old-space-size` used for the run. */
+  readonly heapMiB: number;
+  /** Largest cgroup `anon` (MiB) seen in any stage. */
+  readonly anonPeakMiB: number;
+  /** Build-phase seconds (stages replayed, without `aws:local:test` and `npm ci`). */
+  readonly buildPhaseSeconds: number;
+}
+export const VALIDATION_MEASURED_RUNS: readonly ValidationMeasuredRun[] = Object.freeze([
+  // 3 GiB / 2 CPUs (SMALL as observed in 7.5): typecheck 1859, build:open-next 2217..2430, infra test 1344.
+  { vcpus: 2, heapMiB: 2560, anonPeakMiB: 2430, buildPhaseSeconds: 1202 },
+  // 5.8 GiB (the container host's limit) / 4 CPUs (MEDIUM's vCPUs): typecheck 1922, build 2079, infra test 1626.
+  { vcpus: 4, heapMiB: 3072, anonPeakMiB: 2079, buildPhaseSeconds: 770 },
+]);
 
 /** Heap head-room over the measured minimum: the repository (and its type graph) keeps growing. */
 export const VALIDATION_HEAP_HEADROOM = 1.5;
@@ -57,18 +60,19 @@ export const VALIDATION_HEAP_HEADROOM = 1.5;
 export const VALIDATION_OS_RESERVE_MIB = 1024;
 
 /**
- * Memory (GiB) assumed for the Linux general1 compute types, ordered cheapest first.
+ * Memory (GiB) and vCPUs assumed for the Linux general1 compute types, ordered cheapest first.
  *
- * Conservative on purpose: the CodeBuild user guide ("Build environment compute modes and types",
- * read 2026-10-07) lists 4 / 8 / 16 GiB, but the 7.5 failure matches a 3 GiB machine — the typecheck
- * OOM reproduces in a 3 GiB container (Node heap 1584 MiB) and does not in a 4 GiB one (2096 MiB).
- * Until the memory Node actually sees on CodeBuild is measured, each type is taken as 1 GiB less.
+ * Memory is conservative on purpose: the CodeBuild user guide ("Build environment compute modes and
+ * types", read 2026-10-07) lists 4 / 8 / 16 GiB, but the 7.5 failure matches a 3 GiB machine — the
+ * typecheck OOM reproduces in a 3 GiB container and not in a 4 GiB one. Until the memory Node
+ * actually sees on CodeBuild is measured, each type is taken as 1 GiB less. vCPUs are as listed.
  */
-export const CODEBUILD_LINUX_MEMORY_GIB: ReadonlyArray<readonly [string, number]> = Object.freeze([
-  ['BUILD_GENERAL1_SMALL', 3],
-  ['BUILD_GENERAL1_MEDIUM', 7],
-  ['BUILD_GENERAL1_LARGE', 15],
-] as const);
+export const CODEBUILD_LINUX_COMPUTE: ReadonlyArray<{ readonly type: string; readonly memoryGiB: number; readonly vcpus: number }> =
+  Object.freeze([
+    { type: 'BUILD_GENERAL1_SMALL', memoryGiB: 3, vcpus: 2 },
+    { type: 'BUILD_GENERAL1_MEDIUM', memoryGiB: 7, vcpus: 4 },
+    { type: 'BUILD_GENERAL1_LARGE', memoryGiB: 15, vcpus: 8 },
+  ]);
 
 /** Heap given to every Node process of the Validation build. */
 export const VALIDATION_NODE_HEAP_MIB = 3072;
@@ -76,6 +80,6 @@ export const VALIDATION_NODE_HEAP_MIB = 3072;
 /**
  * The one buildspec command that sets the heap. It is a buildspec command (buildspec 0.2 keeps
  * exports across commands and phases), not a project environment variable, so the reviewed project
- * environment-variable allowlist is unchanged and a StartBuild override cannot replace it.
+ * environment-variable allowlist is unchanged and a StartBuild environment override cannot replace it.
  */
 export const VALIDATION_NODE_OPTIONS_COMMAND = `export NODE_OPTIONS=--max-old-space-size=${VALIDATION_NODE_HEAP_MIB}`;

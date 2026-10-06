@@ -69,9 +69,10 @@ import {
 } from '../lib/stacks/dev-deploy-broker-stack';
 import { BROKER_BOOTSTRAP_QUALIFIER } from '../lib/config/broker-bootstrap';
 import {
-  CODEBUILD_LINUX_MEMORY_GIB,
+  CODEBUILD_LINUX_COMPUTE,
   VALIDATION_HEAP_HEADROOM,
-  VALIDATION_MEASURED_REQUIREMENT,
+  VALIDATION_MEASURED_RUNS,
+  VALIDATION_MIN_HEAP_MIB,
   VALIDATION_OS_RESERVE_MIB,
 } from '../lib/config/validation-build-resources';
 import {
@@ -391,22 +392,17 @@ const orderedCommands = (name: string): string[] => {
 const runsNode = (command: string): boolean => /(^|[\s;&|(])(npm|npx|node)(\s|$)/.test(command);
 const HEAP_COMMAND = /^export NODE_OPTIONS=--max-old-space-size=([1-9][0-9]*)$/;
 
-/** Memory (MiB) of a CodeBuild Linux compute type, or undefined if the table does not know it. */
-const computeMemoryMiB = (computeType: unknown): number | undefined => {
-  const row = CODEBUILD_LINUX_MEMORY_GIB.find(([t]) => t === computeType);
-  return row ? row[1] * 1024 : undefined;
-};
+const computeOf = (computeType: unknown) => CODEBUILD_LINUX_COMPUTE.find((c) => c.type === computeType);
 /**
- * Does a build with `heapMiB` per Node process fit in `memoryMiB`? Worst case: the largest
- * process of the heaviest measured stage grows to its heap cap while the rest of that tree stays as
- * measured, and the OS / agent keep their reserve.
+ * Does a build with `heapMiB` per Node process fit the compute type? Only a measured replay on the
+ * same number of vCPUs counts (no measurement = not known to fit): its anon peak, plus the extra
+ * heap if the configured heap is larger than the measured one, plus the OS reserve, must fit memory.
  */
-const fits = (memoryMiB: number, heapMiB: number): boolean =>
-  VALIDATION_MEASURED_REQUIREMENT.treePeakRssMiB -
-    VALIDATION_MEASURED_REQUIREMENT.largestProcessRssMiB +
-    Math.max(heapMiB, VALIDATION_MEASURED_REQUIREMENT.largestProcessRssMiB) +
-    VALIDATION_OS_RESERVE_MIB <=
-  memoryMiB;
+const fits = (c: (typeof CODEBUILD_LINUX_COMPUTE)[number], heapMiB: number): boolean => {
+  const run = VALIDATION_MEASURED_RUNS.find((r) => r.vcpus === c.vcpus);
+  if (!run) return false;
+  return run.anonPeakMiB + Math.max(0, heapMiB - run.heapMiB) + VALIDATION_OS_RESERVE_MIB <= c.memoryGiB * 1024;
+};
 
 /** The single heap the Validation buildspec gives Node, or a reason why there is not exactly one. */
 const validationHeap = (): { heapMiB: number; index: number } => {
@@ -422,15 +418,17 @@ const validationHeap = (): { heapMiB: number; index: number } => {
 };
 
 describe('dev deploy broker invariants: validation build memory (7.5 OOM, 2026-10-06)', () => {
-  it('the measured requirement is self-consistent (guards the inputs of the checks below)', () => {
-    const r = VALIDATION_MEASURED_REQUIREMENT;
-    expect(r.minHeapMiB).toBeGreaterThan(0);
-    expect(r.largestProcessRssMiB).toBeLessThanOrEqual(r.treePeakRssMiB);
+  it('the measurements are self-consistent (guards the inputs of the checks below)', () => {
     // Node's default heap on a 3 GiB machine (1584 MiB, measured; what SMALL behaved like in 7.5) is
     // below the requirement: that is the failure being fixed. If this stops holding, re-measure.
-    expect(r.minHeapMiB).toBeGreaterThan(1584);
-    const memories = CODEBUILD_LINUX_MEMORY_GIB.map(([, gib]) => gib);
-    expect([...memories].sort((a, b) => a - b)).toEqual(memories);
+    expect(VALIDATION_MIN_HEAP_MIB).toBeGreaterThan(1584);
+    for (const run of VALIDATION_MEASURED_RUNS) {
+      // A replay that ran with less heap than the minimum could not have passed: a typo, not data.
+      expect(run.heapMiB).toBeGreaterThanOrEqual(VALIDATION_MIN_HEAP_MIB);
+      expect(run.anonPeakMiB).toBeGreaterThan(0);
+    }
+    const memories = CODEBUILD_LINUX_COMPUTE.map((c) => c.memoryGiB);
+    expect([...memories].sort((x, y) => x - y)).toEqual(memories);
   });
 
   it('gives every Node process an explicit heap, set once before the first npm / node command', () => {
@@ -442,24 +440,26 @@ describe('dev deploy broker invariants: validation build memory (7.5 OOM, 2026-1
 
   it('the heap covers the measured minimum with head-room', () => {
     const { heapMiB } = validationHeap();
-    expect(heapMiB).toBeGreaterThanOrEqual(
-      Math.ceil(VALIDATION_MEASURED_REQUIREMENT.minHeapMiB * VALIDATION_HEAP_HEADROOM),
-    );
+    expect(heapMiB).toBeGreaterThanOrEqual(Math.ceil(VALIDATION_MIN_HEAP_MIB * VALIDATION_HEAP_HEADROOM));
   });
 
-  it('the compute type has room for the heaviest stage with that heap (else the kernel kills it)', () => {
-    const env = project(VALIDATION_PROJECT).Environment as Json;
-    const memory = computeMemoryMiB(env.ComputeType);
-    expect(memory, `unknown compute type ${String(env.ComputeType)}`).toBeDefined();
-    expect(fits(memory!, validationHeap().heapMiB)).toBe(true);
+  it('the heap is at most half of the machine (the ratio Node itself uses), so two processes at their cap still fit', () => {
+    const c = computeOf((project(VALIDATION_PROJECT).Environment as Json).ComputeType);
+    expect(c, 'known compute type').toBeDefined();
+    expect(validationHeap().heapMiB).toBeLessThanOrEqual((c!.memoryGiB * 1024) / 2);
+  });
+
+  it('the compute type has room for the heaviest measured stage with that heap (else the kernel kills it)', () => {
+    const c = computeOf((project(VALIDATION_PROJECT).Environment as Json).ComputeType);
+    expect(c, 'known compute type').toBeDefined();
+    expect(fits(c!, validationHeap().heapMiB)).toBe(true);
   });
 
   it('the compute type is the cheapest one that fits (cost: no over-provisioning)', () => {
-    const env = project(VALIDATION_PROJECT).Environment as Json;
     const { heapMiB } = validationHeap();
-    const cheapest = CODEBUILD_LINUX_MEMORY_GIB.find(([, gib]) => fits(gib * 1024, heapMiB));
+    const cheapest = CODEBUILD_LINUX_COMPUTE.find((c) => fits(c, heapMiB));
     expect(cheapest, 'some listed compute type must fit').toBeDefined();
-    expect(env.ComputeType).toBe(cheapest![0]);
+    expect((project(VALIDATION_PROJECT).Environment as Json).ComputeType).toBe(cheapest!.type);
   });
 
   it('NODE_OPTIONS reaches the build only through that buildspec command (not project / action env)', () => {
