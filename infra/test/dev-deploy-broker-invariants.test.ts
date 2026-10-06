@@ -69,6 +69,12 @@ import {
 } from '../lib/stacks/dev-deploy-broker-stack';
 import { BROKER_BOOTSTRAP_QUALIFIER } from '../lib/config/broker-bootstrap';
 import {
+  CODEBUILD_LINUX_MEMORY_GIB,
+  VALIDATION_HEAP_HEADROOM,
+  VALIDATION_MEASURED_REQUIREMENT,
+  VALIDATION_OS_RESERVE_MIB,
+} from '../lib/config/validation-build-resources';
+import {
   DYNAMODB_TABLE_RESOURCE_POLICY_ACTIONS,
   DYNAMODB_TABLE_RESOURCE_POLICY_REJECTED,
 } from '../lib/config/dynamodb-resource-policy-actions';
@@ -376,6 +382,101 @@ describe('dev deploy broker invariants: build environment allowlist', () => {
   });
 });
 
+/** Commands of a buildspec in execution order (CodeBuild runs the phases in this order). */
+const PHASE_ORDER = ['install', 'pre_build', 'build', 'post_build'] as const;
+const orderedCommands = (name: string): string[] => {
+  const phases = buildSpec(name).phases as Record<string, { commands?: string[] } | undefined>;
+  return PHASE_ORDER.flatMap((p) => phases[p]?.commands ?? []);
+};
+const runsNode = (command: string): boolean => /(^|[\s;&|(])(npm|npx|node)(\s|$)/.test(command);
+const HEAP_COMMAND = /^export NODE_OPTIONS=--max-old-space-size=([1-9][0-9]*)$/;
+
+/** Memory (MiB) of a CodeBuild Linux compute type, or undefined if the table does not know it. */
+const computeMemoryMiB = (computeType: unknown): number | undefined => {
+  const row = CODEBUILD_LINUX_MEMORY_GIB.find(([t]) => t === computeType);
+  return row ? row[1] * 1024 : undefined;
+};
+/**
+ * Does a build with `heapMiB` per Node process fit in `memoryMiB`? Worst case: the largest
+ * process of the heaviest measured stage grows to its heap cap while the rest of that tree stays as
+ * measured, and the OS / agent keep their reserve.
+ */
+const fits = (memoryMiB: number, heapMiB: number): boolean =>
+  VALIDATION_MEASURED_REQUIREMENT.treePeakRssMiB -
+    VALIDATION_MEASURED_REQUIREMENT.largestProcessRssMiB +
+    Math.max(heapMiB, VALIDATION_MEASURED_REQUIREMENT.largestProcessRssMiB) +
+    VALIDATION_OS_RESERVE_MIB <=
+  memoryMiB;
+
+/** The single heap the Validation buildspec gives Node, or a reason why there is not exactly one. */
+const validationHeap = (): { heapMiB: number; index: number } => {
+  const commands = orderedCommands(VALIDATION_PROJECT);
+  const mentions = commands
+    .map((c, i) => [c, i] as const)
+    .filter(([c]) => c.includes('NODE_OPTIONS') || c.includes('max-old-space-size'));
+  expect(mentions.map(([c]) => c), 'exactly one command may touch NODE_OPTIONS / the heap').toHaveLength(1);
+  const [command, index] = mentions[0]!;
+  const m = HEAP_COMMAND.exec(command);
+  expect(m, `${command} must only set --max-old-space-size (no other Node flags)`).not.toBeNull();
+  return { heapMiB: Number(m![1]), index };
+};
+
+describe('dev deploy broker invariants: validation build memory (7.5 OOM, 2026-10-06)', () => {
+  it('the measured requirement is self-consistent (guards the inputs of the checks below)', () => {
+    const r = VALIDATION_MEASURED_REQUIREMENT;
+    expect(r.minHeapMiB).toBeGreaterThan(0);
+    expect(r.largestProcessRssMiB).toBeLessThanOrEqual(r.treePeakRssMiB);
+    // Node's default heap on a 3 GiB machine (1584 MiB, measured; what SMALL behaved like in 7.5) is
+    // below the requirement: that is the failure being fixed. If this stops holding, re-measure.
+    expect(r.minHeapMiB).toBeGreaterThan(1584);
+    const memories = CODEBUILD_LINUX_MEMORY_GIB.map(([, gib]) => gib);
+    expect([...memories].sort((a, b) => a - b)).toEqual(memories);
+  });
+
+  it('gives every Node process an explicit heap, set once before the first npm / node command', () => {
+    const { index } = validationHeap();
+    const firstNode = orderedCommands(VALIDATION_PROJECT).findIndex(runsNode);
+    expect(firstNode, 'the validation buildspec runs npm').toBeGreaterThanOrEqual(0);
+    expect(index).toBeLessThan(firstNode);
+  });
+
+  it('the heap covers the measured minimum with head-room', () => {
+    const { heapMiB } = validationHeap();
+    expect(heapMiB).toBeGreaterThanOrEqual(
+      Math.ceil(VALIDATION_MEASURED_REQUIREMENT.minHeapMiB * VALIDATION_HEAP_HEADROOM),
+    );
+  });
+
+  it('the compute type has room for the heaviest stage with that heap (else the kernel kills it)', () => {
+    const env = project(VALIDATION_PROJECT).Environment as Json;
+    const memory = computeMemoryMiB(env.ComputeType);
+    expect(memory, `unknown compute type ${String(env.ComputeType)}`).toBeDefined();
+    expect(fits(memory!, validationHeap().heapMiB)).toBe(true);
+  });
+
+  it('the compute type is the cheapest one that fits (cost: no over-provisioning)', () => {
+    const env = project(VALIDATION_PROJECT).Environment as Json;
+    const { heapMiB } = validationHeap();
+    const cheapest = CODEBUILD_LINUX_MEMORY_GIB.find(([, gib]) => fits(gib * 1024, heapMiB));
+    expect(cheapest, 'some listed compute type must fit').toBeDefined();
+    expect(env.ComputeType).toBe(cheapest![0]);
+  });
+
+  it('NODE_OPTIONS reaches the build only through that buildspec command (not project / action env)', () => {
+    expect(projectEnvNames(VALIDATION_PROJECT)).not.toContain('NODE_OPTIONS');
+    const actionEnv = JSON.stringify(pipelineResource().Properties.Stages ?? []);
+    expect(actionEnv).not.toContain('NODE_OPTIONS');
+  });
+
+  it('the trusted broker build is untouched: no NODE_OPTIONS / heap flags, still SMALL', () => {
+    for (const c of allCommands(BROKER_PROJECT)) {
+      expect(c.includes('NODE_OPTIONS') || c.includes('max-old-space-size'), c).toBe(false);
+    }
+    expect(projectEnvNames(BROKER_PROJECT)).not.toContain('NODE_OPTIONS');
+    expect((project(BROKER_PROJECT).Environment as Json).ComputeType).toBe('BUILD_GENERAL1_SMALL');
+  });
+});
+
 describe('dev deploy broker invariants: validation role (candidate code executes here)', () => {
   it('holds no AssumeRole / PassRole / CloudFormation / connection-token / secret authority', () => {
     const actions = allowedActions(VALIDATION_ROLE);
@@ -409,7 +510,6 @@ describe('dev deploy broker invariants: validation role (candidate code executes
     expect(p.QueuedTimeoutInMinutes).toBe(5);
     const env = p.Environment as Json;
     expect(env.PrivilegedMode).toBe(false);
-    expect(env.ComputeType).toBe('BUILD_GENERAL1_SMALL');
   });
 
   it('synthesizes only the three reviewed -dev stacks with env=dev', () => {

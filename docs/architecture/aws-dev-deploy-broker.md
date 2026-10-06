@@ -512,7 +512,7 @@ Not done yet (arming work, Human Gate):
 
 ## Cost / frequency
 
-The pipeline uses CodePipeline V1 and two `BUILD_GENERAL1_SMALL` CodeBuild projects, both with concurrency 1. The `dev-deploy` branch is a **promotion branch**, not a normal development branch. Normal pushes do not update it, so they do not start this pipeline.
+The pipeline uses CodePipeline V1 and two CodeBuild projects, both with concurrency 1: the trusted broker on `BUILD_GENERAL1_SMALL`, and the candidate Validation on `BUILD_GENERAL1_MEDIUM` with `NODE_OPTIONS=--max-old-space-size=3072` set by its buildspec. Validation was SMALL until the first unarmed run (runbook 7.5, 2026-10-06), where `npm run typecheck` ran out of Node heap; the measurement and the reason SMALL cannot fit `build:open-next` even with a larger heap are in `infra/lib/config/validation-build-resources.ts`, and the choice is pinned as an invariant (cheapest compute type that fits the measured build), not as a literal. MEDIUM costs twice SMALL per build minute; promotions are rare (sparse), so the absolute increase is small, but it is a recurring cost that the owner approves. The `dev-deploy` branch is a **promotion branch**, not a normal development branch. Normal pushes do not update it, so they do not start this pipeline.
 
 Two access profiles (Foundation S6 / S6c, owner decision D-5 of 2026-10-03), both counting every attempt that reaches the mutation boundary, whether it succeeds or fails, per accounting day (Asia/Tokyo):
 
