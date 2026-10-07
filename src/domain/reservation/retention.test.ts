@@ -84,6 +84,11 @@ describe('reservation retention (#1022)', () => {
     expect(isReservationRetainedAt(r, new Date(base + 61 * DAY + DAY - 1))).toBe(true);
   });
 
+  it('既定の保持日数は 30 日', () => {
+    // 作成リクエストで省略したときの既定も同じ定数（request.test.ts が縛る）。
+    expect(DEFAULT_RESERVATION_RETENTION_DAYS).toBe(30);
+  });
+
   it('retentionDays が欠落・不正な旧レコードは既定日数で判定する', () => {
     const end = base - 2 * DAY;
     for (const bad of [undefined, 0, -1, 1.5, Number.NaN, '30']) {

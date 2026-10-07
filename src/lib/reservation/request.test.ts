@@ -7,7 +7,8 @@ import {
   type VisitReservation,
 } from '@/domain/reservation/types';
 import { hashReservationToken } from '@/domain/reservation/token';
-import { serviceResponse, toReservationView } from './request';
+import { parseCreateBody, serviceResponse, toReservationView } from './request';
+import { DEFAULT_RESERVATION_RETENTION_DAYS } from '@/domain/reservation/retention';
 import type { ServiceResult } from './service';
 
 /**
@@ -106,5 +107,25 @@ describe('serviceResponse transform (#375 I1)', () => {
     const body = await bodyOf(res);
     expect(body.tokenHash).toBeUndefined();
     expect(body.error).toBe('not_found');
+  });
+});
+
+describe('parseCreateBody の保持日数の既定 (#1022)', () => {
+  /**
+   * 旧レコード（retentionDays 欠落）の読み取り側の既定と、新規作成で省略したときの既定が
+   * 食い違うと、同じ「省略」が経路によって別の期限になる。両者は同じ定数を使う。
+   */
+  it('retentionDays を省略すると、保存期間判定の既定と同じ 30 日になる', () => {
+    const parsed = parseCreateBody(
+      {
+        visitorName: 'TEST-来客',
+        visitAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        targetId: 'staff-1',
+      },
+      asTenantId('t'),
+      asSiteId('s'),
+    );
+    expect(parsed.ok && parsed.value.retentionDays).toBe(30);
+    expect(parsed.ok && parsed.value.retentionDays).toBe(DEFAULT_RESERVATION_RETENTION_DAYS);
   });
 });
