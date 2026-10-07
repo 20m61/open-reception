@@ -14,8 +14,9 @@
  *
  * 端末・受付は実ストア（memory backend）、トークンは実署名（有効期限は `Date.now()` 起点）。
  */
-import { readdirSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
+import ts from 'typescript';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { asDeviceId, asSiteId, asTenantId } from '@/domain/tenant/types';
 import type { ReceptionState } from '@/domain/reception/state';
@@ -47,6 +48,87 @@ const hangUpIfRinging = vi.fn();
 vi.mock('@/lib/routing/hang-up', () => ({
   hangUpIfRinging: (...a: unknown[]) => hangUpIfRinging(...a),
 }));
+// 以下は実装を通したまま引数だけ記録する（取次・発信の実挙動は memory backend の既定 = mock）。
+const executeRoutedCall = vi.hoisted(() => vi.fn());
+vi.mock('@/lib/routing/call-execution', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/routing/call-execution')>();
+  executeRoutedCall.mockImplementation(actual.executeRoutedCall);
+  return { ...actual, executeRoutedCall: (...a: unknown[]) => executeRoutedCall(...a) };
+});
+const intendsRealDialing = vi.hoisted(() => vi.fn());
+vi.mock('@/lib/platform/provider-resolution', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/platform/provider-resolution')>();
+  intendsRealDialing.mockImplementation(actual.intendsRealDialing);
+  return { ...actual, intendsRealDialing: (...a: unknown[]) => intendsRealDialing(...a) };
+});
+const startCall = vi.hoisted(() => vi.fn());
+vi.mock('@/lib/data-stores/reception-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/data-stores/reception-store')>();
+  startCall.mockImplementation(actual.startCall);
+  return { ...actual, startCall: (...a: unknown[]) => startCall(...a) };
+});
+
+type Scope = { tenantId?: unknown; siteId?: unknown };
+/**
+ * セッションのスコープを受け取る関数と、その呼び出し引数からスコープを取り出す方法。
+ * どの関数がここに要るかは下の「呼び出しグラフ」テストが route のソースから機械的に決める
+ * （ここへ載っていない関数にセッションのスコープを渡す route があれば落ちる）。
+ */
+const SCOPE_CONSUMERS: Record<string, { spy: ReturnType<typeof vi.fn>; scope: (a: unknown[]) => Scope }> = {
+  evaluateCallGuard: { spy: evaluateCallGuard, scope: (a) => ({ tenantId: a[0], siteId: a[1] }) },
+  intendsRealDialing: { spy: intendsRealDialing, scope: (a) => ({ tenantId: a[0] }) },
+  executeRoutedCall: {
+    spy: executeRoutedCall,
+    scope: (a) => {
+      const s = a[0] as Scope;
+      return { tenantId: s.tenantId, siteId: s.siteId };
+    },
+  },
+  startCall: { spy: startCall, scope: (a) => ({ tenantId: a[2] }) },
+  hangUpIfRinging: { spy: hangUpIfRinging, scope: (a) => ({ tenantId: a[0] }) },
+};
+/** 値の変換・ログだけでスコープを外へ渡さない呼び出し。 */
+const PURE_CALLEES = new Set(['String', 'JSON.stringify', 'console.error', 'console.warn', 'console.info']);
+
+/**
+ * route のソースから、**セッション由来の値（`.session` / `scope`）を引数に含む呼び出し**の
+ * callee を全部取り出す。入れ子は外側も内側も数える（`f(String(scope.tenantId))` は f と String）。
+ */
+function scopeConsumersOf(route: string): Set<string> {
+  const file = path.join(ID_ROOT, route, 'route.ts');
+  const sf = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
+  const derived = new Set<string>(['scope']);
+  const found = new Set<string>();
+  // throughCalls=false: 呼び出しの戻り値はセッションのスコープそのものではないので追わない
+  // （`const guard = await evaluateCallGuard(scope...)` の guard はスコープではない）。
+  const mentionsSession = (node: ts.Node, throughCalls = true): boolean => {
+    let hit = false;
+    const visit = (n: ts.Node) => {
+      if (!throughCalls && ts.isCallExpression(n)) return;
+      if (ts.isPropertyAccessExpression(n) && n.name.text === 'session') hit = true;
+      if (ts.isIdentifier(n) && derived.has(n.text) && !ts.isPropertyAccessExpression(n.parent)) hit = true;
+      if (ts.isPropertyAccessExpression(n) && ts.isIdentifier(n.expression) && derived.has(n.expression.text)) {
+        hit = true;
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(node);
+    return hit;
+  };
+  const walk = (n: ts.Node) => {
+    // セッション由来の値を束縛した変数も追う（`const scope = {...owned.session...}` 等）。
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer && mentionsSession(n.initializer, false)) {
+      derived.add(n.name.text);
+    }
+    if (ts.isCallExpression(n) && n.arguments.some((a) => mentionsSession(a))) {
+      found.add(n.expression.getText(sf));
+    }
+    ts.forEachChild(n, walk);
+  };
+  walk(sf);
+  for (const p of PURE_CALLEES) found.delete(p);
+  return found;
+}
 
 /** 状態遷移 route と、作成端末が遷移に成功できる開始状態。 */
 const TRANSITIONS: Record<string, ReceptionState> = {
@@ -119,7 +201,9 @@ async function post(route: string, id: string): Promise<Response> {
 }
 
 beforeEach(async () => {
-  vi.clearAllMocks();
+  for (const c of [evaluateCallGuard, hangUpIfRinging, executeRoutedCall, intendsRealDialing, startCall]) {
+    c.mockClear();
+  }
   evaluateCallGuard.mockResolvedValue({ allowed: true });
   hangUpIfRinging.mockResolvedValue({ kind: 'terminated' });
   await __resetTenantStore();
@@ -153,10 +237,13 @@ describe.each(Object.entries(TRANSITIONS))('POST receptions/[id]/%s', (route, st
     const missing = await post(route, 'TEST-missing-reception');
 
     expect(res.status).toBe(404);
+    expect(missing.status).toBe(404);
+    expect([...res.headers]).toEqual([...missing.headers]);
     expect(await res.json()).toEqual(await missing.json());
     expect(await getReception(id)).toEqual(before);
-    expect(evaluateCallGuard).not.toHaveBeenCalled();
-    expect(hangUpIfRinging).not.toHaveBeenCalled();
+    for (const [name, c] of Object.entries(SCOPE_CONSUMERS)) {
+      expect(c.spy, `${name} に到達した`).not.toHaveBeenCalled();
+    }
   });
 
   it('作成端末のセッションなら遷移し、セッションのスコープで判定・切断する', async () => {
@@ -169,11 +256,43 @@ describe.each(Object.entries(TRANSITIONS))('POST receptions/[id]/%s', (route, st
     expect(res.status).toBeLessThan(300);
     const after = await getReception(id);
     expect(after.ok && after.value.state).not.toBe(startState);
-    for (const [tenantId, siteId] of evaluateCallGuard.mock.calls) {
-      expect([tenantId, siteId]).toEqual([OWNER.tenantId, OWNER.siteId]);
+    // 呼び出しグラフから導いた「セッションのスコープを受け取る関数」は全部呼ばれ、
+    // 全部がセッションのテナント/拠点を受け取る（既定スコープではない）。
+    for (const name of scopeConsumersOf(route)) {
+      const c = SCOPE_CONSUMERS[name]!;
+      expect(c.spy, `${name} が呼ばれていない`).toHaveBeenCalled();
+      for (const args of c.spy.mock.calls) {
+        const got = c.scope(args);
+        expect(String(got.tenantId), `${name} の tenant`).toBe(OWNER.tenantId);
+        if ('siteId' in got) expect(String(got.siteId), `${name} の site`).toBe(OWNER.siteId);
+      }
     }
-    for (const [tenantId] of hangUpIfRinging.mock.calls) expect(tenantId).toBe(OWNER.tenantId);
-    if (route === 'call') expect(evaluateCallGuard).toHaveBeenCalled();
-    if (route === 'cancel' || route === 'give-up') expect(hangUpIfRinging).toHaveBeenCalled();
+    // 切断対象は所有を確かめた受付の通話（取り違えると他人の通話を切る）。
+    for (const args of hangUpIfRinging.mock.calls) expect(args[1]).toBe('TEST-call');
+  });
+});
+
+describe('遷移 route の呼び出しグラフ', () => {
+  it.each(Object.keys(TRANSITIONS))('%s: セッションのスコープを渡す先は全部が縛られている', (route) => {
+    for (const name of scopeConsumersOf(route)) {
+      expect(SCOPE_CONSUMERS, `${route} が ${name} へセッションのスコープを渡すのに縛られていない`).toHaveProperty(
+        [name],
+      );
+    }
+  });
+
+  it('下界: 抽出は call / cancel / give-up のスコープ消費を拾う（抽出が空振りしていない）', () => {
+    expect([...scopeConsumersOf('call')].sort()).toEqual(
+      ['evaluateCallGuard', 'executeRoutedCall', 'intendsRealDialing', 'startCall'].sort(),
+    );
+    expect([...scopeConsumersOf('cancel')]).toEqual(['hangUpIfRinging']);
+    expect([...scopeConsumersOf('give-up')]).toEqual(['hangUpIfRinging']);
+  });
+
+  it('遷移 route は既定スコープを参照しない', () => {
+    for (const route of Object.keys(TRANSITIONS)) {
+      const src = readFileSync(path.join(ID_ROOT, route, 'route.ts'), 'utf8');
+      expect(src, route).not.toMatch(/resolveDefaultScope|DEFAULT_TENANT_ID|DEFAULT_SITE_ID|default-scope/);
+    }
   });
 });

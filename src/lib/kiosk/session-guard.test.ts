@@ -12,7 +12,11 @@ import { asDeviceId, asSiteId, asTenantId, type Device } from '@/domain/tenant/t
 import { issueKioskSession } from '@/lib/auth/kiosk';
 import { getTenantStore, __resetTenantStore } from '@/lib/tenant/store';
 import { getKioskRepository, __resetKiosks } from '@/lib/kiosk/kiosk-store';
-import { __resetStore, createReception } from '@/lib/data-stores/reception-store';
+import {
+  __resetStore,
+  createReception,
+  getReceptionSessionRepository,
+} from '@/lib/data-stores/reception-store';
 import { DEFAULT_SITE_ID, DEFAULT_TENANT_ID } from '@/lib/tenant/default-scope';
 import { requireOwnedReception, resolveKioskSessionToken } from './session-guard';
 
@@ -67,6 +71,17 @@ describe('resolveKioskSessionToken', () => {
 
   it('台帳に居ない端末の署名済みトークンは拒否する（既定スコープへ写像しない）', async () => {
     expect(await resolveKioskSessionToken(await issueKioskSession('TEST-unknown'))).toBeNull();
+  });
+
+  it('台帳に居ない端末は、旧レジストリで有効でも拒否する（旧レジストリから既定スコープを補わない）', async () => {
+    // 旧レジストリにだけ居る端末は heartbeat の取り込みで台帳へ載ってから通る。ここで旧レジストリの
+    // enabled を根拠に通すと、スコープを台帳以外（既定テナント/サイト）から作ることになる。
+    await getKioskRepository().putKiosk({ id: 'TEST-legacy-only', displayName: 'x', enabled: true });
+    expect(await resolveKioskSessionToken(await issueKioskSession('TEST-legacy-only'))).toBeNull();
+    cookieValue = await issueKioskSession('TEST-legacy-only');
+    const owned = await requireOwnedReception('TEST-missing');
+    expect(owned.ok).toBe(false);
+    if (!owned.ok) expect(owned.response.status).toBe(403);
   });
 
   it('旧レジストリで無効化された端末は、台帳が active のままでも拒否する', async () => {
@@ -139,6 +154,18 @@ describe('requireOwnedReception', () => {
       expect(foreign.response.status).toBe(404);
       expect(await foreign.response.json()).toEqual(await missing.response.json());
     }
+  });
+
+  it('セッションが無効なら、存在しない受付にも 403（受付の有無より先にセッションで止める）', async () => {
+    const getReception = vi.spyOn(getReceptionSessionRepository(), 'get');
+    await putDevice('TEST-revoked', 'revoked');
+    for (const cookie of [undefined, 'not-a-token', await issueKioskSession('TEST-revoked')]) {
+      cookieValue = cookie;
+      const owned = await requireOwnedReception('TEST-missing');
+      expect(owned.ok).toBe(false);
+      if (!owned.ok) expect(owned.response.status).toBe(403);
+    }
+    expect(getReception).not.toHaveBeenCalled();
   });
 
   it('失効端末のセッションは自分の受付でも 403', async () => {

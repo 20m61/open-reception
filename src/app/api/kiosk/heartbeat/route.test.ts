@@ -20,14 +20,15 @@ const adoptKiosk = vi.fn();
 const cookieGet = vi.fn(() => ({ value: 'kiosk-cookie' }));
 const resolveDeviceBinding = vi.fn();
 const recordDeploymentReport = vi.fn();
+const legacyGetKiosk = vi.fn();
 const SCOPE = { tenantId: 'internal', siteId: 'default-site' };
 
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: cookieGet }) }));
 vi.mock('@/lib/kiosk/kiosk-store', () => ({
   getKioskConfig: (...a: unknown[]) => getKioskConfig(...a),
   getKiosk: (...a: unknown[]) => getKiosk(...a),
-  // 共通ガード（`authorized` の判定）が旧レジストリの失効を見る。ここでは旧レジストリに居ない端末。
-  getKioskRepository: () => ({ getKiosk: async () => null }),
+  // 共通ガード（`authorized` の判定）が旧レジストリの失効を見る。既定は旧レジストリに居ない端末。
+  getKioskRepository: () => ({ getKiosk: (...a: unknown[]) => legacyGetKiosk(...a) }),
 }));
 vi.mock('@/lib/tenant/default-scope', () => ({
   resolveDefaultScope: () => SCOPE,
@@ -81,6 +82,7 @@ beforeEach(() => {
     kioskId: 'kiosk-dev',
   });
   recordDeploymentReport.mockResolvedValue(undefined);
+  legacyGetKiosk.mockResolvedValue(null);
 });
 
 describe('GET /api/kiosk/heartbeat 構成の反映報告 (#420 Inc3)', () => {
@@ -285,6 +287,21 @@ describe('端末 ID はセッションが権威 (#419 kiosk-dev 除去)', () => 
     });
 
     expect(await (await call('kiosk-dev')).json()).toMatchObject({ active: true });
+  });
+
+  it('旧レジストリで無効化された端末は、台帳が active でも authorized:false（判定は共通ガード）', async () => {
+    readKioskSession.mockResolvedValue({ kioskId: 'device-uuid' });
+    resolveDeviceBinding.mockResolvedValue({
+      tenantId: 'internal',
+      siteId: 'default-site',
+      kioskId: 'device-uuid',
+    });
+    legacyGetKiosk.mockResolvedValue({ id: 'device-uuid', displayName: 'x', enabled: false });
+
+    expect(await (await call('kiosk-dev')).json()).toMatchObject({ authorized: false });
+    // 下界: 旧レジストリで有効なら同じ端末は authorized:true（全部を false にする実装と区別する）。
+    legacyGetKiosk.mockResolvedValue({ id: 'device-uuid', displayName: 'x', enabled: true });
+    expect(await (await call('kiosk-dev')).json()).toMatchObject({ authorized: true });
   });
 
   it('失効した端末は active:false（個別の失効が実端末に効く, #30）', async () => {
