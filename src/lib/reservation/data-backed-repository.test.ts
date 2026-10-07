@@ -18,7 +18,11 @@ import { getBackend } from '@/lib/data';
 import type { DataBackend } from '@/lib/data/backend';
 import { MemoryBackend } from '@/lib/data/memory';
 import { makeDynamoBackend } from '@/lib/data/fake-dynamo';
-import { DataBackedReservationRepository, RESERVATION_COLLECTION } from './data-backed-repository';
+import {
+  DataBackedReservationRepository,
+  RESERVATION_COLLECTION,
+  ReservationRetentionUncomputableError,
+} from './data-backed-repository';
 
 const TOKEN = asReservationToken('TEST-reservation-token');
 const TOKEN_HASH = hashReservationToken(TOKEN);
@@ -304,4 +308,66 @@ describe.each(BACKENDS)('DataBackedReservationRepository の保存期間 (#1022)
     expect(await repo.get(T_A, S_1, live.id)).toEqual(live);
     expect(await readable(repo, old)).toEqual(NONE);
   });
+
+  /**
+   * N1: 期限を計算できない予約（巨大・非有限・非整数の retentionDays、解釈できない日付）は
+   * 書き込みを拒否し、検証を経ずに保存されていたとしても**どの読み取り経路からも返さない**。
+   */
+  const uncomputable: [string, Partial<VisitReservation>][] = [
+    ['retentionDays=1e308', { retentionDays: 1e308 }],
+    ['retentionDays=Infinity', { retentionDays: Number.POSITIVE_INFINITY }],
+    ['retentionDays=NaN', { retentionDays: Number.NaN }],
+    ['retentionDays=2^53', { retentionDays: 2 ** 53 }],
+    ['retentionDays=1.5', { retentionDays: 1.5 }],
+    ['retentionDays=0', { retentionDays: 0 }],
+    ['visitAt 不正', { visitAt: 'not-a-date' }],
+    ['expiresAt 不正', { expiresAt: '' }],
+  ];
+
+  it('🔴 期限を計算できない予約は create で書かずに投げる（何も保存されない）', async () => {
+    for (const [label, over] of uncomputable) {
+      const { backend, raw } = make();
+      const repo = new DataBackedReservationRepository({ backend });
+      const r = res({ id: asReservationId(`rsv-bad-${label}`), ...over });
+      await expect(repo.create(r), label).rejects.toBeInstanceOf(ReservationRetentionUncomputableError);
+      expect(await raw(r.id), label).toBeUndefined();
+    }
+  });
+
+  it('🔴 期限を計算できない予約は put で書かずに投げる（既存レコードは変わらない）', async () => {
+    for (const [label, over] of uncomputable) {
+      const { backend, raw } = make();
+      const repo = new DataBackedReservationRepository({ backend });
+      const r = res();
+      await repo.create(r);
+      const before = await raw(r.id);
+      await expect(repo.put({ ...r, ...over }), label).rejects.toBeInstanceOf(
+        ReservationRetentionUncomputableError,
+      );
+      expect(await raw(r.id), label).toEqual(before);
+      // 下界: 正常な put は通る（拒否が全件拒否で空虚に満たされていない）。
+      await expect(repo.put({ ...r, note: 'ok' })).resolves.toBeUndefined();
+    }
+  });
+
+  it('🔴 検証を経ずに保存された期限計算不能レコードは、どの時刻でもどの読み取り経路からも返さない', async () => {
+    for (const [label, over] of uncomputable) {
+      const { backend } = make();
+      const rawCol = backend().collection<Record<string, unknown> & { id: string }>(
+        RESERVATION_COLLECTION,
+        { indexedField: 'scopedTokenHash' },
+      );
+      const r = res({ id: asReservationId('rsv-bypass'), ...over });
+      await rawCol.put({ ...r, scopedTokenHash: `${r.tenantId}#${r.siteId}#${r.tokenHash}` });
+      for (const t of [-400 * DAY, 0, 2 * DAY, 400 * DAY]) {
+        const repo = new DataBackedReservationRepository({ backend, now: () => new Date(Date.now() + t) });
+        expect(await readable(repo, r), `${label} @${t}`).toEqual(NONE);
+      }
+      // 対照: 同じ保存形で期限を計算できる値なら引ける（索引キーの組み立てを誤って NONE になっていない）。
+      const ok = res({ id: asReservationId('rsv-bypass') });
+      await rawCol.put({ ...ok, scopedTokenHash: `${ok.tenantId}#${ok.siteId}#${ok.tokenHash}` });
+      expect(await readable(new DataBackedReservationRepository({ backend }), ok), label).toEqual(ALL);
+    }
+  });
 });
+

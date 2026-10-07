@@ -89,28 +89,80 @@ describe('reservation retention (#1022)', () => {
     expect(DEFAULT_RESERVATION_RETENTION_DAYS).toBe(30);
   });
 
-  it('retentionDays が欠落・不正な旧レコードは既定日数で判定する', () => {
+  it('retentionDays を持たない旧レコードは既定日数で判定する', () => {
     const end = base - 2 * DAY;
-    for (const bad of [undefined, 0, -1, 1.5, Number.NaN, '30']) {
-      const r = { visitAt: iso(end), expiresAt: iso(end), retentionDays: bad as unknown as number };
-      expect(
-        isReservationRetainedAt(r, new Date(end + DEFAULT_RESERVATION_RETENTION_DAYS * DAY - 1)),
-        String(bad),
-      ).toBe(true);
-      expect(isReservationRetainedAt(r, new Date(end + DEFAULT_RESERVATION_RETENTION_DAYS * DAY))).toBe(
-        false,
-      );
+    const r = { visitAt: iso(end), expiresAt: iso(end), retentionDays: undefined as unknown as number };
+    expect(isReservationRetainedAt(r, new Date(end + DEFAULT_RESERVATION_RETENTION_DAYS * DAY - 1))).toBe(true);
+    expect(isReservationRetainedAt(r, new Date(end + DEFAULT_RESERVATION_RETENTION_DAYS * DAY))).toBe(false);
+    expect(reservationTtlSeconds(r)).toBe(Math.ceil((end + DEFAULT_RESERVATION_RETENTION_DAYS * DAY) / 1000));
+  });
+
+  /**
+   * N1: 期限を計算できない入力は、**3 関数のどれでも**「保持しない」側に倒れる。
+   * 既定日数（30 日）で補うと入力値より長く保持しうるので、値があって不正なら補わない。
+   * 判定時刻には「既定日数で補ったら保持していた」時刻（来訪の終わりとその直後）を含める。
+   */
+  const UNCOMPUTABLE_DAYS: unknown[] = [
+    0,
+    -1,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    1e308, // 積が +Infinity になる大きさ
+    Number.MAX_VALUE,
+    2 ** 53, // 安全整数の外
+    '30',
+    null,
+  ];
+  const UNPARSABLE_DATES = ['not-a-date', '', 'Invalid Date'];
+
+  it('期限を計算できない入力は保持しない・期限は NaN（±Infinity にならない）・TTL は付かない', () => {
+    const end = base + 10 * DAY;
+    const inputs = [
+      ...UNCOMPUTABLE_DAYS.map((d) => ({ visitAt: iso(end), expiresAt: iso(end), retentionDays: d as number })),
+      ...UNPARSABLE_DATES.flatMap((bad) => [
+        { visitAt: bad, expiresAt: iso(end), retentionDays: 30 },
+        { visitAt: iso(end), expiresAt: bad, retentionDays: 30 },
+      ]),
+    ];
+    for (const r of inputs) {
+      const label = JSON.stringify(r);
+      expect(Number.isNaN(reservationRetentionDeadlineMs(r)), label).toBe(true);
+      for (const t of [base - 400 * DAY, base, end, end + 1]) {
+        expect(isReservationRetainedAt(r, new Date(t)), `${label} @${t}`).toBe(false);
+      }
+      expect(reservationTtlSeconds(r), label).toBeUndefined();
     }
   });
 
-  it('日付を解釈できないレコードは保持しない（PII を残す側へ倒さない）・TTL は付けない', () => {
-    for (const r of [
-      { visitAt: 'not-a-date', expiresAt: iso(base + DAY), retentionDays: 30 },
-      { visitAt: iso(base + DAY), expiresAt: '', retentionDays: 30 },
-    ]) {
-      expect(isReservationRetainedAt(r, new Date(base))).toBe(false);
-      expect(reservationTtlSeconds(r)).toBeUndefined();
-    }
+  it('期限は有限か NaN のどちらか（正の安全整数の最大値でも有限）', () => {
+    const r = { visitAt: iso(base), expiresAt: iso(base), retentionDays: Number.MAX_SAFE_INTEGER };
+    const deadline = reservationRetentionDeadlineMs(r);
+    expect(Number.isFinite(deadline)).toBe(true);
+    expect(isReservationRetainedAt(r, new Date(base))).toBe(true);
+    expect(reservationTtlSeconds(r)).toBe(Math.ceil(deadline / 1000));
+  });
+
+  it('判定時刻が Invalid Date なら保持しない', () => {
+    const r = rec({ visitAt: base + DAY, expiresAt: base + DAY, retentionDays: 30 });
+    expect(isReservationRetainedAt(r, new Date(Number.NaN))).toBe(false);
+  });
+
+  it('保持する ⟹ TTL が付く（読める予約は必ず書き戻せる）', () => {
+    const inputs = [
+      ...cases(base).map(rec),
+      ...UNCOMPUTABLE_DAYS.map((d) => ({ visitAt: iso(base), expiresAt: iso(base), retentionDays: d as number })),
+    ];
+    let retainedCount = 0;
+    for (const r of inputs)
+      for (const t of [base - 400 * DAY, base, base + 400 * DAY])
+        if (isReservationRetainedAt(r, new Date(t))) {
+          retainedCount++;
+          expect(reservationTtlSeconds(r), JSON.stringify(r)).toBeDefined();
+        }
+    // 下界: 前件が空虚にならない（保持するケースが実際にある）。
+    expect(retainedCount).toBeGreaterThan(0);
   });
 
   it('TTL（物理削除）は読み取り側の期限より先に起きず、遅れても 1 秒未満', () => {

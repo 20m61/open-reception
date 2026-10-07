@@ -24,7 +24,8 @@ QR には氏名・会社名・担当者名などの個人情報を**直接埋め
 
 - 境界: `tenantId` / `siteId`（いずれも必須。#80 のブランド付き ID 型に乗せる）。
 - 来訪者情報（PII）: `visitorName`（必須）/ `companyName`（任意）/ `note`（任意・最小限）。
-- 予定: `visitAt`（ISO 8601）。`same_day` 判定の基準。
+- 予定: `visitAt`（ISO 8601）。`same_day` 判定の基準。日時は**オフセット必須**（`Z` / `±hh:mm`）。
+  日付のみ（`YYYY-MM-DD`、UTC と定義される）は可。オフセットの無い日時はローカル TZ で解釈されるので拒否する（`visitAt` / `expiresAt` / 再発行の `expiresAt` 共通）。
 - 呼び出し先: `targetType`（`staff` / `department`）+ `targetId`。
 - トークン: `token` / `usagePolicy` / `expiresAt`。
 - 状態: `status`（後述）/ `usedAt`。
@@ -130,6 +131,13 @@ route（`src/app/api/admin/reservations/**`）は薄く保つ。
   - `ttl` は任意属性。本変更より前の予約は持たないが、読み取り判定は業務フィールドから
     計算するので期限どおりに不可視になる。**既存レコードへの `ttl` の後付け（物理削除）は
     本番データ操作なので範囲外**（owner 判断）。
+  - 入力検証: 作成・編集・再発行の結果、期限がすでに `now` 以前になる入力は `invalid_input`（400）で
+    拒否する（成功した直後に読み取りから外れ、予約が消えたように見えるため）。
+  - 期限を計算できない予約（`retentionDays` が正の安全整数でない／日付を解釈できない）は
+    **保持しない側**に倒す: 読み取りから外し、TTL を付けず、リポジトリは書き込みを拒否する
+    （書けば「読めず物理削除もされない PII」になるため）。`retentionDays` の**欠落**だけは
+    既定 30 日で補う（旧レコード互換）。値があって不正なら補わない（既定は入力より長いことがある）。
+    `retentionDays` の上限（保存期間の値そのもの）は未決のポリシー判断で、この規則とは独立。
 - 監査ログに来訪者 PII を残さない（`docs/audit-logging.md` / `docs/security-checklist.md` V7/V8）。
 - secret（管理セッション）は server-only。client へ流出させない。
 

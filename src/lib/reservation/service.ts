@@ -131,7 +131,7 @@ export class ReservationService {
   ): Promise<ServiceResult<IssuedReservation>> {
     const auth = this.authorize(actor, input.tenantId, input.siteId, 'write');
     if (!auth.ok) return auth;
-    const validated = validateCreateInput(input);
+    const validated = validateCreateInput(input, this.now());
     if (!validated.ok) return fail(validated.error.code, validated.error.message);
 
     const nowIso = this.now().toISOString();

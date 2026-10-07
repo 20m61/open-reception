@@ -34,6 +34,7 @@
  *
  * - **書き込み時**: DynamoDB TTL 属性 `ttl`（epoch 秒）を期限から計算して載せる。編集・再発行で
  *   `visitAt` / `expiresAt` / `retentionDays` が変わっても、`put` のたびに計算し直す。
+ *   期限を計算できない予約は書かずに投げる（`ReservationRetentionUncomputableError`）。
  * - **読み取り時**: 期限を過ぎたレコードは `list` / `get` / `findByTokenHash` のどれからも
  *   返さない。DynamoDB の TTL 削除は遅延する（最大で 48 時間程度）ので、TTL だけでは期限後も
  *   読めてしまう。判定は業務フィールドから毎回計算するので、`ttl` 属性を持たない旧レコードも
@@ -78,13 +79,27 @@ function scopedTokenHash(
   return `${tenantId}#${siteId}#${String(tokenHash)}`;
 }
 
+/**
+ * 期限を計算できない予約は書かない（#1022）。読み取り側はその予約を保持しない（どの経路からも
+ * 返さない）ので、書けば「読めず、TTL も無く、物理削除されない PII」になる。入力検証
+ * （`validateCreateInput` / `applyEdit` / `applyReissue`）が先に弾くので、ここへ来るのは
+ * 検証を経ない書き込みだけ。黙って捨てずに投げる（呼び出し側の欠陥を表に出す）。
+ */
+export class ReservationRetentionUncomputableError extends Error {
+  constructor() {
+    super('reservation retention deadline cannot be computed; refusing to persist');
+    this.name = 'ReservationRetentionUncomputableError';
+  }
+}
+
 function toStored(reservation: VisitReservation): StoredReservation {
   const ttl = reservationTtlSeconds(reservation);
+  if (ttl === undefined) throw new ReservationRetentionUncomputableError();
   return {
     ...reservation,
     id: reservation.id,
     scopedTokenHash: scopedTokenHash(reservation.tenantId, reservation.siteId, reservation.tokenHash),
-    ...(ttl !== undefined ? { ttl } : {}),
+    ttl,
   };
 }
 

@@ -56,9 +56,12 @@ function input(over: Partial<CreateReservationInput> = {}): CreateReservationInp
   };
 }
 
+/** 作成時点。既定の input() は来訪の終わり + 30 日より十分前。 */
+const CREATE_NOW = new Date('2026-06-19T00:00:00.000Z');
+
 describe('validateCreateInput (#97)', () => {
   it('正常入力を受理する', () => {
-    expect(validateCreateInput(input()).ok).toBe(true);
+    expect(validateCreateInput(input(), CREATE_NOW).ok).toBe(true);
   });
   it.each([
     ['visitorName 空', input({ visitorName: ' ' })],
@@ -68,7 +71,7 @@ describe('validateCreateInput (#97)', () => {
     ['retentionDays 0', input({ retentionDays: 0 })],
     ['expiresAt < visitAt', input({ expiresAt: '2026-06-19T00:00:00.000Z' })],
   ])('%s を拒否する', (_label, bad) => {
-    const r = validateCreateInput(bad);
+    const r = validateCreateInput(bad, CREATE_NOW);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe('invalid_input');
   });
@@ -152,4 +155,128 @@ describe('状態遷移 (#97)', () => {
     const r = applyEdit(reservation(), { expiresAt: '2026-06-19T00:00:00.000Z' }, now);
     expect(r.ok).toBe(false);
   });
+});
+
+/**
+ * 保存期限がすでに過ぎる入力の拒否 (#1022 M3) と、期限を計算できない入力の fail-closed (N1)。
+ *
+ * 分岐ごとの期待値ではなく、作成・編集・再発行の 3 経路に同じ不変条件を当てる:
+ *   - 上界: 結果の保存期限（来訪の終わり + retentionDays）が now 以前なら必ず拒否する
+ *   - 下界: 期限が now の**すぐ後**（1ms）なら受理する（全部拒否で空虚に満たさない）
+ */
+describe('保存期限が過去・計算不能になる入力を拒否する (#1022)', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const now = new Date('2026-08-01T00:00:00.000Z');
+  const at = (ms: number) => new Date(ms).toISOString();
+  /** 保存期限が now + delta になる visitAt/expiresAt/retentionDays の組。 */
+  function shape(deltaMs: number, days = 3, gapMs = 0) {
+    const end = now.getTime() + deltaMs - days * DAY;
+    return { visitAt: at(end - gapMs), expiresAt: at(end), retentionDays: days };
+  }
+  const deltas = [-400 * DAY, -DAY, -1, 0, 1, DAY];
+  const gaps = [0, 6 * 60 * 60 * 1000];
+
+  type Path = (f: { visitAt: string; expiresAt: string; retentionDays: number }) =>
+    | { ok: true }
+    | { ok: false; error: { code: string } };
+  const paths: [string, Path][] = [
+    ['create', (f) => validateCreateInput(input(f), now)],
+    [
+      'edit',
+      // 現在の予約は保持中。パッチで期限を動かす。
+      (f) => applyEdit(reservation({ visitAt: at(now.getTime()), expiresAt: at(now.getTime() + DAY) }), f, now),
+    ],
+    [
+      'reissue',
+      // visitAt と retentionDays は既存値、新しい expiresAt で期限が決まる。
+      (f) =>
+        applyReissue(
+          reservation({ status: 'expired', visitAt: f.visitAt, retentionDays: f.retentionDays }),
+          asReservationTokenHash('new'),
+          f.expiresAt,
+          now,
+        ),
+    ],
+  ];
+
+  for (const [name, run] of paths) {
+    it(`${name}: 期限 ≤ now は拒否し、期限 > now は受理する`, () => {
+      for (const d of deltas)
+        for (const g of gaps)
+          for (const days of [1, 30]) {
+            const r = run(shape(d, days, g));
+            expect(r.ok, `${name} delta=${d} gap=${g} days=${days}`).toBe(d > 0);
+            if (!r.ok) expect(r.error.code).toBe('invalid_input');
+          }
+    });
+
+    it(`${name}: 期限を計算できない retentionDays（非有限・巨大・非整数）は拒否する`, () => {
+      for (const bad of [Number.POSITIVE_INFINITY, Number.NaN, 1e308, Number.MAX_VALUE, 2 ** 53, 1.5, -1, 0]) {
+        const f = { ...shape(DAY, 1), retentionDays: bad };
+        expect(run(f).ok, `${name} retentionDays=${bad}`).toBe(false);
+      }
+    });
+  }
+
+  it('edit: retentionDays を縮めて期限が過去になる編集を拒否する（日付を変えない）', () => {
+    const current = reservation({ visitAt: at(now.getTime() - 5 * DAY), expiresAt: at(now.getTime() - 5 * DAY), retentionDays: 30 });
+    expect(applyEdit(current, { retentionDays: 5 }, now).ok).toBe(false);
+    expect(applyEdit(current, { retentionDays: 6 }, now).ok).toBe(true);
+  });
+});
+
+/**
+ * 日時の形 (#1022 N3)。オフセットの無い日時はローカル TZ で解釈されるので受け付けない。
+ * 日付のみは ECMAScript が UTC と定めているので受け付ける。
+ */
+describe('日時はオフセット必須 (#1022 N3)', () => {
+  const accepted = [
+    '2026-06-20T01:00:00.000Z',
+    '2026-06-20T01:00:00Z',
+    '2026-06-20T10:00:00+09:00',
+    '2026-06-20T01:00Z',
+    '2026-06-19T20:00:00.123-05:00',
+    '2026-06-20',
+  ];
+  const rejected = [
+    '2026-06-20T01:00:00', // オフセット無し
+    '2026-06-20T01:00:00.000', // オフセット無し
+    '2026-06-20T01:00', // datetime-local の生値
+    '2026-06-20 01:00:00Z', // 区切りが空白
+    'Sat Jun 20 2026 10:00:00 GMT+0900', // Date.parse は通るが ISO ではない
+    ' 2026-06-20T01:00:00Z', // 前後の空白
+    '2026-13-01T00:00:00Z', // 形は合うが日付として不正
+    '+002026-06-20T01:00:00Z', // 拡張年表記（Date.parse は通る）
+    '',
+  ];
+  type R = { ok: true } | { ok: false; error: { message: string } };
+  const visitPaths: [string, (v: string) => R][] = [
+    ['create visitAt', (v) => validateCreateInput(input({ visitAt: v, expiresAt: '2026-06-27T00:00:00.000Z' }), CREATE_NOW)],
+    ['create expiresAt', (v) => validateCreateInput(input({ visitAt: '2026-06-19T00:00:00.000Z', expiresAt: v }), CREATE_NOW)],
+    ['edit visitAt', (v) => applyEdit(reservation(), { visitAt: v }, CREATE_NOW)],
+    ['edit expiresAt', (v) => applyEdit(reservation({ visitAt: '2026-06-19T00:00:00.000Z' }), { expiresAt: v }, CREATE_NOW)],
+    [
+      'reissue newExpiresAt',
+      (v) =>
+        applyReissue(
+          reservation({ status: 'revoked', visitAt: '2026-06-19T00:00:00.000Z' }),
+          asReservationTokenHash('n'),
+          v,
+          CREATE_NOW,
+        ),
+    ],
+  ];
+  for (const [name, run] of visitPaths) {
+    it(`${name}: オフセット付き日時・日付のみは受理する`, () => {
+      for (const v of accepted) expect(run(v).ok, `${name} ${v}`).toBe(true);
+    });
+    it(`${name}: オフセット無し・ISO 以外の形は「日時の形」として拒否する`, () => {
+      for (const v of rejected) {
+        const r = run(v);
+        expect(r.ok, `${name} ${JSON.stringify(v)}`).toBe(false);
+        // 後段（保存期限の計算不能）に飲み込まれず、形の検証で落ちていること。
+        if (!r.ok) expect(r.error.message, `${name} ${JSON.stringify(v)}`).toMatch(/must be an ISO date/);
+      }
+    });
+  }
 });
