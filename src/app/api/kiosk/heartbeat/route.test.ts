@@ -26,6 +26,8 @@ vi.mock('next/headers', () => ({ cookies: async () => ({ get: cookieGet }) }));
 vi.mock('@/lib/kiosk/kiosk-store', () => ({
   getKioskConfig: (...a: unknown[]) => getKioskConfig(...a),
   getKiosk: (...a: unknown[]) => getKiosk(...a),
+  // 共通ガード（`authorized` の判定）が旧レジストリの失効を見る。ここでは旧レジストリに居ない端末。
+  getKioskRepository: () => ({ getKiosk: async () => null }),
 }));
 vi.mock('@/lib/tenant/default-scope', () => ({
   resolveDefaultScope: () => SCOPE,
