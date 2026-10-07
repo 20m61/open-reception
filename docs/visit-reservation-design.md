@@ -28,7 +28,7 @@ QR には氏名・会社名・担当者名などの個人情報を**直接埋め
 - 呼び出し先: `targetType`（`staff` / `department`）+ `targetId`。
 - トークン: `token` / `usagePolicy` / `expiresAt`。
 - 状態: `status`（後述）/ `usedAt`。
-- 保存期間: `retentionDays`（PII 破棄の根拠。実配線は increment 2）。
+- 保存期間: `retentionDays`（PII 破棄の根拠。起点は**来訪の終わり** = `max(visitAt, expiresAt)`。#1022）。
 
 ### 状態遷移
 
@@ -121,7 +121,15 @@ route（`src/app/api/admin/reservations/**`）は薄く保つ。
 - token は **256bit のランダム値**（`crypto`）。推測・総当り不可。
 - 原則 **1 回利用（single_use）または当日内利用（same_day）**に制限。`expiresAt` も併用。
 - 予約 PII（氏名/会社名/メモ）は**必要最小限**。`retentionDays` で保存期間を持ち、
-  超過分の破棄を increment 2 で配線（バッチ / TTL）。
+  **`max(visitAt, expiresAt) + retentionDays`** を期限として破棄する（#1022。規則は
+  `src/domain/reservation/retention.ts`）。作成・更新日時は起点にしない。
+  - 書き込み時: DynamoDB TTL 属性 `ttl`（epoch 秒・秒へ切り上げ）を期限から計算して載せる。
+    編集・再発行で期限が動けば `put` のたびに計算し直す。テーブルの TTL は `ttl` で有効化済み。
+  - 読み取り時: 期限を過ぎた予約は `list` / `get` / `findByTokenHash` のどれからも返さない
+    （TTL 削除は遅延するため。memory / dynamodb 両 backend で同じ）。
+  - `ttl` は任意属性。本変更より前の予約は持たないが、読み取り判定は業務フィールドから
+    計算するので期限どおりに不可視になる。**既存レコードへの `ttl` の後付け（物理削除）は
+    本番データ操作なので範囲外**（owner 判断）。
 - 監査ログに来訪者 PII を残さない（`docs/audit-logging.md` / `docs/security-checklist.md` V7/V8）。
 - secret（管理セッション）は server-only。client へ流出させない。
 
@@ -186,8 +194,8 @@ SVG 生成の中核（モジュール行列 → `<svg>` 文字列）はライブ
   （`src/app/admin/reservations`・`src/components/admin/ReservationsManager.tsx`：一覧・作成・
   キャンセル・失効・QR 表示/DL/再発行）。受付端末のチェックイン（token 検証 → `markUsed`）は
   別トラック（#98）。
-- **increment 3**: DynamoDB シングルテーブル実装 + `getBackend()` 接続 + 保存期間（retention）
-  に基づく PII 破棄バッチ / TTL。
+- **increment 3**: DynamoDB シングルテーブル実装 + `getBackend()` 接続（#736）+ 保存期間
+  （retention）に基づく PII 破棄 = TTL + 読み取り時の除外（#1022）。既存レコードの backfill は未実施。
 - **後続**: カレンダー連携・退館管理（本 Issue 非スコープ）。
 
 ---
