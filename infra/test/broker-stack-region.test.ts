@@ -26,6 +26,7 @@ const synthBin = (outdir: string, region: string | undefined) => {
     env: env as NodeJS.ProcessEnv,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 200_000,
   });
 };
 
@@ -42,8 +43,10 @@ describe('broker stack region (pinned, fail-closed)', () => {
     expect(brokerStackRegion({ CDK_DEFAULT_REGION: 'ap-northeast-1' })).toBe('ap-northeast-1');
   });
 
-  it.each(['us-east-1', 'ap-northeast-3', ''])('refuses CDK_DEFAULT_REGION=%j instead of overriding it', (region) => {
-    expect(() => brokerStackRegion({ CDK_DEFAULT_REGION: region })).toThrow(/must be synthesized for ap-northeast-1/);
+  it.each(['us-east-1', 'ap-northeast-3', '', 'AP-NORTHEAST-1', ' ap-northeast-1'])('refuses CDK_DEFAULT_REGION=%j instead of overriding it', (region) => {
+    expect(() => brokerStackRegion({ CDK_DEFAULT_REGION: region })).toThrow(
+      /^The dev deploy broker stack must be synthesized for ap-northeast-1, but CDK_DEFAULT_REGION is /,
+    );
   });
 
   it('🔴 the app entry point refuses a us-east-1 synth (the CLI default without a configured region)', () => {
@@ -58,7 +61,7 @@ describe('broker stack region (pinned, fail-closed)', () => {
       }
     }).toThrow();
     expect(stderr).toContain('must be synthesized for ap-northeast-1');
-  });
+  }, 120_000);
 
   it('🔴 the app entry point synthesizes the stack for ap-northeast-1, with or without CDK_DEFAULT_REGION', () => {
     for (const region of ['ap-northeast-1', undefined]) {
@@ -72,5 +75,7 @@ describe('broker stack region (pinned, fail-closed)', () => {
       );
       rmSync(outdir, { recursive: true, force: true });
     }
-  });
+    // Two ts-node synths in series; the 60s default timed out under the parallel infra suite once the
+    // app entry-point synth (app-stack-region.test.ts, #1221) ran beside it.
+  }, 240_000);
 });
