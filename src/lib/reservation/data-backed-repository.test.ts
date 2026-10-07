@@ -15,6 +15,9 @@ import { asSiteId, asTenantId } from '@/domain/tenant/types';
 import { asReservationId, asReservationToken, type VisitReservation } from '@/domain/reservation/types';
 import { hashReservationToken } from '@/domain/reservation/token';
 import { getBackend } from '@/lib/data';
+import type { DataBackend } from '@/lib/data/backend';
+import { MemoryBackend } from '@/lib/data/memory';
+import { makeDynamoBackend } from '@/lib/data/fake-dynamo';
 import { DataBackedReservationRepository, RESERVATION_COLLECTION } from './data-backed-repository';
 
 const TOKEN = asReservationToken('TEST-reservation-token');
@@ -26,22 +29,29 @@ const T_B = asTenantId('tenant-b');
 const S_1 = asSiteId('site-1');
 const S_2 = asSiteId('site-2');
 
+const DAY = 24 * 60 * 60 * 1000;
+/**
+ * 🔴 日付は `Date.now()` 相対で作る。固定日付だと保存期間（#1022）を過ぎた瞬間に
+ * 全テストが「引けない」側へ倒れ、越境テストが空虚に通るようになる（CLAUDE.md「検証の作法」）。
+ */
+const isoIn = (ms: number) => new Date(Date.now() + ms).toISOString();
+
 function res(over: Partial<VisitReservation> = {}): VisitReservation {
   return {
     id: asReservationId('rsv-1'),
     tenantId: T_A,
     siteId: S_1,
     visitorName: 'TEST-来客',
-    visitAt: '2026-08-21T01:00:00.000Z',
+    visitAt: isoIn(1 * DAY),
     targetType: 'staff',
     targetId: 'staff-1',
     tokenHash: TOKEN_HASH,
     usagePolicy: 'single_use',
-    expiresAt: '2026-08-28T00:00:00.000Z',
+    expiresAt: isoIn(8 * DAY),
     status: 'active',
     retentionDays: 30,
-    createdAt: '2026-08-20T00:00:00.000Z',
-    updatedAt: '2026-08-20T00:00:00.000Z',
+    createdAt: isoIn(-1 * DAY),
+    updatedAt: isoIn(-1 * DAY),
     ...over,
   };
 }
@@ -111,7 +121,7 @@ describe('DataBackedReservationRepository (#736)', () => {
   it('put で上書きでき、更新後の状態が読める（使用済み化）', async () => {
     const repo = new DataBackedReservationRepository();
     await repo.create(res());
-    await repo.put(res({ status: 'used', usedAt: '2026-08-21T02:00:00.000Z' }));
+    await repo.put(res({ status: 'used', usedAt: isoIn(0) }));
     expect((await repo.get(T_A, S_1, asReservationId('rsv-1')))?.status).toBe('used');
   });
 
@@ -125,5 +135,173 @@ describe('DataBackedReservationRepository (#736)', () => {
     const found = await repo.findByTokenHash(T_A, S_1, TOKEN_HASH);
     expect(found).toBeDefined();
     expect(Object.keys(found!)).not.toContain('scopedTokenHash');
+  });
+});
+
+/**
+ * 保存期間 (#1022)。来訪の終わり（visitAt と expiresAt の遅い方）+ retentionDays で破棄する。
+ *
+ * memory / dynamodb（fake DocumentClient）の**両方の backend** で同じ契約を縛る。
+ * 時刻は repository へ注入し、期限の**すぐ内側**（期限 - 1ms）と期限ちょうどを踏む。
+ */
+const BACKENDS: { name: string; make: () => { backend: () => DataBackend; raw: (id: string) => Promise<Record<string, unknown> | undefined> } }[] = [
+  {
+    name: 'memory',
+    make: () => {
+      const backend = new MemoryBackend();
+      return {
+        backend: () => backend,
+        raw: async (id) =>
+          (await backend
+            .collection<{ id: string; scopedTokenHash: string }>(RESERVATION_COLLECTION, { indexedField: 'scopedTokenHash' })
+            .get(id)) as Record<string, unknown> | undefined,
+      };
+    },
+  },
+  {
+    name: 'dynamodb',
+    make: () => {
+      const { backend, fake } = makeDynamoBackend();
+      return {
+        backend: () => backend,
+        raw: async (id) =>
+          [...fake.store.values()].find((i) => i.PK === `col#${RESERVATION_COLLECTION}` && i.SK === id),
+      };
+    },
+  },
+];
+
+/** 3 つの読み取り経路すべてから引けるか。 */
+async function readable(repo: DataBackedReservationRepository, r: VisitReservation) {
+  return {
+    get: (await repo.get(r.tenantId, r.siteId, r.id)) !== undefined,
+    list: (await repo.list(r.tenantId, r.siteId)).some((x) => x.id === r.id),
+    token: (await repo.findByTokenHash(r.tenantId, r.siteId, r.tokenHash)) !== undefined,
+  };
+}
+
+const ALL = { get: true, list: true, token: true };
+const NONE = { get: false, list: false, token: false };
+
+describe.each(BACKENDS)('DataBackedReservationRepository の保存期間 (#1022) — $name', ({ make }) => {
+  /** 来訪の終わりを持つ予約の組合せ（どちらが後でも、どの保持日数でも）。 */
+  const shapes = [
+    { visit: -10 * DAY, expires: -3 * DAY, days: 30 }, // expiresAt が後
+    { visit: -2 * DAY, expires: -2 * DAY + 6 * 60 * 60 * 1000, days: 1 }, // same_day 相当
+    { visit: 5 * DAY, expires: 5 * DAY, days: 7 }, // 未来の来訪
+    { visit: -40 * DAY, expires: -50 * DAY, days: 45 }, // visitAt が後（順序に依存しない）
+  ];
+
+  it('🔴 期限のすぐ内側では全経路で引け、期限ちょうど以降はどの経路からも引けない', async () => {
+    for (const [i, shape] of shapes.entries()) {
+      const { backend } = make();
+      const r = res({
+        id: asReservationId(`rsv-${i}`),
+        visitAt: isoIn(shape.visit),
+        expiresAt: isoIn(shape.expires),
+        retentionDays: shape.days,
+      });
+      const deadline = Math.max(Date.parse(r.visitAt), Date.parse(r.expiresAt)) + shape.days * DAY;
+      let now = new Date(deadline - 1);
+      const repo = new DataBackedReservationRepository({ backend, now: () => now });
+      expect((await repo.create(r)).ok).toBe(true);
+
+      expect(await readable(repo, r), `inside ${JSON.stringify(shape)}`).toEqual(ALL);
+      now = new Date(deadline);
+      expect(await readable(repo, r), `deadline ${JSON.stringify(shape)}`).toEqual(NONE);
+      now = new Date(deadline + 3 * DAY); // TTL 削除が遅延している間
+      expect(await readable(repo, r)).toEqual(NONE);
+    }
+  });
+
+  it('期限切れは同じサイトの他の予約の読み取りを妨げない（期限内の予約は残る）', async () => {
+    const { backend } = make();
+    const repo = new DataBackedReservationRepository({ backend });
+    const old = res({
+      id: asReservationId('rsv-old'),
+      tokenHash: OTHER_HASH,
+      visitAt: isoIn(-100 * DAY),
+      expiresAt: isoIn(-99 * DAY),
+      retentionDays: 30,
+    });
+    const live = res({ id: asReservationId('rsv-live') });
+    await repo.create(old);
+    await repo.create(live);
+    expect(await readable(repo, old)).toEqual(NONE);
+    expect(await readable(repo, live)).toEqual(ALL);
+    expect((await repo.list(T_A, S_1)).map((x) => x.id)).toEqual(['rsv-live']);
+  });
+
+  it('書き込み時に TTL 属性（epoch 秒）を来訪の終わり + retentionDays から載せる', async () => {
+    const { backend, raw } = make();
+    const repo = new DataBackedReservationRepository({ backend });
+    const r = res({ visitAt: isoIn(2 * DAY), expiresAt: isoIn(3 * DAY), retentionDays: 10 });
+    await repo.create(r);
+    const deadline = Date.parse(r.expiresAt) + 10 * DAY;
+    const ttl = (await raw(r.id))?.ttl as number;
+    expect(Number.isInteger(ttl)).toBe(true);
+    // 物理削除は読み取り側の期限より先に起きず、遅れは 1 秒未満
+    expect(ttl * 1000).toBeGreaterThanOrEqual(deadline);
+    expect(ttl * 1000 - deadline).toBeLessThan(1000);
+  });
+
+  it('編集・再発行で期限が動いたら put のたびに TTL を計算し直す', async () => {
+    const { backend, raw } = make();
+    const repo = new DataBackedReservationRepository({ backend });
+    const r = res({ visitAt: isoIn(1 * DAY), expiresAt: isoIn(2 * DAY), retentionDays: 5 });
+    await repo.create(r);
+    const before = (await raw(r.id))?.ttl as number;
+
+    const moved = { ...r, expiresAt: isoIn(20 * DAY), retentionDays: 9 };
+    await repo.put(moved);
+    const after = (await raw(r.id))?.ttl as number;
+    const deadline = Date.parse(moved.expiresAt) + 9 * DAY;
+    expect(after).not.toBe(before);
+    expect(after * 1000).toBeGreaterThanOrEqual(deadline);
+    expect(after * 1000 - deadline).toBeLessThan(1000);
+  });
+
+  it('🔴 TTL 属性はドメイン型へ漏らさない', async () => {
+    const { backend } = make();
+    const repo = new DataBackedReservationRepository({ backend });
+    await repo.create(res());
+    for (const found of [
+      await repo.get(T_A, S_1, asReservationId('rsv-1')),
+      (await repo.list(T_A, S_1))[0],
+      await repo.findByTokenHash(T_A, S_1, TOKEN_HASH),
+    ]) {
+      expect(found).toBeDefined();
+      expect(Object.keys(found!)).not.toContain('ttl');
+    }
+  });
+
+  /**
+   * 互換性（.claude/rules/opus5-autonomous-loop.md「永続スキーマも互換なら進めてよい」）。
+   * `ttl` は任意属性。本変更より前に書かれた旧レコードは持たないが、読み取り側は業務フィールド
+   * から期限を計算するので、そのまま読める（期限内なら引け、期限後なら引けない）。
+   */
+  it('🔴 ttl 属性を持たない旧レコードも読める（期限は業務フィールドから計算する）', async () => {
+    const { backend, raw } = make();
+    const legacyCol = backend().collection<Record<string, unknown> & { id: string }>(
+      RESERVATION_COLLECTION,
+      { indexedField: 'scopedTokenHash' },
+    );
+    const live = res({ id: asReservationId('rsv-legacy-live') });
+    const old = res({
+      id: asReservationId('rsv-legacy-old'),
+      tokenHash: OTHER_HASH,
+      visitAt: isoIn(-60 * DAY),
+      expiresAt: isoIn(-59 * DAY),
+      retentionDays: 30,
+    });
+    for (const r of [live, old]) {
+      // 旧コードの保存形そのまま（ttl を持たない）。
+      await legacyCol.put({ ...r, scopedTokenHash: `${r.tenantId}#${r.siteId}#${r.tokenHash}` });
+      expect(await raw(r.id)).not.toHaveProperty('ttl');
+    }
+    const repo = new DataBackedReservationRepository({ backend });
+    expect(await readable(repo, live)).toEqual(ALL);
+    expect(await repo.get(T_A, S_1, live.id)).toEqual(live);
+    expect(await readable(repo, old)).toEqual(NONE);
   });
 });
