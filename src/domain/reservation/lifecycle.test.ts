@@ -236,6 +236,8 @@ describe('日時はオフセット必須 (#1022 N3)', () => {
     '2026-06-20T10:00:00+09:00',
     '2026-06-20T01:00Z',
     '2026-06-19T20:00:00.123-05:00',
+    '2026-06-20T01:00:00.123456Z', // マイクロ秒（小数部 6 桁）
+    '2026-06-20T10:00:00.123456789+09:00', // ナノ秒（小数部 9 桁 = 上限）
     '2026-06-20',
   ];
   const rejected = [
@@ -247,6 +249,11 @@ describe('日時はオフセット必須 (#1022 N3)', () => {
     ' 2026-06-20T01:00:00Z', // 前後の空白
     '2026-13-01T00:00:00Z', // 形は合うが日付として不正
     '+002026-06-20T01:00:00Z', // 拡張年表記（Date.parse は通る）
+    '2026-06-20T01:00:00.1234567890Z', // 小数部 10 桁
+    '2026-06-20T01:00:00.Z', // 小数点だけ
+    '2026-02-31T10:00:00Z', // 暦に無い日（Date.parse は 3/3 へ繰り上げて通す）
+    '2026-02-29', // 平年の 2/29（日付のみの形も同じ）
+    '2026-04-31T00:00:00+09:00', // 30 日の月の 31 日
     '',
   ];
   type R = { ok: true } | { ok: false; error: { message: string } };
@@ -279,4 +286,108 @@ describe('日時はオフセット必須 (#1022 N3)', () => {
       }
     });
   }
+});
+
+/**
+ * 暦の上で存在しない日付 (#1022 NIT-2)。`Date.parse` は `2026-02-31` を 3/3 へ繰り上げて受理する
+ * ので、保存される文字列と期限が数日ずれる。暦どおりの日は（閏日を含め）受理する（下界）。
+ */
+describe('日付は暦どおり (#1022 NIT-2)', () => {
+  const now = new Date('2023-01-01T00:00:00.000Z');
+  const valid = (d: string) =>
+    validateCreateInput(input({ visitAt: d, expiresAt: '2030-01-01T00:00:00.000Z' }), now);
+
+  it('各月の末日は受理し、その翌日（暦に無い日）は形の検証で拒否する', () => {
+    const lastDay: Record<string, number> = {
+      '2024-02': 29, // 閏年
+      '2025-02': 28,
+      '2025-04': 30,
+      '2025-06': 30,
+      '2025-09': 30,
+      '2025-11': 30,
+      '2025-01': 31,
+      '2025-12': 31,
+    };
+    for (const [ym, last] of Object.entries(lastDay)) {
+      expect(valid(`${ym}-${last}T00:00:00Z`).ok, `${ym}-${last}`).toBe(true);
+      const over = valid(`${ym}-${last + 1}T00:00:00Z`);
+      expect(over.ok, `${ym}-${last + 1}`).toBe(false);
+      if (!over.ok) expect(over.error.message).toMatch(/must be an ISO date/);
+    }
+  });
+
+  it('日 00 と月 00 は拒否する', () => {
+    for (const d of ['2025-01-00T00:00:00Z', '2025-00-10T00:00:00Z']) expect(valid(d).ok, d).toBe(false);
+  });
+});
+
+/**
+ * 再発行で `expiresAt` を省いたときは**保存済みの値**を引き継ぐ (#1022 review2 MINOR-1)。
+ *
+ * 保存済みの値は、検証を厳しくする前（N3 / NIT-2 より前）に書かれたものでありうる。それを
+ * 厳しい検証器へ戻すと、読み取り・受付では使えている予約が再発行だけできなくなる。
+ * 引き継ぐ値は読み取り側と**同じ解釈**（`Date.parse`）で正規化する —— 期限の意味は変わらない。
+ */
+describe('再発行: expiresAt を省くと保存済みの値を正規化して引き継ぐ (#1022 review2 MINOR-1)', () => {
+  const now = new Date('2026-06-19T00:00:00.000Z');
+  const stored = [
+    '2099-06-27T10:00:00', // オフセット無し（N3 より前に API から作られた形）
+    '2099-06-27T10:00', // datetime-local の生値
+    '2099-02-31T10:00:00Z', // 暦に無い日（NIT-2 より前は通っていた）
+    'Sat Jun 27 2099 10:00:00 GMT+0900', // ISO ではないが Date.parse は通る
+    '2099-06-27T10:00:00.000Z', // 対照: 正規形
+    '2099-06-27', // 対照: 日付のみ
+  ];
+
+  for (const s of stored) {
+    it(`保存値 ${JSON.stringify(s)}: 受理し、期限の意味を保ち、正規形で書き戻す`, () => {
+      const r = applyReissue(
+        reservation({ status: 'revoked', visitAt: '2026-06-20T01:00:00.000Z', expiresAt: s }),
+        asReservationTokenHash('n'),
+        undefined,
+        now,
+      );
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      // 不変条件 1: 読み取り側の解釈（Date.parse）で同じ時刻を指す。
+      expect(Date.parse(r.value.expiresAt)).toBe(Date.parse(s));
+      // 不変条件 2: 書き戻す値は厳しい検証器を通る（明示指定と同じ結果になる）。
+      const explicit = applyReissue(
+        reservation({ status: 'revoked', visitAt: '2026-06-20T01:00:00.000Z', expiresAt: s }),
+        asReservationTokenHash('n'),
+        r.value.expiresAt,
+        now,
+      );
+      expect(explicit.ok && explicit.value.expiresAt).toBe(r.value.expiresAt);
+    });
+  }
+
+  it('保存値を解釈できなければ invalid_input（黙って別の期限にしない）', () => {
+    const r = applyReissue(
+      reservation({ status: 'revoked', expiresAt: 'not-a-date' }),
+      asReservationTokenHash('n'),
+      undefined,
+      now,
+    );
+    expect(r.ok).toBe(false);
+    // 保存期限の検査に飲み込まれず、「保存値を解釈できない・明示せよ」と言って落ちる。
+    if (!r.ok) expect(r.error).toEqual({ code: 'invalid_input', message: expect.stringMatching(/stored expiresAt/) });
+  });
+
+  it('引き継いでも保存期限の検証は掛かる（期限が過去なら拒否）', () => {
+    const r = applyReissue(
+      reservation({ status: 'expired', visitAt: '2026-01-01T00:00:00', expiresAt: '2026-01-02T00:00:00', retentionDays: 1 }),
+      asReservationTokenHash('n'),
+      undefined,
+      now,
+    );
+    expect(r.ok).toBe(false);
+  });
+
+  it('明示した expiresAt は従来どおり厳しく検証する（保存値の寛容さを明示入力へ広げない）', () => {
+    for (const v of ['2099-06-27T10:00:00', '2099-02-31T10:00:00Z']) {
+      const r = applyReissue(reservation({ status: 'revoked' }), asReservationTokenHash('n'), v, now);
+      expect(r.ok, v).toBe(false);
+    }
+  });
 });

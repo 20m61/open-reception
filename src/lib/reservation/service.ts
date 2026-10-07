@@ -219,7 +219,8 @@ export class ReservationService {
     tenantId: TenantId,
     siteId: SiteId,
     id: ReservationId,
-    newExpiresAt: string,
+    /** 省略（undefined）なら保存済みの有効期限を引き継ぐ（`applyReissue`）。 */
+    newExpiresAt: string | undefined,
   ): Promise<ServiceResult<IssuedReservation>> {
     const current = await this.loadForWrite(actor, tenantId, siteId, id);
     if (!current.ok) return current;

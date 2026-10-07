@@ -174,4 +174,65 @@ describe('予約 API — 保存期限が過去・計算不能になる書き込�
     );
     expect(ok.status).toBe(200);
   });
+
+  /**
+   * review2 MINOR-1: 管理 UI の再発行は expiresAt を常に省く。保存済みの値が検証を厳しくする前
+   * （N3 / NIT-2）の形でも、再発行は通り、期限の意味を保ったまま正規形で書き戻す。保存形を作るため、
+   * API で作った予約の `expiresAt` を backend へ直接書き換える（旧コードが書いた行の再現）。
+   */
+  it.each([
+    ['オフセット無し', '2099-06-27T10:00:00'],
+    ['datetime-local の生値', '2099-06-27T10:00'],
+    ['暦に無い日', '2099-02-31T10:00:00Z'],
+  ])('POST token 再発行（expiresAt 省略）: 保存値が旧形式（%s）でも 200・同じ時刻を正規形で保存', async (_l, legacy) => {
+    const id = await createOk({ expiresAt: isoIn(2 * DAY) });
+    const col = getBackend().collection<Record<string, unknown> & { id: string; scopedTokenHash: string }>(
+      RESERVATION_COLLECTION,
+      { indexedField: 'scopedTokenHash' },
+    );
+    const row = await col.get(id);
+    expect(row).toBeDefined();
+    await col.put({ ...row!, expiresAt: legacy });
+    expect((await getItem(id)).expiresAt).toBe(legacy); // 旧形式のまま読めている（前提）
+
+    for (const body of [{ tenantId: TENANT, siteId: SITE }, { tenantId: TENANT, siteId: SITE, expiresAt: '' }]) {
+      const res = await TOKEN_POST(jsonReq(`${BASE}/${id}/token`, body), params(id));
+      expect(res.status, JSON.stringify(body)).toBe(200);
+      const saved = (await getItem(id)).expiresAt as string;
+      expect(saved).toBe(new Date(Date.parse(legacy)).toISOString());
+      expect(Date.parse(saved)).toBe(Date.parse(legacy));
+    }
+  });
+
+  it('POST token 再発行: 明示した旧形式の expiresAt は従来どおり 400（保存値の寛容さを入力へ広げない）', async () => {
+    const id = await createOk();
+    for (const bad of ['2099-06-27T10:00:00', '2099-02-31T10:00:00Z']) {
+      const res = await TOKEN_POST(jsonReq(`${BASE}/${id}/token`, { tenantId: TENANT, siteId: SITE, expiresAt: bad }), params(id));
+      expect(res.status, bad).toBe(400);
+    }
+  });
+
+  it('POST token 再発行（expiresAt 省略）: 存在しない予約は 404', async () => {
+    const res = await TOKEN_POST(jsonReq(`${BASE}/rsv-missing/token`, { tenantId: TENANT, siteId: SITE }), params('rsv-missing'));
+    expect(res.status).toBe(404);
+  });
+
+  it('PATCH 編集（期限に関わらないフィールド）: 保存値が旧形式でも 200・保存値はそのまま', async () => {
+    // 編集はパッチの値だけを検証する。保存済みの visitAt / expiresAt を厳しい検証へ戻さない。
+    const id = await createOk({ visitAt: isoIn(DAY), expiresAt: isoIn(2 * DAY) });
+    const col = getBackend().collection<Record<string, unknown> & { id: string; scopedTokenHash: string }>(
+      RESERVATION_COLLECTION,
+      { indexedField: 'scopedTokenHash' },
+    );
+    const row = await col.get(id);
+    await col.put({ ...row!, visitAt: '2099-06-20T10:00:00', expiresAt: '2099-06-31T10:00:00Z' });
+    const res = await ITEM_PATCH(
+      jsonReq(`${BASE}/${id}`, { tenantId: TENANT, siteId: SITE, visitorName: 'TEST-改名' }, 'PATCH'),
+      params(id),
+    );
+    expect(res.status).toBe(200);
+    const after = await getItem(id);
+    expect(after.visitorName).toBe('TEST-改名');
+    expect([after.visitAt, after.expiresAt]).toEqual(['2099-06-20T10:00:00', '2099-06-31T10:00:00Z']);
+  });
 });

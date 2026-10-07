@@ -38,7 +38,34 @@ const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(
 
 function isIsoDate(value: string): boolean {
   if (typeof value !== 'string' || !ISO_DATE_RE.test(value)) return false;
-  return Number.isFinite(Date.parse(value));
+  return Number.isFinite(Date.parse(value)) && isCalendarDay(value);
+}
+
+/**
+ * 先頭の `YYYY-MM-DD` が暦に実在する日か (#1022 NIT-2)。`Date.parse` は `2026-02-31` を 3/3 へ
+ * 繰り上げて受理するので、保存される文字列と期限が最大 3 日ずれる。オフセットで UTC の日付が
+ * 変わっても、検査するのは**書かれた**日付そのもの。
+ */
+function isCalendarDay(value: string): boolean {
+  const y = Number(value.slice(0, 4));
+  const m = Number(value.slice(5, 7));
+  const d = Number(value.slice(8, 10));
+  // 月 00・13 以上、日 00 は `Date.parse` が NaN を返すので、ここでは月末の超過だけを見る。
+  return d <= new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+
+/**
+ * **保存済み**の日時を、読み取り側と同じ解釈（`Date.parse`）で正規形（`toISOString()`）へ直す
+ * (#1022 review2 MINOR-1)。解釈できなければ undefined。
+ *
+ * 保存済みの値は検証を厳しくする前（N3 / NIT-2）に書かれたものでありうる。それを `isIsoDate` へ
+ * 戻すと、読めて受付にも使える予約が書き戻しだけ拒否される。読み取り・保存期限・TTL はすでに
+ * `Date.parse` で解釈しているので、正規化しても期限の意味は変わらない。
+ * 🔴 **呼び出し側が渡した入力にはこれを使わない**（入力は `isIsoDate` で厳しく検証する）。
+ */
+function canonicalStoredInstant(value: string): string | undefined {
+  const t = Date.parse(value);
+  return Number.isFinite(t) ? new Date(t).toISOString() : undefined;
 }
 
 /**
@@ -208,20 +235,32 @@ export function markUsed(
  * 新しいトークン hash・有効期限を適用した「再発行後の新予約」を作る純関数。
  * 旧予約は呼び出し側で revoke する（旧トークン失効）。生 token は保存せず、呼び出し側が
  * 新 token を発行して hash を渡す（生値は発行応答でのみ返す・#375）。
+ *
+ * `newExpiresAt` が undefined なら保存済みの有効期限を引き継ぐ（管理 UI の再発行は常に省く）。
+ * 引き継ぐ値は入力ではなく保存値なので、厳しい形の検証ではなく正規化を通す
+ * （`canonicalStoredInstant`）。
  */
 export function applyReissue(
   reservation: VisitReservation,
   newTokenHash: VisitReservation['tokenHash'],
-  newExpiresAt: string,
+  newExpiresAt: string | undefined,
   now: Date,
 ): ReservationResult<VisitReservation> {
   if (isTerminal(reservation.status) && reservation.status !== 'expired' && reservation.status !== 'revoked')
     return err('invalid_state', `cannot reissue a ${reservation.status} reservation`);
-  if (!isIsoDate(newExpiresAt)) return err('invalid_input', 'newExpiresAt must be an ISO date');
+  let expiresAt: string;
+  if (newExpiresAt === undefined) {
+    const kept = canonicalStoredInstant(reservation.expiresAt);
+    if (kept === undefined) return err('invalid_input', 'stored expiresAt cannot be interpreted; specify expiresAt');
+    expiresAt = kept;
+  } else {
+    if (!isIsoDate(newExpiresAt)) return err('invalid_input', 'newExpiresAt must be an ISO date');
+    expiresAt = newExpiresAt;
+  }
   const next: VisitReservation = {
     ...reservation,
     tokenHash: newTokenHash,
-    expiresAt: newExpiresAt,
+    expiresAt,
     status: 'active',
     usedAt: undefined,
     updatedAt: now.toISOString(),
