@@ -1,10 +1,9 @@
 import { NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
 import { getReception } from '@/lib/data-stores/reception-store';
 import { resolveVonageSessionService } from '@/lib/call/adapter-factory';
 import { getVonagePublicConfigForTenant } from '@/lib/call/vonage-config';
 import { resolveDefaultScope } from '@/lib/tenant/default-scope';
-import { KIOSK_COOKIE, readKioskSession } from '@/lib/auth/kiosk';
+import { requireKioskSession } from '@/lib/kiosk/session-guard';
 
 /**
  * GET /api/kiosk/receptions/:id/token — 受付端末（publisher）向けの短命トークンを発行する
@@ -23,8 +22,7 @@ export async function GET(
   const { id } = await params;
 
   // kiosk セッション必須（管理 API ではなく端末からの要求であることを担保）。
-  const kioskCookie = (await cookies()).get(KIOSK_COOKIE)?.value;
-  const session = await readKioskSession(kioskCookie);
+  const session = await requireKioskSession();
   if (!session) {
     return NextResponse.json({ error: 'forbidden', message: 'kiosk session required' }, { status: 403 });
   }

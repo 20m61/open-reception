@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
 import {
   getReception,
   getReceptionVisitorStatus,
@@ -7,7 +6,7 @@ import {
   markConnected,
   markTimeout,
 } from '@/lib/data-stores/reception-store';
-import { KIOSK_COOKIE, readKioskSession } from '@/lib/auth/kiosk';
+import { requireKioskSession } from '@/lib/kiosk/session-guard';
 import { resolvePendingCall } from '@/lib/call/resolve-pending-call';
 import { getCallCorrelationRepository } from '@/lib/routing/call-correlation';
 
@@ -33,8 +32,7 @@ export async function GET(
 ): Promise<NextResponse> {
   const { id } = await params;
 
-  const kioskCookie = (await cookies()).get(KIOSK_COOKIE)?.value;
-  const session = await readKioskSession(kioskCookie);
+  const session = await requireKioskSession();
   if (!session) {
     return NextResponse.json({ error: 'forbidden', message: 'kiosk session required' }, { status: 403 });
   }

@@ -1,13 +1,11 @@
 /**
  * 滞在 API のリクエスト解釈ヘルパ (issue #102, increment 1)。
  *
- * - kiosk セッションの検証（#23 readKioskSession を再利用）。端末からの要求であることを担保。
+ * - kiosk セッションの検証（共通ガード `@/lib/kiosk/session-guard` へ委譲。失効端末も拒否）。端末からの要求であることを担保。
  * - admin の tenantId/siteId スコープ取り出しと ServiceResult → HTTP 変換。
  * - 退館失敗理由 → HTTP ステータスの対応。
  */
-import { cookies } from 'next/headers';
 import { NextResponse } from 'next/server';
-import { KIOSK_COOKIE, readKioskSession } from '@/lib/auth/kiosk';
 import { asSiteId, asTenantId, type SiteId, type TenantId } from '@/domain/tenant/types';
 import { asStayId, type StayId } from '@/domain/visit/types';
 import type { CheckoutFailureReason } from './kiosk-service';
@@ -17,11 +15,8 @@ import type { CheckoutResolveInput, CheckoutResolveReason } from './checkout-cre
 // actor 解決の実装は中央モジュールへ集約。route から使うため re-export する。
 export { resolveAdminActor } from '@/lib/auth/actor';
 
-/** 有効な kiosk セッションを要求する。無効なら null。 */
-export async function requireKioskSession(): Promise<{ kioskId: string } | null> {
-  const cookie = (await cookies()).get(KIOSK_COOKIE)?.value;
-  return readKioskSession(cookie);
-}
+/** 有効な kiosk セッションを要求する。無効（無し・失効・未登録）なら null。共通ガードへ委譲する。 */
+export { requireKioskSession } from '@/lib/kiosk/session-guard';
 
 /** 退館失敗理由ごとの HTTP ステータス。 */
 const STATUS_BY_REASON: Record<CheckoutFailureReason, number> = {

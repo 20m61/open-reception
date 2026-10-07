@@ -1,9 +1,8 @@
 import { NextResponse } from 'next/server';
-import { cancelReception, getReception } from '@/lib/data-stores/reception-store';
+import { cancelReception } from '@/lib/data-stores/reception-store';
 import { toResponse } from '@/lib/data-stores/http';
-import { denyWithoutKioskSession } from '@/lib/kiosk/session-guard';
+import { requireOwnedReception } from '@/lib/kiosk/session-guard';
 import { hangUpIfRinging } from '@/lib/routing/hang-up';
-import { resolveDefaultScope } from '@/lib/tenant/default-scope';
 
 /**
  * POST /api/kiosk/receptions/:id/cancel — 来訪者によるキャンセル (issue #16 / #743)。
@@ -24,20 +23,19 @@ export async function POST(
   _request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
-  const denied = await denyWithoutKioskSession();
-  if (denied) return denied;
   const { id } = await params;
+  const owned = await requireOwnedReception(id);
+  if (!owned.ok) return owned.response;
 
   // 切る相手は**キャンセルする前**に読む（終端後は付け替えを追えない）。
-  const before = await getReception(id);
-  const providerCallId = before.ok ? before.value.providerCallId : undefined;
+  const providerCallId = owned.reception.providerCallId;
 
   const result = await cancelReception(id);
 
   // 実際に自分がキャンセルできたときだけ切る。既に終端していた受付
   // （担当者が応答した直後など）の通話を切らない。
   if (result.ok) {
-    await hangUpIfRinging(String(resolveDefaultScope().tenantId), providerCallId).catch(
+    await hangUpIfRinging(String(owned.session.tenantId), providerCallId).catch(
       () => undefined,
     );
   }

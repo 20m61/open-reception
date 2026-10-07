@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
 import { getSecuritySettings } from '@/lib/security/security-store';
-import { KIOSK_COOKIE, readKioskSession } from '@/lib/auth/kiosk';
+import { requireKioskSession } from '@/lib/kiosk/session-guard';
 
 /**
  * GET /api/kiosk/session-status — 受付端末の許可状態 (issue #23)。
@@ -9,7 +8,7 @@ import { KIOSK_COOKIE, readKioskSession } from '@/lib/auth/kiosk';
  */
 export async function GET(): Promise<NextResponse> {
   const settings = await getSecuritySettings();
-  const token = (await cookies()).get(KIOSK_COOKIE)?.value;
-  const session = await readKioskSession(token);
+  // 失効・未登録端末の cookie は「保持していない」と同じに扱う（共通ガード）。
+  const session = await requireKioskSession();
   return NextResponse.json({ pinRequired: settings.pinRequired, authorized: session !== null });
 }
