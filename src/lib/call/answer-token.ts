@@ -46,6 +46,11 @@ export function getAnswerSecret(): string {
  * `tenantId` は**担当者の所属テナント**（通知を組み立てる側がサーバー側で解決した値）。
  * 応答ルートはこれが受付の Vonage セッションの所有テナントと一致するときだけトークンを
  * 発行する（`lib/call/vonage-session-access.ts`）。
+ *
+ * 🔴 **通知経路へ配線するときは、受付側の値（`reception.vonageTenantId` や受付端末の
+ * テナント）をここへ渡さないこと。** 照合の相手そのものを渡すことになり、照合が必ず一致して
+ * 空虚になる（どのテナントの担当者にも発行できてしまう）。渡すのは通知先の担当者の所属を
+ * サーバー側（担当者台帳など）で解決した値だけ。現時点で本番の呼び出し元は無い。
  */
 export async function issueAnswerToken(
   receptionId: string,

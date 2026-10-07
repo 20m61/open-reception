@@ -111,6 +111,18 @@ describe('POST /api/kiosk/stay (issue #342)', () => {
     expect(createPresentForReception).not.toHaveBeenCalled();
   });
 
+  // 🔴 所有の判定は在館化の可否（409 not_eligible）より先。上の 1 本は在館化できる受付で
+  // 測っているので、可否の判定を前へ動かしても素通りする。在館化できない受付で測る。
+  it('別端末の受付は、在館化できない受付でも 409 ではなく 403（所有の判定が先）', async () => {
+    getReception.mockResolvedValue({
+      ok: true,
+      value: { ...connectedSession, kioskId: 'kiosk-other', callOutcome: 'timeout' },
+    });
+    const res = await post();
+    expect(res.status).toBe(403);
+    expect(createPresentForReception).not.toHaveBeenCalled();
+  });
+
   it('存在しない受付は 404', async () => {
     getReception.mockResolvedValue({ ok: false, error: { code: 'not_found', message: 'x' } });
     const res = await post();

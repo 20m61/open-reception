@@ -181,6 +181,26 @@ describe('resolveVonageSessionAccess', () => {
     expect(await resolveVonageSessionAccess(broken, '')).toEqual({ kind: 'mismatch' });
   });
 
+  // 🔴 照合は「セッション未確立・Vonage 無効」の確認より**先**。逆順だと、所有テナントでない
+  // 要求元に受付の通話状態（409 相当の unavailable）を答えてしまう。状態の全組み合わせで
+  // 「不一致 ⟹ mismatch」を縛り、下界として「一致 ⟹ 状態どおり」も併せて縛る。
+  it.each([
+    { label: 'セッション確立・Vonage 有効', sessionId: 'TEST-sess', enabled: true },
+    { label: 'セッション未確立・Vonage 有効', sessionId: undefined, enabled: true },
+    { label: 'セッション確立・Vonage 無効', sessionId: 'TEST-sess', enabled: false },
+    { label: 'セッション未確立・Vonage 無効', sessionId: undefined, enabled: false },
+  ])('照合は状態の確認より先: $label', async ({ sessionId, enabled }) => {
+    if (!enabled) await __resetProviderConfigStore();
+    const r = { vonageTenantId: TENANT_B, ...(sessionId ? { vonageSessionId: sessionId } : {}) };
+    for (const requester of [DEFAULT_TENANT_ID, undefined, '']) {
+      expect(await resolveVonageSessionAccess(r, requester), String(requester)).toEqual({ kind: 'mismatch' });
+    }
+    expect(await resolveVonageSessionAccess({ ...r, vonageTenantId: '' }, TENANT_B)).toEqual({ kind: 'mismatch' });
+    // 下界: 所有テナントからの要求は状態どおりに答える（全部を mismatch にする実装では落ちる）。
+    const own = await resolveVonageSessionAccess(r, TENANT_B);
+    expect(own.kind).toBe(sessionId && enabled ? 'ok' : 'unavailable');
+  });
+
   it('セッション未確立・所有テナントの Vonage 無効なら unavailable', async () => {
     expect(await resolveVonageSessionAccess({ vonageTenantId: TENANT_B }, TENANT_B)).toEqual({ kind: 'unavailable' });
     await __resetProviderConfigStore();
@@ -270,6 +290,32 @@ describe('通し: 1 つの Vonage セッションの操作はすべて所有テ�
       const res = await kioskToken(id);
       expect(res.status).toBe(404);
       expect(vonage.issued).toEqual([]);
+    });
+
+    // 🔴 不一致は「セッション未確立」(409) より先に 404 で答える（所有テナントでない要求元に
+    // 通話の状態を教えない）。下界として、所有テナントからなら同じ受付が 409 になることも縛る。
+    it('Video セッションの無い受付でも、不一致なら 409 ではなく 404（下界: 一致なら 409）', async () => {
+      await putKiosk('TEST-kiosk-b', TENANT_B, SITE_B);
+      const id = await receptionOf('TEST-kiosk-b');
+      const created = await getReception(id);
+      if (!created.ok) throw new Error('fixture');
+      await getReceptionSessionRepository().put({ ...created.value, state: 'calling', vonageTenantId: TENANT_B });
+      cookieValue = await issueKioskSession('TEST-kiosk-b');
+
+      expect((await kioskToken(id)).status).toBe(409);
+      expect((await staffAnswer(id, await issueAnswerToken(id, TENANT_B))).status).toBe(409);
+
+      const crossStaff = await staffAnswer(id, await issueAnswerToken(id, DEFAULT_TENANT_ID));
+      const missing = await staffAnswer('TEST-missing', await issueAnswerToken('TEST-missing', TENANT_B));
+      expect(crossStaff.status).toBe(404);
+      expect(await crossStaff.json()).toEqual(await missing.json());
+
+      await putKiosk('TEST-kiosk-b', DEFAULT_TENANT_ID, 'default-site');
+      expect((await kioskToken(id)).status).toBe(404);
+
+      expect(vonage.issued).toEqual([]);
+      const after = await getReception(id);
+      expect(after.ok && after.value.state).toBe('calling');
     });
 
     it('記録が壊れたセッションには、どちらの側からも発行しない（既定テナントへ倒さない）', async () => {

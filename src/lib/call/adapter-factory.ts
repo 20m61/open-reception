@@ -6,8 +6,12 @@
  *   - `resolveCallAdapter(tenantId, staff)` … テナント解決結果に応じて Vonage / Mock。
  *   - `resolveVonageSessionService(tenantId)` … 同上（未解決なら null）。
  *
- * live 呼び出し点（受付ストアの `startCall` / token・answer ルート）は tenantId を
- * `resolveDefaultScope()` から取り、上記 `resolve*` を使う（#4 でテナントコンテキストを配線）。
+ * live 呼び出し点のテナントの出どころ:
+ *   - 作成側（受付ストアの `startCall`）… 唯一の本番呼び出し元である call ルートが、端末台帳から
+ *     解決したテナントを渡す（`startCall` の引数省略時の既定スコープは本番では使われない）。
+ *     同じ値を受付レコードの `vonageTenantId` に記録する。
+ *   - 発行側（端末 token・担当者 answer ルート）… `lib/call/vonage-session-access.ts` 経由で、
+ *     記録した所有テナントから引く（記録の無い旧レコードだけが既定テナント）。
  * tenantId を取らない後方互換シム（旧 `getCallAdapter` / `getVonageSessionService`）は参照ゼロにつき撤去した。
  */
 import type { CallAdapter } from '@/adapters/call/types';

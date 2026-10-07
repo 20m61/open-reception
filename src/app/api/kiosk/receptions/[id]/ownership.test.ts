@@ -272,6 +272,47 @@ describe.each(Object.entries(TRANSITIONS))('POST receptions/[id]/%s', (route, st
   });
 });
 
+/**
+ * 🔴 所有の判定は状態の判定より**先**。遷移できない状態（終端済み）の受付に対しても、他端末には
+ * 存在しない受付と同じ 404 を返し、遷移できない理由（409）を答えない。
+ *
+ * 上の「他端末なら 404」は作成端末なら遷移に成功する状態で測っているので、状態の判定を所有の
+ * 判定より前へ動かしても素通りする。ここは遷移が必ず拒否される状態で測る。
+ * 下界: 作成端末からは同じ受付が状態に基づく答え（多くは 409。`give-up` は 200 で終端状態を
+ * 返す）になる（＝状態の答えは実在し、他端末にだけ隠れている）。
+ */
+const TERMINAL: ReceptionState = 'cancelled';
+
+describe.each(Object.keys(TRANSITIONS))('POST receptions/[id]/%s（遷移できない状態）', (route) => {
+  it('下界: 作成端末には状態に基づく答え（存在しない受付とは違う応答）を返し、受付は変えない', async () => {
+    const id = await ownedReception(TERMINAL);
+    const before = await getReception(id);
+    cookieValue = await issueKioskSession(OWNER.kioskId);
+    const res = await post(route, id);
+    const missing = await post(route, 'TEST-missing-reception');
+    expect(missing.status).toBe(404);
+    expect(res.status).not.toBe(404);
+    expect(await res.json()).not.toEqual(await missing.json());
+    expect(await getReception(id)).toEqual(before);
+  });
+
+  it.each(FOREIGN)('$label のセッションには状態を答えず、存在しない受付と同じ 404', async (foreign) => {
+    const id = await ownedReception(TERMINAL);
+    const before = await getReception(id);
+    cookieValue = await issueKioskSession(foreign.kioskId);
+
+    const res = await post(route, id);
+    const missing = await post(route, 'TEST-missing-reception');
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual(await missing.json());
+    expect(await getReception(id)).toEqual(before);
+    for (const [name, c] of Object.entries(SCOPE_CONSUMERS)) {
+      expect(c.spy, `${name} に到達した`).not.toHaveBeenCalled();
+    }
+  });
+});
+
 describe('遷移 route の呼び出しグラフ', () => {
   it.each(Object.keys(TRANSITIONS))('%s: セッションのスコープを渡す先は全部が縛られている', (route) => {
     for (const name of scopeConsumersOf(route)) {
