@@ -65,6 +65,18 @@ describe('GET /api/kiosk/receptions/:id/token', () => {
     expect(resolveVonageSessionService).not.toHaveBeenCalled();
   });
 
+  it('404 when the kiosk tenant differs from the tenant that created the session', async () => {
+    // 端末の所属（台帳）は 'internal'。セッションは別テナントで作られている。
+    getReception.mockResolvedValue({
+      ok: true,
+      value: { id: 'rec-1', kioskId: 'kiosk-1', vonageSessionId: 's', vonageTenantId: 'TEST-tenant-b' },
+    });
+    const res = await call();
+    expect(res.status).toBe(404);
+    expect(resolveVonageSessionService).not.toHaveBeenCalled();
+    expect(getVonagePublicConfigForTenant).not.toHaveBeenCalled();
+  });
+
   it('409 when vonage is unavailable or no session is established', async () => {
     getReception.mockResolvedValue({ ok: true, value: { id: 'rec-1', kioskId: 'kiosk-1', vonageSessionId: undefined } });
     resolveVonageSessionService.mockReturnValue(null);

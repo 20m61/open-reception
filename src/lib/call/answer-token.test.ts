@@ -19,13 +19,31 @@ afterEach(() => {
 });
 
 describe('answer-token', () => {
-  it('round-trips a receptionId', async () => {
-    const token = await issueAnswerToken('rec-123');
+  it('round-trips a receptionId and the staff tenant', async () => {
+    const token = await issueAnswerToken('rec-123', 'TEST-tenant');
+    expect(await readAnswerToken(token)).toEqual({ receptionId: 'rec-123', tenantId: 'TEST-tenant' });
+  });
+
+  it('a token without a tenant claim reads as tenantId undefined (the Vonage token route then refuses it)', async () => {
+    const token = await signSession(
+      { role: 'call_answer', receptionId: 'rec-123', exp: Date.now() + 60_000 },
+      getAnswerSecret(),
+    );
     expect(await readAnswerToken(token)).toEqual({ receptionId: 'rec-123' });
   });
 
+  it('rejects a token whose tenant claim is malformed (not a non-empty string)', async () => {
+    for (const tenantId of ['', 42, null]) {
+      const token = await signSession(
+        { role: 'call_answer', receptionId: 'rec-123', tenantId, exp: Date.now() + 60_000 },
+        getAnswerSecret(),
+      );
+      expect(await readAnswerToken(token)).toBeNull();
+    }
+  });
+
   it('rejects an expired token', async () => {
-    const token = await issueAnswerToken('rec-123', -1000); // already expired
+    const token = await issueAnswerToken('rec-123', 'TEST-tenant', -1000); // already expired
     expect(await readAnswerToken(token)).toBeNull();
   });
 
@@ -35,13 +53,13 @@ describe('answer-token', () => {
   });
 
   it('rejects a tampered token', async () => {
-    const token = await issueAnswerToken('rec-123');
+    const token = await issueAnswerToken('rec-123', 'TEST-tenant');
     const [body] = token.split('.');
     expect(await readAnswerToken(`${body}.deadbeef`)).toBeNull();
   });
 
   it('rejects a token signed with a different secret', async () => {
-    const token = await issueAnswerToken('rec-123');
+    const token = await issueAnswerToken('rec-123', 'TEST-tenant');
     vi.stubEnv('CALL_ANSWER_SECRET', 'different-secret');
     expect(await readAnswerToken(token)).toBeNull();
   });

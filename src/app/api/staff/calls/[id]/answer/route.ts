@@ -1,8 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getReception, markConnected } from '@/lib/data-stores/reception-store';
-import { resolveVonageSessionService } from '@/lib/call/adapter-factory';
-import { getVonagePublicConfigForTenant } from '@/lib/call/vonage-config';
-import { resolveDefaultScope } from '@/lib/tenant/default-scope';
+import { resolveVonageSessionAccess } from '@/lib/call/vonage-session-access';
 import { getAnswerSecret, readAnswerToken } from '@/lib/call/answer-token';
 import { secretUnavailableResponse } from '@/lib/auth/secret-unavailable';
 import { readJson } from '@/lib/data-stores/result-http';
@@ -15,6 +13,10 @@ import { readJson } from '@/lib/data-stores/result-http';
  * secret は返さない（applicationId / sessionId / 短命 token のみ）。
  *
  * 状態が calling でない（未確立 / 既応答 / 取消）場合は 409。リンク無効/別受付は 403。
+ *
+ * トークンはセッションを作ったテナントの Vonage 設定で発行する（`lib/call/vonage-session-access.ts`）。
+ * 応答トークンが主張する担当者のテナントがそれと違えば 404（存在しない受付と同じ応答）で、
+ * 受付の状態も変えない。
  */
 export async function POST(
   request: Request,
@@ -37,21 +39,18 @@ export async function POST(
   }
 
   const found = await getReception(id);
-  if (!found.ok) {
-    return NextResponse.json({ error: 'not_found', message: 'reception not found' }, { status: 404 });
-  }
-
-  // テナント/サイト境界は営業時間ガード/routing と同じ既定スコープ規則で解決する（単一テナント既定）。
-  const { tenantId } = resolveDefaultScope();
-  const service = await resolveVonageSessionService(tenantId);
-  const publicConfig = await getVonagePublicConfigForTenant(tenantId);
-  const sessionId = found.value.vonageSessionId;
-  if (!service || !publicConfig || !sessionId) {
+  if (!found.ok) return receptionNotFound();
+  // 担当者のテナント（応答トークンの署名済みの主張）が、セッションの所有テナント（作成時に
+  // 記録）と違えば、存在しない受付と同じ 404 を返す。Vonage の設定は所有テナントから引く。
+  const access = await resolveVonageSessionAccess(found.value, answer.tenantId);
+  if (access.kind === 'mismatch') return receptionNotFound();
+  if (access.kind === 'unavailable') {
     return NextResponse.json(
       { error: 'unavailable', message: 'vonage call session is not available' },
       { status: 409 },
     );
   }
+  const { service, sessionId } = access;
 
   // 先に subscriber トークンを発行する。発行失敗時は受付状態を変えない（不整合防止）。
   let token;
@@ -72,10 +71,14 @@ export async function POST(
   }
 
   return NextResponse.json({
-    applicationId: publicConfig.applicationId,
+    applicationId: access.applicationId,
     sessionId,
     token: token.token,
     role: token.role,
     expiresAt: token.expiresAt,
   });
+}
+
+function receptionNotFound(): NextResponse {
+  return NextResponse.json({ error: 'not_found', message: 'reception not found' }, { status: 404 });
 }

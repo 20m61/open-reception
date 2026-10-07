@@ -141,6 +141,22 @@ describe('requireOwnedReception', () => {
     }
   });
 
+  it('端末の同一性は台帳側で正規化した id で決まる（署名済み claims の綴りではない）', async () => {
+    // claims の kioskId が正規形でない（前後に空白）トークンでも、台帳は trim した id で
+    // 端末を引く。セッションの kioskId と所有判定はその正規化後の id を権威とする。
+    await putDevice('TEST-owner', 'active');
+    const id = await receptionOf('TEST-owner');
+    const padded = await issueKioskSession('  TEST-owner  ');
+
+    const session = await resolveKioskSessionToken(padded);
+    expect(session?.kioskId).toBe('TEST-owner');
+
+    cookieValue = padded;
+    const owned = await requireOwnedReception(id);
+    expect(owned.ok).toBe(true);
+    if (owned.ok) expect(owned.session.kioskId).toBe('TEST-owner');
+  });
+
   it('別端末の受付と存在しない受付は、どちらも同じ 404 を返す（存在を区別させない）', async () => {
     await putDevice('TEST-owner', 'active');
     await putDevice('TEST-other', 'active', 'TEST-tenant-other', 'TEST-site-other');
