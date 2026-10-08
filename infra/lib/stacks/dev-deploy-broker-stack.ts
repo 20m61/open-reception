@@ -18,6 +18,19 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3assets from 'aws-cdk-lib/aws-s3-assets';
 import { BROKER_STACK_DEPLOY_ROLE_ARN_PATTERN } from '../config/broker-bootstrap';
 import { VALIDATION_NODE_OPTIONS_COMMAND } from '../config/validation-build-resources';
+import {
+  FILE_SHA256_CHECK_SCRIPT,
+  GITLEAKS_ARCHIVE_PATH,
+  GITLEAKS_LINUX_X64_SHA256,
+  GITLEAKS_URL,
+  SEMGREP_VENV,
+  SEMGREP_WHEEL_PATH,
+  SEMGREP_WHEEL_SHA256,
+  SEMGREP_WHEEL_URL,
+  VALIDATION_SOURCE_BIND_SCRIPT,
+  VALIDATION_TOOL_BIN,
+  VALIDATION_UNIT_TEST_COMMAND,
+} from '../config/validation-gate-env';
 
 export const DEV_DEPLOY_PROMOTION_BRANCH = 'dev-deploy';
 
@@ -830,18 +843,40 @@ export class DevDeployBrokerStack extends cdk.Stack {
               // Node's default heap follows machine memory (~1.5 GiB on SMALL, ~2 GiB on MEDIUM), not
               // the build: typecheck OOMed on SMALL in runbook 7.5 (2026-10-06). Set it explicitly.
               VALIDATION_NODE_OPTIONS_COMMAND,
+              // Before any candidate code runs: make the source archive a repository bound to the
+              // trusted CommitId (the unit lane reads git history like the quality gate does). No
+              // connection credential: anonymous fetch of the public repo, checked against the
+              // archive file by file. Only verifies: the revision still comes from CodePipeline.
+              // See validation-gate-env.ts.
+              nodeEval(VALIDATION_SOURCE_BIND_SCRIPT),
+              // The gate's tools, version-pinned and SHA-256 verified, in a directory of their own
+              // with node/npm/npx (the image keeps node next to `aws` in /usr/local/bin).
+              `mkdir -p ${VALIDATION_TOOL_BIN}`,
+              `curl -sSfL ${GITLEAKS_URL} -o ${GITLEAKS_ARCHIVE_PATH}`,
+              nodeEval(FILE_SHA256_CHECK_SCRIPT, GITLEAKS_ARCHIVE_PATH, GITLEAKS_LINUX_X64_SHA256),
+              `tar -xzf ${GITLEAKS_ARCHIVE_PATH} -C ${VALIDATION_TOOL_BIN} gitleaks`,
+              `curl -sSfL ${SEMGREP_WHEEL_URL} -o ${SEMGREP_WHEEL_PATH}`,
+              nodeEval(FILE_SHA256_CHECK_SCRIPT, SEMGREP_WHEEL_PATH, SEMGREP_WHEEL_SHA256),
+              `python3 -m venv ${SEMGREP_VENV}`,
+              `${SEMGREP_VENV}/bin/pip install --quiet ${SEMGREP_WHEEL_PATH}`,
+              `ln -s ${SEMGREP_VENV}/bin/semgrep ${VALIDATION_TOOL_BIN}/semgrep`,
+              `for b in node npm npx; do ln -s "$(command -v $b)" ${VALIDATION_TOOL_BIN}/$b; done`,
+              `${VALIDATION_TOOL_BIN}/gitleaks version`,
+              `${VALIDATION_TOOL_BIN}/semgrep --version`,
               'npm ci',
               'npm --prefix infra ci',
             ],
           },
           build: {
             commands: [
-              // CodePipeline source archives do not provide a trustworthy local git history.
               // Promotion is intentionally rare, so run the full suite instead of a diff-optimized
               // PR gate. The inexpensive inner loop remains local Claude + MiniStack/Moto.
               'npm run typecheck',
               'npm run lint',
-              'npm test',
+              // The install phase's `unset` does not reach this phase (7.5, 2026-10-08: the role's
+              // AWS_CONTAINER_CREDENTIALS_RELATIVE_URI was visible to the unit lane), so the scrub
+              // is on this command line. Later steps keep their environment.
+              VALIDATION_UNIT_TEST_COMMAND,
               'npm run build:open-next',
               'npm run aws:local:test',
               'npm --prefix infra run typecheck',
