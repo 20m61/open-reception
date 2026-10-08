@@ -5,7 +5,11 @@ import { reservationTtlSeconds } from '@/domain/reservation/retention';
 import type { VisitReservation } from '@/domain/reservation/types';
 import { DataBackedReservationRepository, RESERVATION_COLLECTION } from './data-backed-repository';
 import { DynamoBackend } from '@/lib/data/dynamodb';
-import { runReservationTtlBackfill, TtlBackfillAbortedError } from './ttl-backfill';
+import {
+  runReservationTtlBackfill,
+  TtlBackfillAbortedError,
+  type TtlBackfillReport,
+} from './ttl-backfill';
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.now();
@@ -34,6 +38,12 @@ function stored(fake: FakeDoc, id: string): Record<string, unknown> | undefined 
 }
 
 const doc = (fake: FakeDoc) => fake as unknown as DynamoDBDocumentClient;
+
+/** apply の結果へ絞る（dry-run が返ったらその場で落とす）。 */
+function applied(report: TtlBackfillReport): Extract<TtlBackfillReport, { mode: 'apply' }> {
+  if (report.mode !== 'apply') throw new Error(`expected apply, got ${report.mode}`);
+  return report;
+}
 
 describe('runReservationTtlBackfill (#1022 backfill)', () => {
   it('dry-run は 1 件も書かない（Query 以外のコマンドを送らない）', async () => {
@@ -80,7 +90,7 @@ describe('runReservationTtlBackfill (#1022 backfill)', () => {
       apply: { expectedToSet: 1 },
     });
     expect(report.mode).toBe('apply');
-    expect(report.applied).toEqual({ updated: 1, skippedChanged: 0 });
+    expect(applied(report).applied).toEqual({ updated: 1, skippedChanged: 0 });
     const expected = reservationTtlSeconds(before as unknown as VisitReservation);
     expect(stored(fake, 'a')).toEqual({ ...before, ttl: expected });
     // 計算できないレコードには何も付けない（報告だけ）。
@@ -136,8 +146,8 @@ describe('runReservationTtlBackfill (#1022 backfill)', () => {
       nowMs: NOW,
       apply: { expectedToSet: 5 },
     });
-    expect(report.applied).toEqual({ updated: 2, skippedChanged: 3 });
-    expect(report.skippedChangedIds).toEqual(['days-added', 'edited', 'got-ttl']);
+    expect(applied(report).applied).toEqual({ updated: 2, skippedChanged: 3 });
+    expect(applied(report).skippedChangedIds).toEqual(['days-added', 'edited', 'got-ttl']);
     expect(stored(fake, 'got-ttl')?.ttl).toBe(42);
     expect(stored(fake, 'edited')?.ttl).toBeUndefined();
     expect(stored(fake, 'days-added')?.ttl).toBeUndefined();
@@ -161,7 +171,7 @@ describe('runReservationTtlBackfill (#1022 backfill)', () => {
       nowMs: NOW,
       apply: { expectedToSet: 1 },
     });
-    expect(report.applied).toEqual({ updated: 0, skippedChanged: 1 });
+    expect(applied(report).applied).toEqual({ updated: 0, skippedChanged: 1 });
     expect(stored(fake, 'gone')).toBeUndefined();
   });
 
