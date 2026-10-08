@@ -131,7 +131,8 @@ route（`src/app/api/admin/reservations/**`）は薄く保つ。
     （TTL 削除は遅延するため。memory / dynamodb 両 backend で同じ）。
   - `ttl` は任意属性。本変更より前の予約は持たないが、読み取り判定は業務フィールドから
     計算するので期限どおりに不可視になる。**既存レコードへの `ttl` の後付け（物理削除）は
-    本番データ操作なので範囲外**（owner 判断）。owner が別途回す backfill の手順書には次を要件とする:
+    本番データ操作なので範囲外**（owner 判断）。owner が別途回す backfill の手順書は
+    `docs/runbook-reservation-ttl-backfill.md`（道具は `src/lib/reservation/ttl-backfill-cli.ts`）で、次を要件とする:
     - **dry-run を先に回し、件数を出す**（後付けする件数／すでに `ttl` を持つ件数／対象外の件数）。
     - 🔴 **`reservationTtlSeconds` が undefined になるレコード（期限を計算できない）を黙って飛ばさない。**
       件数と id を報告する。これらは `retentionDays` が正の安全整数でない（例: 2^53 以上を API から
