@@ -51,13 +51,23 @@ apt-get install -y gh unzip || true
 # --- 品質ゲートの任意ツール ------------------------------------------------
 # 無いと quality-gate.sh が SKIP する。SKIP は FAIL にならないので、
 # **マージゲート（--full）が黙って弱くなる**のが怖い。入れて等価にしておく。
-# ⚠️ `--ignore-installed PyJWT` が要る。イメージの PyJWT 2.7.0 は **debian パッケージ由来で
-# RECORD ファイルを持たない**ため pip が uninstall できず、semgrep の依存解決がそこで
-# 中断する（`ERROR: Cannot uninstall PyJWT 2.7.0, RECORD file not found.`）。
-# 直後の `|| true` がこれを握り潰すので、**セッションは正常に起動するのに semgrep だけ
-# 黙って入っていない**状態になり、`--full` の sast が SKIP へ落ちてマージゲートが弱くなる
-# （第 94 wave の受入確認で実際に踏んだ。docs/cloud-dev-environment.md §4）。
-pip install --break-system-packages --ignore-installed PyJWT semgrep || true &
+# 🔴 semgrep は**専用 venv**（/opt/semgrep-venv）へ入れ、/usr/local/bin/semgrep を張る。
+# system の site-packages へ入れると、イメージ側の Python パッケージと依存が重なって壊れる:
+# - 2026-10 に `mcp` 1.29.0 と 2.2.0 が重なり、semgrep 1.180.0 が import で落ちた
+#   （`ImportError: cannot import name 'TASK_STATUS_COMPLETED' from 'mcp.types'`）。
+#   `command -v semgrep` は成功するので、壊れていることは sast を走らせるまで見えない
+# - 以前は debian 由来の PyJWT（RECORD 無し）を pip が uninstall できず依存解決が止まり、
+#   `--ignore-installed PyJWT` で凌いでいた（docs/cloud-dev-environment.md §4 / §6.1）。
+#   venv はイメージのパッケージを見ないので、この回避も要らなくなる
+# ⚠️ `pysemgrep` も張る。semgrep 本体は処理の一部を `pysemgrep` へ **PATH 経由で**渡すので、
+# semgrep だけ張ると system 側の壊れた pysemgrep が拾われて同じ ImportError で落ちる（実測）。
+# 直後の `|| true` は失敗を握り潰すが、SessionStart の gate_tool_report が欠落を名指しする。
+(
+  python3 -m venv /opt/semgrep-venv &&
+    /opt/semgrep-venv/bin/pip install --quiet semgrep &&
+    ln -sf /opt/semgrep-venv/bin/semgrep /usr/local/bin/semgrep &&
+    ln -sf /opt/semgrep-venv/bin/pysemgrep /usr/local/bin/pysemgrep
+) || true &
 
 (
   GL=8.29.0
