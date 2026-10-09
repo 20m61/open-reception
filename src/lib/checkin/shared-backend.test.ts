@@ -96,3 +96,51 @@ describe('発行と照合が同じバックエンドを見る (#736)', () => {
     expect(resolved.ok).toBe(false);
   });
 });
+
+/**
+ * 保存期間 (#1022) が**本番の配線**（`getReservationService()` / `getCheckinService()` の
+ * singleton）に効いていること。repository 単体のテストだけでは、配線がこの repository を
+ * 通らなくなっても気づけない。
+ *
+ * 判定の下界も併せて縛る: 期限内（有効期限は切れているが保存期間内）の予約は管理画面から
+ * 読め、受付端末では「期限切れ」として扱われる（＝見つかってはいる）。保存期間を過ぎると、
+ * どちらからも**存在しない**扱いになる。
+ */
+describe('予約の保存期間が本番の配線に効く (#1022)', () => {
+  const DAY_MS = 24 * HOUR_MS;
+
+  /** 発行した予約の来訪日時を過去へずらす（来訪の終わり = now - endAgoMs）。 */
+  async function issueEndedAgo(endAgoMs: number) {
+    const issued = await getReservationService().create(ACTOR, INPUT);
+    if (!issued.ok) throw new Error('発行に失敗');
+    const col = getBackend().collection<{ id: string; scopedTokenHash: string }>(
+      RESERVATION_COLLECTION,
+      { indexedField: 'scopedTokenHash' },
+    );
+    const stored = (await col.get(issued.value.id))!;
+    const end = new Date(Date.now() - endAgoMs).toISOString();
+    await col.put({ ...stored, visitAt: end, expiresAt: end } as typeof stored);
+    return issued.value;
+  }
+
+  it('保存期間内（有効期限切れ）は管理画面から読め、受付端末では期限切れとして見つかる', async () => {
+    const r = await issueEndedAgo(INPUT.retentionDays * DAY_MS - HOUR_MS);
+    const got = await getReservationService().get(ACTOR, TENANT, SITE, r.id);
+    expect(got.ok).toBe(true);
+    const listed = await getReservationService().list(ACTOR, TENANT, SITE);
+    expect(listed.ok && listed.value.some((x) => x.id === r.id)).toBe(true);
+    const resolved = await getCheckinService().resolve(TENANT, SITE, r.token);
+    expect(resolved.ok).toBe(false);
+    expect(!resolved.ok && resolved.reason).not.toBe('not_found');
+  });
+
+  it('🔴 保存期間を過ぎた予約は管理画面からも受付端末からも存在しない扱いになる', async () => {
+    const r = await issueEndedAgo(INPUT.retentionDays * DAY_MS + HOUR_MS);
+    const got = await getReservationService().get(ACTOR, TENANT, SITE, r.id);
+    expect(got.ok).toBe(false);
+    const listed = await getReservationService().list(ACTOR, TENANT, SITE);
+    expect(listed.ok && listed.value.some((x) => x.id === r.id)).toBe(false);
+    const resolved = await getCheckinService().resolve(TENANT, SITE, r.token);
+    expect(!resolved.ok && resolved.reason).toBe('not_found');
+  });
+});

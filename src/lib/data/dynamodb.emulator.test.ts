@@ -230,6 +230,55 @@ describe.skipIf(!ENABLED)('本番 DynamoDB バックエンド × 実エミュレ
   );
 
   it(
+    '🔴 予約の保存期間（#1022）: item 自身の ttl が TTL 属性として載り、期限後は読めない',
+    async () => {
+      // 予約は collection 共通の ttlSeconds ではなく、レコードごとの期限（来訪の終わり +
+      // retentionDays）を item の `ttl` で渡す。実エンジンがそれを数値属性として保存し、
+      // 読み取りでは剥がされることを縛る。期限後の不可視は repository の読み取り判定。
+      const { DataBackedReservationRepository, RESERVATION_COLLECTION } = await import(
+        '@/lib/reservation/data-backed-repository'
+      );
+      const { reservationTtlSeconds } = await import('@/domain/reservation/retention');
+      const DAY = 24 * 60 * 60 * 1000;
+      let now = new Date();
+      const repo = new DataBackedReservationRepository({ backend: () => backend, now: () => now });
+      const r = {
+        id: `rsv-${RUN}`,
+        tenantId: `t-${RUN}`,
+        siteId: 's-1',
+        visitorName: 'TEST-来客',
+        visitAt: new Date(Date.now() + DAY).toISOString(),
+        expiresAt: new Date(Date.now() + 2 * DAY).toISOString(),
+        targetType: 'staff',
+        targetId: 'staff-1',
+        tokenHash: `hash-${RUN}`,
+        usagePolicy: 'single_use',
+        status: 'active',
+        retentionDays: 3,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      } as unknown as Parameters<typeof repo.create>[0];
+      expect((await repo.create(r)).ok).toBe(true);
+
+      const rawItem = await raw.send(
+        new GetCommand({ TableName: TABLE, Key: { PK: `col#${RESERVATION_COLLECTION}`, SK: r.id } }),
+      );
+      expect(rawItem.Item?.ttl).toBe(reservationTtlSeconds(r));
+
+      const deadline = Date.parse(r.expiresAt) + 3 * DAY;
+      now = new Date(deadline - 1);
+      const inside = await repo.get(r.tenantId, r.siteId, r.id);
+      expect(inside?.id).toBe(r.id);
+      expect(inside).not.toHaveProperty('ttl');
+      expect(await repo.findByTokenHash(r.tenantId, r.siteId, r.tokenHash)).toBeDefined();
+      now = new Date(deadline);
+      expect(await repo.get(r.tenantId, r.siteId, r.id)).toBeUndefined();
+      expect(await repo.findByTokenHash(r.tenantId, r.siteId, r.tokenHash)).toBeUndefined();
+    },
+    TIMEOUT,
+  );
+
+  it(
     '🔴 内部キーが呼び出し側へ漏れないこと',
     async () => {
       const col = backend.collection<Visit>(`it-strip-${RUN}`, {

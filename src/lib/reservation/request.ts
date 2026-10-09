@@ -19,6 +19,7 @@ import {
   type VisitReservation,
 } from '@/domain/reservation/types';
 import type { ServiceResult } from './service';
+import { DEFAULT_RESERVATION_RETENTION_DAYS } from '@/domain/reservation/retention';
 
 // actor 解決の実装は中央モジュールへ集約。既存 import 互換のため re-export する。
 export { hasValidAdminSession, resolveAdminActor } from '@/lib/auth/actor';
@@ -100,8 +101,6 @@ function defaultExpiresAt(visitAt: string, usagePolicy: string): string {
   return d.toISOString();
 }
 
-const DEFAULT_RETENTION_DAYS = 30;
-
 /** 作成リクエストボディを CreateReservationInput へ。検証は service/lifecycle 側。 */
 export function parseCreateBody(
   body: unknown,
@@ -126,7 +125,7 @@ export function parseCreateBody(
     targetId: str('targetId') ?? '',
     usagePolicy,
     expiresAt: str('expiresAt') ?? (visitAt ? defaultExpiresAt(visitAt, usagePolicy) : ''),
-    retentionDays: typeof o.retentionDays === 'number' ? o.retentionDays : DEFAULT_RETENTION_DAYS,
+    retentionDays: typeof o.retentionDays === 'number' ? o.retentionDays : DEFAULT_RESERVATION_RETENTION_DAYS,
   };
   return { ok: true, value };
 }
