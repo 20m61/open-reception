@@ -1,6 +1,5 @@
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import * as cdk from 'aws-cdk-lib';
 import { Template } from 'aws-cdk-lib/assertions';
 import {
   DEV_IMAGE_RESERVED_CONCURRENCY,
@@ -9,11 +8,12 @@ import {
 } from '../lib/stacks/web-stack';
 import { openNextArtifactState } from '../lib/build-artifacts';
 import { resolveEnv } from '../lib/config/environments';
+import { appWithoutAssetStaging } from './support/app-without-asset-staging';
 
 const READY = openNextArtifactState(path.join(__dirname, '..', '..')).state === 'fresh';
 
 const synth = (environment: 'dev' | 'staging' | 'prod'): Template => {
-  const app = new cdk.App();
+  const app = appWithoutAssetStaging();
   return Template.fromStack(
     new WebStack(app, `Concurrency-${environment}`, {
       env: { account: '123456789012', region: 'ap-northeast-1' },

@@ -130,3 +130,49 @@ export const VALIDATION_UNIT_TEST_COMMAND = [
   `PATH="${VALIDATION_TOOL_BIN}:$PATH"`,
   'npm test',
 ].join(' ');
+
+/**
+ * `npm --prefix infra test`, instrumented (#1146, build efa5f85f, 2026-10-09).
+ *
+ * On MEDIUM the infra suite hit the 30-min project timeout (the cloud gate runs it in 85 s). A local
+ * reproduction refuted CPU count, NODE_OPTIONS and network, and only disk-I/O throttling reproduced
+ * the timeouts; the CodeBuild log alone could not tell. So the step prints `nproc` / memory / disk /
+ * PSI before and after, and a sampler prints PSI, dirty/writeback pages and CPU counters every
+ * VALIDATION_IO_SAMPLE_INTERVAL_SECONDS while the suite runs.
+ *
+ * - The verdict is the suite's: its status is captured (immune to `set -e`) and is the exit status.
+ * - The sampler is killed as soon as the suite ends (pass or fail) and waited for; only an in-flight
+ *   child (at most its `sleep 1`) can outlive it, by at most a second. No file is involved, so a full /tmp (the very
+ *   condition being observed, #721) cannot keep it running. Left alone it stops by itself after
+ *   VALIDATION_IO_SAMPLER_MAX_SECONDS ticks of at least a second each, i.e. never before the
+ *   project timeout; the limit bounds its output.
+ * - The sampler reads /proc only; missing /proc/pressure is printed as unavailable, not an error.
+ * - The whole step runs in a subshell, so its `exit` does not end CodeBuild's shell.
+ */
+export const VALIDATION_IO_SAMPLE_INTERVAL_SECONDS = 15;
+export const VALIDATION_IO_SAMPLER_MAX_SECONDS = 30 * 60;
+
+const PRESSURE_DUMP =
+  'for p in cpu io memory; do echo "pressure/$p"; cat /proc/pressure/$p 2>/dev/null || echo "(unavailable)"; done';
+
+const ioSnapshot = (label: string) =>
+  `( echo "== validation-io ${label}"; nproc; free -m; df -h /tmp .; ${PRESSURE_DUMP} ) || true`;
+
+export const VALIDATION_IO_SAMPLER = [
+  `i=0; while [ $i -lt ${VALIDATION_IO_SAMPLER_MAX_SECONDS} ]; do`,
+  `if [ $((i % ${VALIDATION_IO_SAMPLE_INTERVAL_SECONDS})) -eq 0 ]; then`,
+  'echo "== validation-io sample $(date +%T)";',
+  `${PRESSURE_DUMP};`,
+  'grep -E "^(MemAvailable|Dirty|Writeback):" /proc/meminfo;',
+  'head -n 1 /proc/stat;',
+  'fi; i=$((i + 1)); sleep 1; done',
+].join(' ');
+
+export const VALIDATION_INFRA_TEST_COMMAND = [
+  `( ${ioSnapshot('before')};`,
+  `( ${VALIDATION_IO_SAMPLER} ) & sampler=$!;`,
+  'st=0; npm --prefix infra test -- --reporter=verbose || st=$?;',
+  'kill $sampler 2>/dev/null || true; wait $sampler 2>/dev/null || true;',
+  `${ioSnapshot('after')};`,
+  'echo "== validation-io infra test exit $st"; exit $st )',
+].join(' ');
