@@ -48,7 +48,7 @@ beforeEach(() => {
   // 🔴 `clearAllMocks` は呼び出し履歴だけを消し、**実装は残る**。
   // 鍵を throw させるテストの実装が次のテストへ漏れないよう、毎回立て直す。
   getAnswerSecret.mockImplementation(() => 'TEST-answer-secret');
-  readAnswerToken.mockResolvedValue({ receptionId: 'rec-1' });
+  readAnswerToken.mockResolvedValue({ receptionId: 'rec-1', tenantId: 'internal' });
   getReception.mockResolvedValue({ ok: true, value: { id: 'rec-1', kioskId: 'k', vonageSessionId: 'sess-9', state: 'calling' } });
   resolveVonageSessionService.mockReturnValue({
     issueToken: vi.fn().mockResolvedValue({ token: 'sub-token', role: 'subscriber', expiresAt: '2026-01-01T00:00:00.000Z' }),
@@ -72,6 +72,38 @@ describe('POST /api/staff/calls/:id/answer', () => {
   it('404 when the reception does not exist', async () => {
     getReception.mockResolvedValue({ ok: false, error: { code: 'not_found', message: 'x' } });
     expect((await call()).status).toBe(404);
+  });
+
+  it('404 (same as a missing reception) when the staff tenant differs from the session owner — no token, no state change', async () => {
+    getReception.mockResolvedValue({
+      ok: true,
+      value: { id: 'rec-1', kioskId: 'k', vonageSessionId: 'sess-9', vonageTenantId: 'TEST-tenant-b', state: 'calling' },
+    });
+    const cross = await call();
+    getReception.mockResolvedValue({ ok: false, error: { code: 'not_found', message: 'x' } });
+    const missing = await call();
+    expect(cross.status).toBe(404);
+    expect(await cross.json()).toEqual(await missing.json());
+    expect(resolveVonageSessionService).not.toHaveBeenCalled();
+    expect(markConnected).not.toHaveBeenCalled();
+  });
+
+  it('404 when the answer token carries no tenant (cannot show it belongs to the session owner)', async () => {
+    readAnswerToken.mockResolvedValue({ receptionId: 'rec-1' });
+    expect((await call()).status).toBe(404);
+    expect(resolveVonageSessionService).not.toHaveBeenCalled();
+    expect(markConnected).not.toHaveBeenCalled();
+  });
+
+  it('resolves Vonage config from the tenant recorded on the session, not the default scope', async () => {
+    readAnswerToken.mockResolvedValue({ receptionId: 'rec-1', tenantId: 'TEST-tenant-b' });
+    getReception.mockResolvedValue({
+      ok: true,
+      value: { id: 'rec-1', kioskId: 'k', vonageSessionId: 'sess-9', vonageTenantId: 'TEST-tenant-b', state: 'calling' },
+    });
+    expect((await call()).status).toBe(200);
+    expect(resolveVonageSessionService).toHaveBeenCalledWith('TEST-tenant-b');
+    expect(getVonagePublicConfigForTenant).toHaveBeenCalledWith('TEST-tenant-b');
   });
 
   it('409 when vonage call session is unavailable', async () => {

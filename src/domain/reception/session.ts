@@ -32,6 +32,12 @@ export type ReceptionSession = {
   /** Vonage 通話セッション ID（本番 adapter 利用時に紐づく。issue #4 increment 2）。 */
   vonageSessionId?: string;
   /**
+   * `vonageSessionId` を作ったテナント（作成時に `startCall` が記録する）。
+   * 同じセッションへのトークン発行はこのテナントの設定で行う（`lib/call/vonage-session-access.ts`）。
+   * **任意**＝この項目が入る前のレコードには無く、その場合は既定テナントで作られている。
+   */
+  vonageTenantId?: string;
+  /**
    * provider 側の通話 ID（実 PSTN 発信時のみ。#647）。相関
    * （`StoredCallCorrelation`）を引く鍵で、`/status` が結果を確定するのに使う。
    *

@@ -252,6 +252,9 @@ export async function startCall(
       ...calling.value,
       vonageSessionId: result.sessionId,
       providerCallId: result.providerCallId,
+      // セッションを作ったテナントを残す。トークン発行はこのテナントの設定で行う
+      // （`lib/call/vonage-session-access.ts`）。PSTN 経路にはセッションが無いので付けない。
+      ...(result.sessionId ? { vonageTenantId: tenantId } : {}),
     };
     await sessions().put(withSession);
     return { ok: true, value: withSession };

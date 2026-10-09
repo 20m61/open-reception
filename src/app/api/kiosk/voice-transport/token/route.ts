@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
-import { KIOSK_COOKIE, readKioskSession } from '@/lib/auth/kiosk';
+import { requireKioskSession } from '@/lib/kiosk/session-guard';
 import { getReception } from '@/lib/data-stores/reception-store';
 import { resolveKioskScope } from '@/lib/voice-transport/kiosk-scope';
 import { issueVoiceTransportToken } from '@/lib/voice-transport/token';
@@ -21,8 +20,7 @@ import { readJson } from '@/lib/data-stores/result-http';
  * 含まれていても無視する（クライアント詐称防止）。
  */
 export async function POST(request: Request): Promise<NextResponse> {
-  const kioskCookie = (await cookies()).get(KIOSK_COOKIE)?.value;
-  const session = await readKioskSession(kioskCookie);
+  const session = await requireKioskSession();
   if (!session) {
     return NextResponse.json({ error: 'forbidden', message: 'kiosk session required' }, { status: 403 });
   }

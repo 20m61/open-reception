@@ -1,9 +1,8 @@
 import { NextResponse } from 'next/server';
-import { getReception, markCallFailed } from '@/lib/data-stores/reception-store';
-import { denyWithoutKioskSession } from '@/lib/kiosk/session-guard';
+import { markCallFailed } from '@/lib/data-stores/reception-store';
+import { requireOwnedReception } from '@/lib/kiosk/session-guard';
 import { routingMayContinue } from '@/domain/routing/stop';
 import { hangUpIfRinging } from '@/lib/routing/hang-up';
-import { resolveDefaultScope } from '@/lib/tenant/default-scope';
 
 /**
  * POST /api/kiosk/receptions/:id/give-up — 端末が待つのをやめたことを伝える (#743)。
@@ -35,19 +34,14 @@ export async function POST(
   _request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
-  const denied = await denyWithoutKioskSession();
-  if (denied) return denied;
-
   const { id } = await params;
-  const found = await getReception(id);
-  if (!found.ok) {
-    return NextResponse.json({ error: 'not_found' }, { status: 404 });
-  }
+  const found = await requireOwnedReception(id);
+  if (!found.ok) return found.response;
 
   // 🔴 既に終端していれば触らない。担当者が応答して `connected` になった直後に端末側の
   // 上限が来ることがあり、そこで `failed` を書くと**繋がったのに失敗になる**。
-  if (!routingMayContinue(found.value.state)) {
-    return NextResponse.json({ stopped: false, state: found.value.state });
+  if (!routingMayContinue(found.reception.state)) {
+    return NextResponse.json({ stopped: false, state: found.reception.state });
   }
 
   const result = await markCallFailed(id, 'client_timeout');
@@ -59,7 +53,7 @@ export async function POST(
   // 🔴 **ここでも握る。** `hangUpIfRinging` は投げない契約だが、その保証はモジュールを
   // またいだ約束でしかない。端末を固まらせないことはこのルート自身の要件なので、
   // 境界でもう一度受ける（このリポジトリが繰り返し踏んでいる「配線が縛られていない」型）。
-  await hangUpIfRinging(String(resolveDefaultScope().tenantId), found.value.providerCallId).catch(
+  await hangUpIfRinging(String(found.session.tenantId), found.reception.providerCallId).catch(
     () => undefined,
   );
 

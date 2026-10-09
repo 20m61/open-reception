@@ -17,6 +17,10 @@ vi.mock('@/lib/auth/kiosk', () => ({
   KIOSK_COOKIE: 'kiosk_session',
   readKioskSession: (...a: unknown[]) => readKioskSession(...a),
 }));
+// 共通ガードは端末台帳で失効を確かめる。ここでは台帳上「有効な端末」として固定する。
+vi.mock('@/lib/product-context/device-binding', () => ({
+  resolveDeviceBinding: async (kioskId: string) => ({ kioskId, tenantId: 'internal', siteId: 'default-site' }),
+}));
 vi.mock('@/lib/data-stores/reception-store', () => ({
   getReception: (...a: unknown[]) => getReception(...a),
 }));
@@ -101,6 +105,18 @@ describe('POST /api/kiosk/stay (issue #342)', () => {
     getReception.mockResolvedValue({
       ok: true,
       value: { ...connectedSession, kioskId: 'kiosk-other' },
+    });
+    const res = await post();
+    expect(res.status).toBe(403);
+    expect(createPresentForReception).not.toHaveBeenCalled();
+  });
+
+  // 🔴 所有の判定は在館化の可否（409 not_eligible）より先。上の 1 本は在館化できる受付で
+  // 測っているので、可否の判定を前へ動かしても素通りする。在館化できない受付で測る。
+  it('別端末の受付は、在館化できない受付でも 409 ではなく 403（所有の判定が先）', async () => {
+    getReception.mockResolvedValue({
+      ok: true,
+      value: { ...connectedSession, kioskId: 'kiosk-other', callOutcome: 'timeout' },
     });
     const res = await post();
     expect(res.status).toBe(403);

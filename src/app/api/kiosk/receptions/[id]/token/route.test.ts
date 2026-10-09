@@ -15,6 +15,10 @@ vi.mock('@/lib/auth/kiosk', () => ({
   KIOSK_COOKIE: 'kiosk_session',
   readKioskSession: (...a: unknown[]) => readKioskSession(...a),
 }));
+// 共通ガードは端末台帳で失効を確かめる。ここでは台帳上「有効な端末」として固定する。
+vi.mock('@/lib/product-context/device-binding', () => ({
+  resolveDeviceBinding: async (kioskId: string) => ({ kioskId, tenantId: 'internal', siteId: 'default-site' }),
+}));
 vi.mock('@/lib/data-stores/reception-store', () => ({ getReception: (...a: unknown[]) => getReception(...a) }));
 vi.mock('@/lib/call/adapter-factory', () => ({
   resolveVonageSessionService: (...a: unknown[]) => resolveVonageSessionService(...a),
@@ -58,6 +62,41 @@ describe('GET /api/kiosk/receptions/:id/token', () => {
     getReception.mockResolvedValue({ ok: true, value: { id: 'rec-1', kioskId: 'other-kiosk', vonageSessionId: 's' } });
     const res = await call();
     expect(res.status).toBe(403);
+    expect(resolveVonageSessionService).not.toHaveBeenCalled();
+  });
+
+  it('404 when the kiosk tenant differs from the tenant that created the session', async () => {
+    // 端末の所属（台帳）は 'internal'。セッションは別テナントで作られている。
+    getReception.mockResolvedValue({
+      ok: true,
+      value: { id: 'rec-1', kioskId: 'kiosk-1', vonageSessionId: 's', vonageTenantId: 'TEST-tenant-b' },
+    });
+    const res = await call();
+    expect(res.status).toBe(404);
+    expect(resolveVonageSessionService).not.toHaveBeenCalled();
+    expect(getVonagePublicConfigForTenant).not.toHaveBeenCalled();
+  });
+
+  // 🔴 認可（端末・テナント）は「セッション未確立」(409) より先。上の 2 本は確立済みの
+  // セッションで測っているので、状態の確認を前へ動かしても素通りする。未確立で測る。
+  it('ownership is decided before session state: another kiosk gets 403, not 409, without a session', async () => {
+    getReception.mockResolvedValue({ ok: true, value: { id: 'rec-1', kioskId: 'other-kiosk', vonageSessionId: undefined } });
+    resolveVonageSessionService.mockReturnValue(null);
+    getVonagePublicConfigForTenant.mockReturnValue(null);
+    const res = await call();
+    expect(res.status).toBe(403);
+    expect(resolveVonageSessionService).not.toHaveBeenCalled();
+  });
+
+  it('tenant is matched before session state: a foreign tenant gets 404, not 409, without a session', async () => {
+    getReception.mockResolvedValue({
+      ok: true,
+      value: { id: 'rec-1', kioskId: 'kiosk-1', vonageSessionId: undefined, vonageTenantId: 'TEST-tenant-b' },
+    });
+    resolveVonageSessionService.mockReturnValue(null);
+    getVonagePublicConfigForTenant.mockReturnValue(null);
+    const res = await call();
+    expect(res.status).toBe(404);
     expect(resolveVonageSessionService).not.toHaveBeenCalled();
   });
 
