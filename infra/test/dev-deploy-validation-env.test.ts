@@ -14,6 +14,10 @@ import {
   SEMGREP_WHEEL_SHA256,
   SEMGREP_WHEEL_URL,
   VALIDATION_GIT_REMOTE,
+  VALIDATION_INFRA_TEST_COMMAND,
+  VALIDATION_IO_SAMPLER,
+  VALIDATION_IO_SAMPLER_MAX_SECONDS,
+  VALIDATION_IO_SAMPLE_INTERVAL_SECONDS,
   VALIDATION_SOURCE_BIND_SCRIPT,
   VALIDATION_TOOL_BIN,
   VALIDATION_UNIT_TEST_COMMAND,
@@ -45,6 +49,9 @@ const buildSpecOf = (name: string) => {
   return JSON.parse(text) as { phases: Record<string, { commands: string[] }> };
 };
 const validation = buildSpecOf('OpenReceptionDevDeployValidation');
+const validationTimeoutMinutes = (Object.values(resources).find(
+  (r) => r.Type === 'AWS::CodeBuild::Project' && r.Properties.Name === 'OpenReceptionDevDeployValidation',
+)!.Properties.TimeoutInMinutes) as number;
 const installCommands = validation.phases.install!.commands;
 const buildCommands = validation.phases.build!.commands;
 
@@ -54,9 +61,11 @@ const tempDir = (prefix: string) => {
   temps.push(dir);
   return dir;
 };
+// Cleanup only. Under throttled disk I/O (#1146 reproduction) removing the scratch repositories
+// took over vitest's 10 s hook default and failed the file; give it the suite's test timeout.
 afterAll(() => {
   for (const dir of temps) rmSync(dir, { recursive: true, force: true });
-});
+}, 60_000);
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync('git', args, {
@@ -322,5 +331,135 @@ describe('Validation tools: gitleaks / semgrep pinned and verified, node apart f
     });
     expect(probe.status).toBe(0);
     expect(probe.stdout.trim()).toBe(join(bin, 'npx'));
+  });
+});
+
+/**
+ * #1146 (build efa5f85f, 2026-10-09): `npm --prefix infra test` hit the 30-min project timeout on
+ * MEDIUM while the cloud gate runs it in 85 s. A local reproduction pointed at disk I/O, but the
+ * CodeBuild log alone cannot say what saturated. So the step prints the machine's state before and
+ * after, and samples /proc pressure while it runs. The instrumentation must never change the
+ * step's verdict and must never outlive it.
+ */
+describe('Validation infra test: instrumented, verdict unchanged (#1146 efa5f85f)', () => {
+  /** A stub `npm` that records its argv, optionally sleeps, and exits with $STUB_EXIT. */
+  const stubNpm = () => {
+    const stub = tempDir('infra-npm-');
+    writeFileSync(
+      join(stub, 'npm'),
+      `#!/bin/sh\necho "$@" > '${join(stub, 'argv')}'\necho STUB-NPM-RAN\nsleep "\${STUB_SLEEP:-0}"\nexit "\${STUB_EXIT:-0}"\n`,
+    );
+    chmodSync(join(stub, 'npm'), 0o755);
+    return stub;
+  };
+  const run = (command: string, stub: string, env: Record<string, string> = {}, shellFlags = '-c') => {
+    const started = Date.now();
+    // spawnSync returns only once every holder of the child's stdout has exited, so a sampler left
+    // running in the background would show up here as a long elapsed time (CodeBuild waits likewise).
+    const r = spawnSync('sh', [shellFlags, command], {
+      encoding: 'utf8',
+      timeout: 60_000,
+      env: { NODE_ENV: 'test', PATH: `${stub}:${process.env.PATH ?? ''}`, ...env },
+    });
+    return { ...r, elapsedMs: Date.now() - started };
+  };
+
+  it('replaces the bare infra test step, in the same place', () => {
+    expect(buildCommands.filter((c) => c === VALIDATION_INFRA_TEST_COMMAND)).toHaveLength(1);
+    expect(buildCommands).not.toContain('npm --prefix infra test');
+    const at = buildCommands.indexOf(VALIDATION_INFRA_TEST_COMMAND);
+    expect(buildCommands[at - 1]).toBe('npm --prefix infra run typecheck');
+    expect(buildCommands[at + 1]).toMatch(/npx cdk synth /);
+  });
+
+  it('runs the infra suite with per-test durations', () => {
+    const stub = stubNpm();
+    expect(run(VALIDATION_INFRA_TEST_COMMAND, stub).status).toBe(0);
+    expect(readFileSync(join(stub, 'argv'), 'utf8').trim()).toBe('--prefix infra test -- --reporter=verbose');
+  });
+
+  it.each([
+    ['passes', 0, '-c'],
+    ['fails', 1, '-c'],
+    ['fails with another status', 7, '-c'],
+    ['fails under set -e', 3, '-ec'],
+  ])('🔴 the build sees the infra test\'s own status when it %s', (_label, code, flags) => {
+    const stub = stubNpm();
+    const r = run(VALIDATION_INFRA_TEST_COMMAND, stub, { STUB_EXIT: String(code) }, flags);
+    expect(r.status, r.stderr).toBe(code);
+    expect(r.stdout).toContain('STUB-NPM-RAN');
+    // The after-snapshot is printed on failure too, after the suite.
+    expect(r.stdout.indexOf('== validation-io before')).toBeGreaterThanOrEqual(0);
+    expect(r.stdout.indexOf('== validation-io after')).toBeGreaterThan(r.stdout.indexOf('STUB-NPM-RAN'));
+    expect(r.stdout).toContain(`== validation-io infra test exit ${code}`);
+  });
+
+  it('does not end the shell it runs in (CodeBuild runs a phase\'s commands in one shell)', () => {
+    const stub = stubNpm();
+    const r = run(`${VALIDATION_INFRA_TEST_COMMAND}; echo "next step: $?"`, stub, { STUB_EXIT: '4' });
+    expect(r.stdout).toContain('next step: 4');
+  });
+
+  it('🔴 the sampler samples while the suite runs and stops with it, pass or fail', () => {
+    for (const code of [0, 1]) {
+      const stub = stubNpm();
+      const r = run(VALIDATION_INFRA_TEST_COMMAND, stub, { STUB_EXIT: String(code), STUB_SLEEP: '2' });
+      expect(r.status, r.stderr).toBe(code);
+      expect(r.stdout).toMatch(/== validation-io sample \d\d:\d\d:\d\d/);
+      expect(r.stdout).toMatch(/^MemAvailable:/m);
+      expect(r.stdout).toMatch(/^cpu /m);
+      // Bounded by the suite (2 s) plus one sampler tick, not by the sampler's own limit (30 min).
+      expect(r.elapsedMs).toBeLessThan(15_000);
+    }
+  });
+
+  it('keeps the verdict when the sampler has already ended on its own (set -e too)', () => {
+    const stub = stubNpm();
+    const command = VALIDATION_INFRA_TEST_COMMAND.replace(`-lt ${VALIDATION_IO_SAMPLER_MAX_SECONDS} ]`, '-lt 1 ]');
+    expect(command).not.toBe(VALIDATION_INFRA_TEST_COMMAND);
+    for (const code of [0, 6]) {
+      const r = run(command, stub, { STUB_EXIT: String(code), STUB_SLEEP: '2' }, '-ec');
+      expect(r.status, r.stderr).toBe(code);
+      expect(r.stdout).toContain('== validation-io after');
+    }
+  });
+
+  it('tolerates a kernel without /proc/pressure', () => {
+    const stub = stubNpm();
+    const command = VALIDATION_INFRA_TEST_COMMAND.replaceAll('/proc/pressure/', '/nonexistent-pressure/');
+    for (const code of [0, 5]) {
+      const r = run(command, stub, { STUB_EXIT: String(code), STUB_SLEEP: '1' });
+      expect(r.status, r.stderr).toBe(code);
+      expect(r.stdout).toContain('(unavailable)');
+    }
+  });
+
+  it('🔴 the sampler ends on its own within the project timeout, with bounded output', () => {
+    expect(VALIDATION_IO_SAMPLER_MAX_SECONDS).toBeLessThanOrEqual(validationTimeoutMinutes * 60);
+    expect(VALIDATION_IO_SAMPLE_INTERVAL_SECONDS).toBe(15);
+    // Never killed, one-second ticks made instant: it must still terminate by itself.
+    const sampler = VALIDATION_IO_SAMPLER.replace('sleep 1', 'sleep 0');
+    expect(sampler).not.toBe(VALIDATION_IO_SAMPLER);
+    const r = spawnSync('sh', ['-c', sampler], { encoding: 'utf8', timeout: 60_000 });
+    expect(r.status, r.stderr).toBe(0);
+    const samples = (r.stdout.match(/^== validation-io sample /gm) ?? []).length;
+    expect(samples).toBe(Math.ceil(VALIDATION_IO_SAMPLER_MAX_SECONDS / VALIDATION_IO_SAMPLE_INTERVAL_SECONDS));
+    // header + 3 x (name + some/full) + 3 meminfo fields + the cpu line
+    expect(r.stdout.split('\n').length).toBeLessThanOrEqual(samples * 14 + 1);
+  });
+
+  it('🔴 the sampler reads only /proc and runs only these commands (no network, AWS or git)', () => {
+    const paths = VALIDATION_IO_SAMPLER.match(/(?<![\w$])\/[\w./$-]+/g) ?? [];
+    expect(paths.length).toBeGreaterThan(0);
+    for (const p of paths) expect(p.startsWith('/proc/') || p === '/dev/null', p).toBe(true);
+    // Allowlist of every word in the sampler, quoted text included: a new command cannot slip in.
+    const words = new Set(VALIDATION_IO_SAMPLER.match(/[A-Za-z_][\w-]*/g));
+    const allowed = new Set([
+      'i', 'while', 'lt', 'do', 'if', 'eq', 'then', 'echo', 'validation-io', 'sample', 'date', 'T',
+      'for', 'p', 'in', 'cpu', 'io', 'memory', 'pressure', 'cat', 'proc', 'dev', 'null', 'unavailable', 'done',
+      'grep', 'E', 'MemAvailable', 'Dirty', 'Writeback', 'meminfo', 'head', 'n', 'stat', 'fi', 'sleep',
+    ]);
+    expect([...words].filter((w) => !allowed.has(w))).toEqual([]);
+    expect(VALIDATION_INFRA_TEST_COMMAND).toContain(VALIDATION_IO_SAMPLER);
   });
 });

@@ -27,6 +27,7 @@ import {
   SEMGREP_WHEEL_PATH,
   SEMGREP_WHEEL_SHA256,
   SEMGREP_WHEEL_URL,
+  VALIDATION_INFRA_TEST_COMMAND,
   VALIDATION_SOURCE_BIND_SCRIPT,
   VALIDATION_TOOL_BIN,
   VALIDATION_UNIT_TEST_COMMAND,
@@ -880,7 +881,8 @@ export class DevDeployBrokerStack extends cdk.Stack {
               'npm run build:open-next',
               'npm run aws:local:test',
               'npm --prefix infra run typecheck',
-              'npm --prefix infra test',
+              // Instrumented (#1146 efa5f85f): prints what saturates; the verdict stays the suite's.
+              VALIDATION_INFRA_TEST_COMMAND,
               // Only the three stacks already admitted by ADR 0009 are synthesized (and written to
               // the assembly: promotionStacksOnly), with the ADR 0009 bootstrap qualifier the trusted
               // policy requires (blocker 7).

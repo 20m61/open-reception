@@ -10,6 +10,7 @@ import { resolveEnv, EnvConfig } from '../lib/config/environments';
 import { openNextArtifactState, describeArtifactState } from '../lib/build-artifacts';
 import { ORIGIN_VERIFY_LOG_MARKERS } from '../../src/lib/security/origin-verify';
 import { KIOSK_DIAL_LOG_MARKERS } from '../../src/lib/routing/dial-log-markers';
+import { appWithoutAssetStaging } from './support/app-without-asset-staging';
 
 const ENV = { account: '123456789012', region: 'ap-northeast-1' };
 
@@ -24,7 +25,7 @@ const configWithAlarmEmail = (alarmEmail: string): EnvConfig => {
  * `.open-next` 成果物に依存しないダミー Lambda / Table を fixture stack に立てて渡す。
  */
 const synth = (config: EnvConfig = resolveEnv('dev')) => {
-  const app = new cdk.App();
+  const app = appWithoutAssetStaging();
   const fixture = new cdk.Stack(app, 'Fixture', { env: ENV });
   const makeFn = (id: string) =>
     new lambda.Function(fixture, id, {
@@ -299,7 +300,7 @@ if (!OPEN_NEXT_READY) {
 // 実 WebStack との配線（public メンバ公開）を end-to-end で検証する。
 describe.runIf(OPEN_NEXT_READY)('WebStack -> WebMonitoringStack wiring (#299)', () => {
   it('WebStack exposes serverFn/imageFn/dataTable/distribution and WebMonitoringStack consumes them', () => {
-    const app = new cdk.App();
+    const app = appWithoutAssetStaging();
     const web = new WebStack(app, 'TestWebForMonitoring', {
       env: ENV,
       config: resolveEnv('dev'),
