@@ -12,7 +12,15 @@
  *   exactly one version, written while that action ran;
  * - exactly one Validate action succeeded, its CodeBuild build is the validation project and
  *   succeeded, and its output object has exactly one version, written while that build ran;
- * - the broker action in progress reads exactly that validated object.
+ * - the broker action in progress reads exactly that validated object;
+ * - this build is that action's build: CodeBuild's own record of THIS build (BatchGetBuilds on
+ *   CODEBUILD_BUILD_ID) shows it in progress, in the broker project, started by this pipeline
+ *   (`initiator` is exactly `codepipeline/<pipeline name>`) no earlier than the action started.
+ *   Run 5 of #1146 runbook 7.5 showed the in-progress action has no build id to compare with.
+ *   This denies a build started outside the pipeline (a retried or hand-started build carrying a
+ *   copied execution id). It does NOT stop a principal that can StartBuild with overrides
+ *   (buildspec or environment): such a build need not run this check at all. That boundary is
+ *   IAM (who may start, retry or update the broker project / pipeline), an arming requirement.
  * A substituted object (a second version, a delete marker, a version written outside the
  * producing action) is denied. The time windows are a second line; the single version is the
  * control.
@@ -32,7 +40,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const PROVENANCE_VERSION = 1;
+export const PROVENANCE_VERSION = 2;
+
+/** The broker's CodeBuild project (mirrors the stack; pinned by test). */
+export const BROKER_PROJECT_NAME = 'OpenReceptionTrustedDevDeployBroker';
 
 /** A retried broker stage may reuse its execution for at most this long after the execution started. */
 export const MAX_EXECUTION_AGE_MS = 12 * 60 * 60 * 1000;
@@ -108,6 +119,15 @@ function singleVersion(versionsResponse, key) {
   return { ok: true, versionId: v.VersionId, lastModified };
 }
 
+/** Presence and key names of an action's output (no values). */
+function actionShape(action) {
+  const shape = { output: isRecord(action.output) };
+  if (shape.output) shape.outputKeys = Object.keys(action.output).sort();
+  shape.executionResult = isRecord(action.output?.executionResult);
+  if (shape.executionResult) shape.executionResultKeys = Object.keys(action.output.executionResult).sort();
+  return shape;
+}
+
 const s3Location = (artifact) =>
   isRecord(artifact) && isRecord(artifact.s3location) && typeof artifact.s3location.bucket === 'string' && typeof artifact.s3location.key === 'string'
     ? { bucket: artifact.s3location.bucket, key: artifact.s3location.key }
@@ -118,14 +138,15 @@ const s3Location = (artifact) =>
  * - `executions`: `codepipeline list-pipeline-executions`
  * - `actions`: `codepipeline list-action-executions --filter pipelineExecutionId=<id>`
  * - `validationBuilds`: `codebuild batch-get-builds --ids <validate build id>`
+ * - `brokerBuilds`: `codebuild batch-get-builds --ids <CODEBUILD_BUILD_ID>` (this build)
  * - `bucketVersioning`: `s3api get-bucket-versioning`
  * - `sourceVersions` / `validatedVersions`: `s3api list-object-versions --prefix <key>`
  */
 export function evaluateProvenance({ config, now, observed }) {
-  const { pipelineName, executionId, revision, stages, validationProject, artifactBucket, buildId: brokerBuildId } = config ?? {};
+  const { pipelineName, executionId, revision, stages, validationProject, brokerProject, artifactBucket, buildId: brokerBuildId } = config ?? {};
   if (!(now instanceof Date) || Number.isNaN(now.getTime())) return deny(RULES.INPUT_INVALID, 'broker clock is not a valid time');
-  if (!NAME.test(pipelineName ?? '') || !NAME.test(validationProject ?? '') || !NAME.test(artifactBucket ?? '')) {
-    return deny(RULES.INPUT_INVALID, 'pipeline, validation project or artifact bucket name missing or malformed');
+  if (!NAME.test(pipelineName ?? '') || !NAME.test(validationProject ?? '') || !NAME.test(brokerProject ?? '') || !NAME.test(artifactBucket ?? '')) {
+    return deny(RULES.INPUT_INVALID, 'pipeline, project or artifact bucket name missing or malformed');
   }
   if (!isRecord(stages) || !['source', 'validate', 'broker'].every((k) => isRecord(stages[k]) && NAME.test(stages[k].stage ?? '') && NAME.test(stages[k].action ?? ''))) {
     return deny(RULES.INPUT_INVALID, 'stage / action names missing or malformed');
@@ -177,11 +198,26 @@ export function evaluateProvenance({ config, now, observed }) {
   const [source] = sources;
   const [validation] = validations;
   const [broker] = brokers;
-  // This build must be the broker action's own build, not a build started directly with an
-  // execution id copied into its environment.
-  const brokerExternalId = isRecord(broker.output?.executionResult) ? broker.output.executionResult.externalExecutionId : undefined;
-  if (brokerExternalId !== brokerBuildId) {
-    return deny(RULES.UNVERIFIABLE, 'this build is not the build of the in-progress broker action', facts);
+  // Observation only (never part of the decision): whether the in-progress action already shows
+  // a build id. Presence and key names, no values.
+  facts.observedBrokerActionShape = actionShape(broker);
+  // This build must be the pipeline's build of that action, not one started outside the pipeline
+  // with the execution id copied into its environment. CodeBuild records who started a build:
+  // `codepipeline/<name>` for a pipeline, the user's name otherwise. Only the class is recorded
+  // (a user name can be a person's e-mail address).
+  const ownBuilds = list(observed?.brokerBuilds?.builds);
+  const own = ownBuilds.length === 1 && isRecord(ownBuilds[0]) ? ownBuilds[0] : null;
+  facts.brokerInitiator = own?.initiator === `codepipeline/${pipelineName}` ? 'pipeline' : 'other';
+  if (own === null || own.id !== brokerBuildId || own.projectName !== brokerProject || own.buildStatus !== 'IN_PROGRESS') {
+    return deny(RULES.UNVERIFIABLE, 'this build is not an in-progress build of the broker project', facts);
+  }
+  if (facts.brokerInitiator !== 'pipeline') {
+    return deny(RULES.UNVERIFIABLE, 'this build was not started by this pipeline', facts);
+  }
+  const ownStart = parseTime(own.startTime);
+  const actionStart = parseTime(broker.startTime);
+  if (!Number.isFinite(ownStart) || !Number.isFinite(actionStart) || ownStart < actionStart - CLOCK_TOLERANCE_MS) {
+    return deny(RULES.UNVERIFIABLE, 'this build did not start after the in-progress broker action started', facts);
   }
   const commitId = isRecord(source.output?.outputVariables) ? source.output.outputVariables.CommitId : undefined;
   if (commitId !== revision) return deny(RULES.REVISION_MISMATCH, 'the source action recorded another CommitId', facts);
@@ -283,6 +319,8 @@ export function gather(config, runAws = awsJson) {
   const buildId = validation.output?.executionResult?.externalExecutionId;
   if (typeof buildId !== 'string' || !buildId) throw new Error('validation build id missing');
   observed.validationBuilds = runAws(['codebuild', 'batch-get-builds', '--ids', buildId]);
+  // This build's own record (who started it), never mixed with the validation build's.
+  observed.brokerBuilds = runAws(['codebuild', 'batch-get-builds', '--ids', config.buildId]);
   observed.bucketVersioning = runAws(['s3api', 'get-bucket-versioning', '--bucket', artifactBucket]);
   const keyOf = (action) => {
     const loc = s3Location(list(action.output?.outputArtifacts)[0]);
@@ -381,6 +419,7 @@ function parseCli(argv, env = process.env) {
   return {
     pipelineName: out.pipelineName,
     validationProject: out.validationProject,
+    brokerProject: BROKER_PROJECT_NAME,
     artifactBucket: env[out.artifactBucketEnv],
     executionId: env.OR_PIPELINE_EXECUTION_ID,
     revision: env.OR_TRUSTED_SOURCE_REVISION,

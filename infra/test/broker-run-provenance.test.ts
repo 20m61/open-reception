@@ -27,6 +27,8 @@ type Provenance = {
   parseTime: (v: unknown) => number;
   RULES: Record<string, string>;
   MAX_EXECUTION_AGE_MS: number;
+  CLOCK_TOLERANCE_MS: number;
+  BROKER_PROJECT_NAME: string;
 };
 let mod: Provenance;
 beforeAll(async () => {
@@ -41,6 +43,7 @@ const SOURCE_KEY = 'OpenReceptionSparseD/Source/AbC1234';
 const VALIDATED_KEY = 'OpenReceptionSparseD/Validated/XyZ9876';
 const BUILD_ID = 'OpenReceptionDevDeployValidation:6f1c7c1e-0000-4000-8000-000000000001';
 const BROKER_BUILD_ID = 'OpenReceptionTrustedDevDeployBroker:7a2d8d2f-0000-4000-8000-000000000002';
+const PIPELINE_INITIATOR = 'codepipeline/OpenReceptionSparseDevDeploy';
 const STAGES = {
   source: { stage: 'Source', action: 'PromotionBranch' },
   validate: { stage: 'Validate', action: 'UnprivilegedValidation' },
@@ -52,6 +55,7 @@ const config = (): J => ({
   revision: REV,
   stages: STAGES,
   validationProject: 'OpenReceptionDevDeployValidation',
+  brokerProject: 'OpenReceptionTrustedDevDeployBroker',
   artifactBucket: BUCKET,
   buildId: BROKER_BUILD_ID,
 });
@@ -63,7 +67,12 @@ const at = (seconds: number, style: 'micro' | 'z' = 'micro') => {
 };
 const NOW = new Date(T0 + 30 * 60 * 1000);
 
-/** A consistent, honest execution: source 1-10 s, validation build 20-1200 s, broker running. */
+/**
+ * A consistent, honest execution: source 1-10 s, validation build 20-1200 s, broker running.
+ * The in-progress broker action carries NO `output` (observed on real AWS, 5th run of #1146
+ * runbook 7.5: the build id was not there while the action ran). Its own build is read from
+ * CodeBuild (`brokerBuilds`), started by this pipeline.
+ */
 const observed = (): J => ({
   executions: {
     pipelineExecutionSummaries: [
@@ -76,7 +85,6 @@ const observed = (): J => ({
       {
         pipelineExecutionId: EXEC, stageName: 'BrokerBoundary', actionName: 'TrustedBrokerUnarmed', status: 'InProgress', startTime: at(1210), lastUpdateTime: at(1215),
         input: { inputArtifacts: [{ name: 'Validated', s3location: { bucket: BUCKET, key: VALIDATED_KEY } }] },
-        output: { executionResult: { externalExecutionId: BROKER_BUILD_ID } },
       },
       {
         pipelineExecutionId: EXEC, stageName: 'Validate', actionName: 'UnprivilegedValidation', status: 'Succeeded', startTime: at(15), lastUpdateTime: at(1205),
@@ -90,6 +98,7 @@ const observed = (): J => ({
     ],
   },
   validationBuilds: { builds: [{ id: BUILD_ID, projectName: 'OpenReceptionDevDeployValidation', buildStatus: 'SUCCEEDED', startTime: at(20), endTime: at(1200) }] },
+  brokerBuilds: { builds: [{ id: BROKER_BUILD_ID, projectName: 'OpenReceptionTrustedDevDeployBroker', initiator: PIPELINE_INITIATOR, buildStatus: 'IN_PROGRESS', currentPhase: 'BUILD', startTime: at(1211) }], buildsNotFound: [] },
   bucketVersioning: { Status: 'Enabled' },
   sourceVersions: { Versions: [{ Key: SOURCE_KEY, VersionId: 'sv1', IsLatest: true, LastModified: at(9, 'z') }], DeleteMarkers: [] },
   validatedVersions: { Versions: [{ Key: VALIDATED_KEY, VersionId: 'vv1', IsLatest: true, LastModified: at(1190, 'z') }] },
@@ -126,6 +135,215 @@ describe('execution provenance: honest execution', () => {
   it('ignores longer keys returned by the prefix listing', () => {
     const d = decide((o) => o.validatedVersions.Versions.push({ Key: `${VALIDATED_KEY}x`, VersionId: 'other', LastModified: at(5000, 'z') }));
     expect(d.result).toBe('allowed');
+  });
+});
+
+describe('self-binding: this build is the pipeline-started build of the in-progress broker action', () => {
+  const broker = (o: J) => action(o, 'BrokerBoundary');
+  const build = (o: J) => o.brokerBuilds.builds[0];
+  const TOL = () => mod.CLOCK_TOLERANCE_MS;
+  const ACTION_START = T0 + 1210 * 1000;
+
+  it.each([
+    ['no output at all (the shape seen on real AWS while the action ran)', (_o: J) => {}],
+    ['an empty output', (o: J) => (broker(o).output = {})],
+    ['an output with an external execution id (even another one: it is not used for the decision)', (o: J) => (broker(o).output = { executionResult: { externalExecutionId: 'OpenReceptionTrustedDevDeployBroker:other' } })],
+  ])('lower bound: allows an honest pipeline build whatever the in-progress action shows as output: %s', (_label, mutate) => {
+    expect(decide(mutate).result).toBe('allowed');
+  });
+
+  it('records the broker action output shape (presence and keys only) and the initiator class', () => {
+    expect(decide().facts).toMatchObject({ brokerInitiator: 'pipeline', observedBrokerActionShape: { output: false, executionResult: false } });
+    expect(decide((o) => (broker(o).output = {})).facts.observedBrokerActionShape).toEqual({ output: true, outputKeys: [], executionResult: false });
+    expect(decide((o) => (broker(o).output = { executionResult: { externalExecutionId: 'x', summary: 's' } })).facts.observedBrokerActionShape).toEqual({
+      output: true, outputKeys: ['executionResult'], executionResult: true, executionResultKeys: ['externalExecutionId', 'summary'],
+    });
+    // Recorded on a denial too (it is what the next real run must fill in).
+    expect(decide((o) => (build(o).initiator = 'someone')).facts.observedBrokerActionShape).toEqual({ output: false, executionResult: false });
+  });
+
+  it.each([
+    'alice@example.com',
+    'arn:aws:sts::822063948773:assumed-role/AWSReservedSSO_Admin/alice@example.com',
+    'codepipeline/OpenReceptionSparseDevDeploy2',
+  ])('never records a non-pipeline initiator verbatim (it can be a person: %s)', (who) => {
+    const d = decide((o) => (build(o).initiator = who));
+    expect(d.result).toBe('denied');
+    expect(d.facts.brokerInitiator).toBe('other');
+    expect(JSON.stringify(d)).not.toContain(who);
+  });
+
+  // Invariant (allow ==> every condition) and its lower bound (every condition ==> allow), swept.
+  const INITIATORS: [unknown, boolean][] = [
+    [PIPELINE_INITIATOR, true],
+    ['codepipeline/OpenReceptionSparseDevDeploy2', false],
+    ['codepipeline/OpenReceptionSparseDevDeploy/x', false],
+    ['xcodepipeline/OpenReceptionSparseDevDeploy', false],
+    ['CODEPIPELINE/OpenReceptionSparseDevDeploy', false],
+    ['codepipeline/openreceptionsparsedevdeploy', false],
+    [`${PIPELINE_INITIATOR} `, false],
+    ['codepipeline/OtherPipeline', false],
+    ['OpenReceptionSparseDevDeploy', false],
+    ['codepipeline/', false],
+    ['alice', false],
+    [undefined, false],
+    [null, false],
+    [42, false],
+    [[PIPELINE_INITIATOR], false],
+  ];
+  const PROJECTS_: [unknown, boolean][] = [
+    ['OpenReceptionTrustedDevDeployBroker', true],
+    ['OpenReceptionDevDeployValidation', false],
+    ['openreceptiontrusteddevdeploybroker', false],
+    [undefined, false],
+  ];
+  const STATUSES: [unknown, boolean][] = [
+    ['IN_PROGRESS', true],
+    ['SUCCEEDED', false],
+    ['FAILED', false],
+    ['STOPPED', false],
+    ['in_progress', false],
+    [undefined, false],
+  ];
+  const IDS: [unknown, boolean][] = [
+    [BROKER_BUILD_ID, true],
+    [BUILD_ID, false],
+    ['OpenReceptionTrustedDevDeployBroker:7a2d8d2f-0000-4000-8000-000000000003', false],
+    [undefined, false],
+  ];
+  // Build start relative to the broker action start (ms); the tolerance boundary is pinned exactly.
+  const STARTS: [unknown, boolean][] = [
+    [-60_000, false],
+    ['-tol-1', false],
+    ['-tol', true],
+    [-1, true],
+    [0, true],
+    [616, true],
+    [600_000, true],
+    ['garbage', false],
+    [undefined, false],
+  ];
+  const startValue = (v: unknown) => {
+    if (v === undefined || v === 'garbage') return v;
+    const ms = v === '-tol' ? -TOL() : v === '-tol-1' ? -TOL() - 1 : (v as number);
+    return new Date(ACTION_START + ms).toISOString();
+  };
+
+  it('allows exactly when initiator, project, status, id and start time all hold (exhaustive)', () => {
+    const wrong: string[] = [];
+    let n = 0;
+    for (const [initiator, i] of INITIATORS)
+      for (const [projectName, p] of PROJECTS_)
+        for (const [buildStatus, st] of STATUSES)
+          for (const [id, d] of IDS)
+            for (const [start, t] of STARTS) {
+              n += 1;
+              const decision = decide((o) => {
+                o.brokerBuilds.builds[0] = { ...build(o), initiator, projectName, buildStatus, id, startTime: startValue(start) };
+              });
+              const expected = i && p && st && d && t;
+              if ((decision.result === 'allowed') !== expected) wrong.push(JSON.stringify({ initiator, projectName, buildStatus, id, start, got: decision.result }));
+              if (!expected && decision.rule !== mod.RULES.UNVERIFIABLE) wrong.push(`rule ${decision.rule} for ${JSON.stringify({ initiator, projectName, buildStatus, id, start })}`);
+            }
+    expect(n).toBe(INITIATORS.length * PROJECTS_.length * STATUSES.length * IDS.length * STARTS.length);
+    expect(wrong).toEqual([]);
+  });
+
+  it.each([
+    ['CodeBuild returned no build', (o: J) => (o.brokerBuilds = { builds: [], buildsNotFound: [BROKER_BUILD_ID] })],
+    ['CodeBuild returned the build twice', (o: J) => o.brokerBuilds.builds.push({ ...build(o) })],
+    ['CodeBuild returned this build and another', (o: J) => o.brokerBuilds.builds.push({ ...build(o), id: 'OpenReceptionTrustedDevDeployBroker:other' })],
+    ['CodeBuild returned this build and a non-record', (o: J) => o.brokerBuilds.builds.push('x')],
+    ['the build record is missing', (o: J) => delete o.brokerBuilds],
+    ['the build list is not a list', (o: J) => (o.brokerBuilds = { builds: build(o) })],
+    ['the broker action has no start time', (o: J) => delete broker(o).startTime],
+    ['the broker action start time is malformed', (o: J) => (broker(o).startTime = 'soon')],
+    ['the env build id names another (finished) build that the pipeline started', (o: J) => {
+      build(o).buildStatus = 'FAILED';
+    }],
+  ])('denies (unverifiable) when %s', (_label, mutate) => {
+    expect(decide(mutate).rule).toBe(mod.RULES.UNVERIFIABLE);
+  });
+
+  it('a build started outside the pipeline is denied even with the right execution id and an in-progress action', () => {
+    const d = decide((o) => (build(o).initiator = 'owner'));
+    expect(d).toMatchObject({ result: 'denied', rule: mod.RULES.UNVERIFIABLE });
+    expect(d.reason).toMatch(/not started by this pipeline/);
+  });
+});
+
+describe('real AWS shapes (5th run of #1146 runbook 7.5, execution 1c5eacea, CLI v2 timestamps)', () => {
+  const R_EXEC = '1c5eacea-2c35-4d0a-9e6c-4f9f20c56760';
+  const R_REV = 'f34f382d442cde719fd22a9603bb7b4b4f1b2634';
+  const R_BUCKET = 'openreceptiondevdeploybr-pipelineartifacts4a9b262-0123456789ab';
+  const R_SOURCE_KEY = 'OpenReceptionSparseD/Source/iMHAvP3';
+  const R_VALIDATED_KEY = 'OpenReceptionSparseD/Validated/uJS2Iw7';
+  const R_VALIDATION_BUILD = 'OpenReceptionDevDeployValidation:5bf7e4a7-ceac-4f14-a819-481e19c552a4';
+  const R_BROKER_BUILD = 'OpenReceptionTrustedDevDeployBroker:3f0b01a9-4cc8-4870-a4c9-4dcec8533c5f';
+  const jst = (iso: string) => {
+    const t = new Date(Date.parse(iso) + 9 * 3600 * 1000).toISOString();
+    return t.replace(/\.(\d{3})Z$/, '.$1000+09:00');
+  };
+  const realConfig = (): J => ({ ...config(), executionId: R_EXEC, revision: R_REV, artifactBucket: R_BUCKET, buildId: R_BROKER_BUILD });
+  const realObserved = (): J => ({
+    executions: {
+      pipelineExecutionSummaries: [
+        { pipelineExecutionId: R_EXEC, status: 'InProgress', startTime: jst('2026-10-10T05:16:53.264Z'), sourceRevisions: [{ actionName: 'PromotionBranch', revisionId: R_REV }] },
+      ],
+    },
+    actions: {
+      actionExecutionDetails: [
+        {
+          pipelineExecutionId: R_EXEC, stageName: 'BrokerBoundary', actionName: 'TrustedBrokerUnarmed', status: 'InProgress', startTime: jst('2026-10-10T05:25:14.626Z'), lastUpdateTime: jst('2026-10-10T05:25:14.626Z'),
+          input: { inputArtifacts: [{ name: 'Validated', s3location: { bucket: R_BUCKET, key: R_VALIDATED_KEY } }] },
+        },
+        {
+          pipelineExecutionId: R_EXEC, stageName: 'Validate', actionName: 'UnprivilegedValidation', status: 'Succeeded', startTime: jst('2026-10-10T05:17:00.451Z'), lastUpdateTime: jst('2026-10-10T05:25:13.964Z'),
+          input: { inputArtifacts: [{ name: 'Source', s3location: { bucket: R_BUCKET, key: R_SOURCE_KEY } }] },
+          output: { outputArtifacts: [{ name: 'Validated', s3location: { bucket: R_BUCKET, key: R_VALIDATED_KEY } }], executionResult: { externalExecutionId: R_VALIDATION_BUILD } },
+        },
+        {
+          pipelineExecutionId: R_EXEC, stageName: 'Source', actionName: 'PromotionBranch', status: 'Succeeded', startTime: jst('2026-10-10T05:16:53.471Z'), lastUpdateTime: jst('2026-10-10T05:16:59.700Z'),
+          input: {}, output: { outputArtifacts: [{ name: 'Source', s3location: { bucket: R_BUCKET, key: R_SOURCE_KEY } }], outputVariables: { CommitId: R_REV, BranchName: 'dev-deploy' } },
+        },
+      ],
+    },
+    validationBuilds: {
+      builds: [{
+        id: R_VALIDATION_BUILD, projectName: 'OpenReceptionDevDeployValidation', initiator: PIPELINE_INITIATOR, buildStatus: 'SUCCEEDED', resolvedSourceVersion: R_REV,
+        startTime: jst('2026-10-10T05:17:01.033Z'), endTime: jst('2026-10-10T05:24:53.047Z'),
+        phases: [{ phaseType: 'UPLOAD_ARTIFACTS', startTime: jst('2026-10-10T05:24:48.945Z'), endTime: jst('2026-10-10T05:24:52.747Z') }],
+      }],
+    },
+    brokerBuilds: {
+      builds: [{ id: R_BROKER_BUILD, projectName: 'OpenReceptionTrustedDevDeployBroker', initiator: PIPELINE_INITIATOR, buildStatus: 'IN_PROGRESS', currentPhase: 'BUILD', startTime: jst('2026-10-10T05:25:15.242Z') }],
+      buildsNotFound: [],
+    },
+    bucketVersioning: { Status: 'Enabled' },
+    sourceVersions: { Versions: [{ Key: R_SOURCE_KEY, VersionId: 'srcVersion1', IsLatest: true, LastModified: '2026-10-10T05:16:58+00:00' }] },
+    validatedVersions: { Versions: [{ Key: R_VALIDATED_KEY, VersionId: 'valVersion1', IsLatest: true, LastModified: '2026-10-10T05:24:52+00:00' }] },
+  });
+  const realNow = new Date('2026-10-10T05:25:46.602Z');
+
+  it('allows the run that the 5th attempt denied (no build id on the in-progress action)', () => {
+    const d = mod.evaluateProvenance({ config: realConfig(), now: realNow, observed: realObserved() });
+    expect(d).toMatchObject({ result: 'allowed', facts: { brokerInitiator: 'pipeline', observedBrokerActionShape: { output: false }, validatedArtifact: { key: R_VALIDATED_KEY, versionId: 'valVersion1' } } });
+  });
+
+  it('allows it with the shape seen after completion (build id present), too', () => {
+    const o = realObserved();
+    o.actions.actionExecutionDetails[0].output = { executionResult: { externalExecutionId: R_BROKER_BUILD } };
+    expect(mod.evaluateProvenance({ config: realConfig(), now: realNow, observed: o }).result).toBe('allowed');
+  });
+
+  it('denies the same run if this build had been started by a person', () => {
+    const o = realObserved();
+    o.brokerBuilds.builds[0].initiator = 'owner';
+    expect(mod.evaluateProvenance({ config: realConfig(), now: realNow, observed: o }).rule).toBe(mod.RULES.UNVERIFIABLE);
+  });
+
+  it('the real Validated entry names are within the allowlist (sample of the real shape)', () => {
+    expect(mod.unsafeEntryName(['broker-evidence.json', 'infra/cdk.out/manifest.json', 'infra/cdk.out/asset.0f1e/index.js', 'apps/web/.open-next/server-functions/default/app/(kiosk)/kiosk/[tenant]/page.js'])).toBeNull();
   });
 });
 
@@ -184,7 +402,7 @@ describe('blocker 2: artifact substitution', () => {
     ['validation read another source artifact', (o: J) => (action(o, 'Validate').input.inputArtifacts[0].s3location.key = 'OpenReceptionSparseD/Source/Other')],
     ['the broker reads another validated artifact', (o: J) => (action(o, 'BrokerBoundary').input.inputArtifacts[0].s3location.key = 'OpenReceptionSparseD/Validated/Other')],
     ['the artifacts live in another bucket', (o: J) => {
-      for (const a of o.actions.actionExecutionDetails) for (const x of [...(a.input.inputArtifacts ?? []), ...(a.output.outputArtifacts ?? [])]) x.s3location.bucket = 'attacker';
+      for (const a of o.actions.actionExecutionDetails) for (const x of [...(a.input.inputArtifacts ?? []), ...(a.output?.outputArtifacts ?? [])]) x.s3location.bucket = 'attacker';
     }],
   ])('denies %s', (_label, mutate) => {
     expect(decide(mutate).rule).toBe(mod.RULES.ARTIFACT_SUBSTITUTED);
@@ -198,8 +416,7 @@ describe('blocker 2: artifact substitution', () => {
     ['the build is missing', (o: J) => (o.validationBuilds.builds = [])],
     ['two validations succeeded in one execution', (o: J) => o.actions.actionExecutionDetails.push({ ...action(o, 'Validate') })],
     ['no broker action is in progress', (o: J) => (action(o, 'BrokerBoundary').status = 'Failed')],
-    ['this build is not the broker action\'s build (started directly)', (o: J) => (action(o, 'BrokerBoundary').output.executionResult.externalExecutionId = 'OpenReceptionTrustedDevDeployBroker:other')],
-    ['the broker action has no build id yet', (o: J) => (action(o, 'BrokerBoundary').output = {})],
+    ['two broker actions are in progress', (o: J) => o.actions.actionExecutionDetails.push({ ...action(o, 'BrokerBoundary') })],
     ['an action has two artifacts', (o: J) => action(o, 'Validate').output.outputArtifacts.push({ name: 'X', s3location: { bucket: BUCKET, key: 'k' } })],
     ['an artifact has no S3 location', (o: J) => delete action(o, 'Source').output.outputArtifacts[0].s3location],
     ['nothing was observed', (o: J) => Object.keys(o).forEach((k) => delete o[k])],
@@ -215,6 +432,7 @@ describe('inputs', () => {
     ['a missing artifact bucket', (c: J) => (c.artifactBucket = undefined)],
     ['a malformed stage map', (c: J) => (c.stages = { source: STAGES.source })],
     ['a missing broker build id', (c: J) => (c.buildId = undefined)],
+    ['a missing broker project', (c: J) => (c.brokerProject = undefined)],
   ])('refuses %s before looking at any evidence', (_label, mutate) => {
     expect(decide((_o, c) => mutate(c)).rule).toBe(mod.RULES.INPUT_INVALID);
   });
@@ -239,24 +457,26 @@ describe('inputs', () => {
 });
 
 describe('gather: the exact AWS calls (no shell, read-only)', () => {
-  it('lists executions, this execution\'s actions, the validation build, versioning and both artifacts\' versions', () => {
+  it('lists executions, this execution\'s actions, the validation build, this build, versioning and both artifacts\' versions', () => {
     const calls: string[][] = [];
     const o = observed();
     const responses: Record<string, J> = {
       'list-pipeline-executions': o.executions,
       'list-action-executions': o.actions,
-      'batch-get-builds': o.validationBuilds,
       'get-bucket-versioning': o.bucketVersioning,
     };
     const gathered = mod.gather(config(), (args) => {
       calls.push(args);
       if (args[1] === 'list-object-versions') return args.includes(SOURCE_KEY) ? o.sourceVersions : o.validatedVersions;
+      if (args[1] === 'batch-get-builds') return args[3] === BROKER_BUILD_ID ? o.brokerBuilds : o.validationBuilds;
       return responses[args[1]!]!;
     });
     expect(calls).toEqual([
       ['codepipeline', 'list-pipeline-executions', '--pipeline-name', 'OpenReceptionSparseDevDeploy', '--max-items', '10'],
       ['codepipeline', 'list-action-executions', '--pipeline-name', 'OpenReceptionSparseDevDeploy', '--filter', `pipelineExecutionId=${EXEC}`],
       ['codebuild', 'batch-get-builds', '--ids', BUILD_ID],
+      // This build's own record, in a separate call (never mixed with the validation build's).
+      ['codebuild', 'batch-get-builds', '--ids', BROKER_BUILD_ID],
       ['s3api', 'get-bucket-versioning', '--bucket', BUCKET],
       ['s3api', 'list-object-versions', '--bucket', BUCKET, '--prefix', SOURCE_KEY],
       ['s3api', 'list-object-versions', '--bucket', BUCKET, '--prefix', VALIDATED_KEY],
@@ -308,11 +528,20 @@ describe('runCli: bind, fetch the exact version, extract safely, record the deci
       return { VersionId: versionId, ContentLength: 1 };
     }
     if (args[1] === 'list-object-versions') return args.includes(SOURCE_KEY) ? o.sourceVersions : o.validatedVersions;
-    return ({ 'list-pipeline-executions': o.executions, 'list-action-executions': o.actions, 'batch-get-builds': o.validationBuilds, 'get-bucket-versioning': o.bucketVersioning } as J)[args[1]!];
+    if (args[1] === 'batch-get-builds') return args[3] === BROKER_BUILD_ID ? o.brokerBuilds : o.validationBuilds;
+    return ({ 'list-pipeline-executions': o.executions, 'list-action-executions': o.actions, 'get-bucket-versioning': o.bucketVersioning } as J)[args[1]!];
   };
 
   const runIn = (root: string, runAws: (a: string[]) => J, extra: J = {}) =>
     mod.runCli(ARGS, { now: NOW, env: ENV, runAws, workDir: join(root, 'work'), decisionPath: join(root, 'provenance.json'), ...extra });
+
+  it('binds the broker project from the pinned module, never from the environment', () => {
+    expect(mod.BROKER_PROJECT_NAME).toBe('OpenReceptionTrustedDevDeployBroker');
+    const calls: string[][] = [];
+    const root = scratch();
+    expect(runIn(root, fakeRunAws(makeZip(root, { a: 'x' }), 'vv1', calls)).exitCode).toBe(0);
+    expect(calls).toContainEqual(['codebuild', 'batch-get-builds', '--ids', BROKER_BUILD_ID]);
+  });
 
   it('mirrors the stack\'s broker-owned paths', () => {
     expect(mod.BROKER_WORK_DIR).toBe('/tmp/open-reception-broker-work');

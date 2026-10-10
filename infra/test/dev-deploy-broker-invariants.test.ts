@@ -243,11 +243,12 @@ const isProvenanceStatement = (s: Statement): boolean => {
   const res = JSON.stringify(s.Resource);
   const same = (xs: readonly string[]) => acts === JSON.stringify(xs.map((a) => a.toLowerCase()).sort());
   const validationProjectId = PROJECTS.find(([, r]) => r.Properties.Name === VALIDATION_PROJECT)?.[0];
+  const brokerProjectId = PROJECTS.find(([, r]) => r.Properties.Name === BROKER_PROJECT)?.[0];
   return (
     s.Effect === 'Allow' &&
     s.Condition === undefined &&
     ((same(PROVENANCE_READ_ACTIONS.pipeline) && res === JSON.stringify({ 'Fn::Join': ['', ['arn:', { Ref: 'AWS::Partition' }, ':codepipeline:ap-northeast-1:822063948773:', { Ref: PIPELINES[0] }]] })) ||
-      (same(PROVENANCE_READ_ACTIONS.validationBuild) && res === JSON.stringify({ 'Fn::GetAtt': [validationProjectId, 'Arn'] })) ||
+      (same(PROVENANCE_READ_ACTIONS.validationBuild) && res === JSON.stringify([{ 'Fn::GetAtt': [validationProjectId, 'Arn'] }, { 'Fn::GetAtt': [brokerProjectId, 'Arn'] }])) ||
       (same(PROVENANCE_READ_ACTIONS.artifactBucket) && res === JSON.stringify({ 'Fn::GetAtt': [ARTIFACT_BUCKET[0], 'Arn'] })))
   );
 };
@@ -1529,6 +1530,21 @@ describe('execution provenance (pre-arming blockers 2 and 4)', () => {
     for (const a of [...PROVENANCE_READ_ACTIONS.pipeline, ...PROVENANCE_READ_ACTIONS.validationBuild, 's3:listbucketversions']) {
       expect(validation, a).not.toContain(a.toLowerCase());
     }
+  });
+
+  it('BatchGetBuilds is granted on exactly the validation and broker project ARNs (its own record, no wildcard)', () => {
+    const projectId = (name: string) => PROJECTS.find(([, r]) => r.Properties.Name === name)?.[0];
+    const grants = statementsFor(roleLogicalId(BROKER_ROLE)).filter((s) => s.Effect === 'Allow' && actionsOf(s).some((a) => a === 'codebuild:batchgetbuilds' || a.startsWith('codebuild:*') || a === '*'));
+    expect(grants).toHaveLength(1);
+    expect(actionsOf(grants[0]!)).toEqual(['codebuild:batchgetbuilds']);
+    expect(grants[0]!.Resource).toEqual([{ 'Fn::GetAtt': [projectId(VALIDATION_PROJECT), 'Arn'] }, { 'Fn::GetAtt': [projectId(BROKER_PROJECT), 'Arn'] }]);
+    expect(JSON.stringify(grants[0]!.Resource)).not.toContain('*');
+  });
+
+  it('the module binds the same broker project name as the stack (the module is pinned, the env is not read)', async () => {
+    const m = (await import(pathToFileURL(PROVENANCE_SOURCE_PATH).href)) as { BROKER_PROJECT_NAME: string };
+    expect(m.BROKER_PROJECT_NAME).toBe(BROKER_PROJECT);
+    expect(PROJECTS.filter(([, r]) => r.Properties.Name === BROKER_PROJECT)).toHaveLength(1);
   });
 
   it('runs the pinned module right after the account check, before any candidate file is read', () => {
