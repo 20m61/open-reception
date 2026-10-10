@@ -214,6 +214,8 @@ describe('self-binding: this build is the pipeline-started build of the in-progr
   // Build start relative to the broker action start (ms); the tolerance boundary is pinned exactly.
   const STARTS: [unknown, boolean][] = [
     [-60_000, false],
+    [-5_001, false],
+    [-5_000, true],
     ['-tol-1', false],
     ['-tol', true],
     [-1, true],
@@ -228,6 +230,10 @@ describe('self-binding: this build is the pipeline-started build of the in-progr
     const ms = v === '-tol' ? -TOL() : v === '-tol-1' ? -TOL() - 1 : (v as number);
     return new Date(ACTION_START + ms).toISOString();
   };
+
+  it('the clock tolerance is 5 s (the sweep\'s fixed offsets assume it)', () => {
+    expect(mod.CLOCK_TOLERANCE_MS).toBe(5000);
+  });
 
   it('allows exactly when initiator, project, status, id and start time all hold (exhaustive)', () => {
     const wrong: string[] = [];
@@ -272,6 +278,13 @@ describe('self-binding: this build is the pipeline-started build of the in-progr
   });
 });
 
+/**
+ * Observed (read-only, after completion): ids, keys, initiators, timestamps and their CLI v2 format,
+ * the validation build's phases, the single versions and their LastModified, the input artifact of
+ * the broker action. Inferred / placeholder: the broker build's IN_PROGRESS status and phase while it
+ * ran, the in-progress action having no `output` (from the 5th run's deny), the bucket name suffix
+ * and the version ids.
+ */
 describe('real AWS shapes (5th run of #1146 runbook 7.5, execution 1c5eacea, CLI v2 timestamps)', () => {
   const R_EXEC = '1c5eacea-2c35-4d0a-9e6c-4f9f20c56760';
   const R_REV = 'f34f382d442cde719fd22a9603bb7b4b4f1b2634';

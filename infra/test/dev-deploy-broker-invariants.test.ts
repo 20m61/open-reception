@@ -1534,7 +1534,10 @@ describe('execution provenance (pre-arming blockers 2 and 4)', () => {
 
   it('BatchGetBuilds is granted on exactly the validation and broker project ARNs (its own record, no wildcard)', () => {
     const projectId = (name: string) => PROJECTS.find(([, r]) => r.Properties.Name === name)?.[0];
-    const grants = statementsFor(roleLogicalId(BROKER_ROLE)).filter((s) => s.Effect === 'Allow' && actionsOf(s).some((a) => a === 'codebuild:batchgetbuilds' || a.startsWith('codebuild:*') || a === '*'));
+    // IAM glob semantics: `codebuild:BatchGet*`, `codebuild:*Builds`, `*` all grant BatchGetBuilds.
+    const grantsAction = (pattern: string, action: string) =>
+      new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')}$`).test(action);
+    const grants = statementsFor(roleLogicalId(BROKER_ROLE)).filter((s) => s.Effect === 'Allow' && (s.NotAction !== undefined || actionsOf(s).some((a) => grantsAction(a, 'codebuild:batchgetbuilds'))));
     expect(grants).toHaveLength(1);
     expect(actionsOf(grants[0]!)).toEqual(['codebuild:batchgetbuilds']);
     expect(grants[0]!.Resource).toEqual([{ 'Fn::GetAtt': [projectId(VALIDATION_PROJECT), 'Arn'] }, { 'Fn::GetAtt': [projectId(BROKER_PROJECT), 'Arn'] }]);
