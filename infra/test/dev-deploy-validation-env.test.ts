@@ -267,20 +267,22 @@ const runUnitLane = (command: string, toolBin: string, env: Record<string, strin
 
 const UNIT_LANE_COMMAND_NAME = ['VALIDATION', 'UNIT', 'TEST', 'COMMAND'].join('_');
 /**
- * Line numbers of references to the unit lane command outside the allowed forms: an import, inside
- * `expect(...)` / a matcher, the first argument of `runUnitLane`, or a `.replace` / `.replaceAll`
- * receiver whose result is a `const command` (each such test passes it to `runUnitLane`).
+ * Line numbers of references to the unit lane command outside the allowed forms: `expect(X)` / a
+ * matcher argument, the first argument of `runUnitLane`, or a `const command` that rewrites its tool
+ * directory (each such test passes it to `runUnitLane`). Imports are removed before the scan.
+ * Lexical by design: a computed name or a command taken back out of the buildspec is not seen.
  */
 const unitLaneCommandMisuses = (text: string): number[] => {
   const n = UNIT_LANE_COMMAND_NAME;
   const allowed = [
-    new RegExp(`^\\s*${n},\\s*$`),
-    new RegExp(`expect\\(${n}\\)`),
+    new RegExp(`\\bexpect\\(${n}\\)\\.`),
     new RegExp(`\\.(toContain|toBe|toEqual)\\(\\[?${n}\\]?\\)`),
-    new RegExp(`runUnitLane\\(${n},`),
-    new RegExp(`const command = ${n}\\.(replace|replaceAll)\\(`),
+    new RegExp(`\\brunUnitLane\\(${n},`),
+    new RegExp(`const command = ${n}\\.(replace|replaceAll)\\(\`?[^,]*VALIDATION_TOOL_BIN`),
   ];
-  return text.split('\n').flatMap((line, i) => {
+  // Blank out import statements, keeping their line breaks so line numbers stay right.
+  const scanned = text.replace(/^import\s[\s\S]*?\sfrom\s+'[^']*';/gm, (m) => m.replace(/[^\n]/g, ''));
+  return scanned.split('\n').flatMap((line, i) => {
     const uses = line.match(new RegExp(`\\b${n}\\b`, 'g'))?.length ?? 0;
     const ok = allowed.reduce((k, re) => k + (line.match(new RegExp(re.source, 'g'))?.length ?? 0), 0);
     return uses > ok ? [i + 1] : [];
@@ -357,11 +359,18 @@ describe('Validation unit lane: no ambient AWS credentials (7.5 class 2)', () =>
       `const r = spawnSync(\n  'sh',\n  ['-c', ${cmd}],\n);`,
       `const r = run(${cmd}, stubNpm());`,
       `const c = ${cmd};`,
+      `const command = ${cmd};`,
+      `const command = ${cmd}.replace('npm test', 'npm test -- --reporter=dot');`,
+      `spawnSync('sh', [\n  '-c',\n  ${cmd},\n]);`,
+      `expect(spawnSync('sh', ['-c', ${cmd}]).status).toBe(0);`,
+      `execSync(${cmd});`,
+      `myexpect(${cmd}).toBe(1);`,
+      `expect(${cmd}).toBe(run(${cmd}));`,
     ]) {
       expect(unitLaneCommandMisuses(misuse), misuse).toHaveLength(1);
     }
+    expect(unitLaneCommandMisuses(`import {\n  A,\n  ${cmd},\n} from '../lib/config/validation-gate-env';`)).toEqual([]);
     for (const allowed of [
-      `  ${cmd},`,
       `expect(${cmd}).toContain('x');`,
       `expect(buildCommands).toContain(${cmd});`,
       `runUnitLane(${cmd}, VALIDATION_TOOL_BIN, ambient);`,
