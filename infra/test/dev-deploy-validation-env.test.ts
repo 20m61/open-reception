@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -55,7 +55,10 @@ const validationTimeoutMinutes = (Object.values(resources).find(
 const installCommands = validation.phases.install!.commands;
 const buildCommands = validation.phases.build!.commands;
 
-/** Hard limit for each run of a buildspec command in this file, so a runaway child fails one test, not the build. */
+/**
+ * Hard limit for each run of a buildspec command in this file: the test fails instead of waiting. It
+ * signals the direct child only (`sh`); what that child started is not reaped by it.
+ */
 const COMMAND_TIMEOUT_MS = 60_000;
 
 const temps: string[] = [];
@@ -248,10 +251,14 @@ const runUnitLane = (command: string, toolBin: string, env: Record<string, strin
 
   const local = command.replaceAll(toolBin, bin);
   expect(local).not.toContain(toolBin);
+  expect('PATH' in env).toBe(false);
   const r = spawnSync('sh', ['-c', local], {
+    // An empty directory: should any real npm still answer, `npm test` finds no package.json and
+    // fails at once instead of running this suite (vitest's cwd is infra/).
+    cwd: tempDir('unit-lane-cwd-'),
     encoding: 'utf8',
     timeout: UNIT_LANE_TIMEOUT_MS,
-    env: { NODE_ENV: 'test', PATH: `${trap}:${process.env.PATH ?? ''}`, ...env },
+    env: { NODE_ENV: 'test', ...env, PATH: `${trap}:${process.env.PATH ?? ''}` },
   });
   const seen = existsSync(dump) ? (JSON.parse(readFileSync(dump, 'utf8')) as Record<string, string>) : undefined;
   const argv = existsSync(argvFile) ? readFileSync(argvFile, 'utf8').trim() : undefined;
@@ -303,12 +310,27 @@ describe('Validation unit lane: no ambient AWS credentials (7.5 class 2)', () =>
     const command = VALIDATION_UNIT_TEST_COMMAND.replaceAll(VALIDATION_TOOL_BIN, installed);
     expect(command).not.toBe(VALIDATION_UNIT_TEST_COMMAND);
 
-    const started = Date.now();
     const { r, seen } = runUnitLane(command, installed, {});
     expect(existsSync(ran)).toBe(false);
     expect(r.status, `${r.error ?? ''} ${r.stderr}`).toBe(0);
     expect(seen).toBeDefined();
-    expect(Date.now() - started).toBeLessThan(UNIT_LANE_TIMEOUT_MS);
+  });
+
+  it('🔴 no test runs the unit lane command except through runUnitLane', () => {
+    // The pin above covers the helper; this covers its callers. Running the command verbatim (as
+    // before #1146 81267eff) would pass anywhere the tool directory is absent and recurse in CodeBuild.
+    const testDir = __dirname;
+    const spawnLine = /\b(spawn|spawnSync|exec|execSync|execFile|execFileSync)\s*\(/;
+    const offenders = readdirSync(testDir)
+      .filter((f) => f.endsWith('.ts'))
+      .flatMap((f) =>
+        readFileSync(join(testDir, f), 'utf8')
+          .split('\n')
+          .map((line, i) => ({ f, i: i + 1, line }))
+          .filter(({ line }) => spawnLine.test(line) && /VALIDATION_(UNIT_TEST_COMMAND|TOOL_BIN)\b(?!,\s*bin\))/.test(line)),
+      )
+      .map(({ f, i }) => `${f}:${i}`);
+    expect(offenders).toEqual([]);
   });
 
   it('🔴 negative control: an npm other than the stub fails the run at once', () => {
