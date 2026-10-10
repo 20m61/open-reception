@@ -286,6 +286,7 @@ describe('Validation unit lane: no ambient AWS credentials (7.5 class 2)', () =>
       if (name === 'AWS_ACCESS_KEY_ID') expect(seen![name]).toBe('test');
       else expect(seen![name], name).toBeUndefined();
     }
+    expect(seen!.AWS_SECRET_ACCESS_KEY).toBe('test');
     expect(seen!.AWS_EC2_METADATA_DISABLED).toBe('true');
     // The command itself puts the tool directory first; here it is the stand-in for it.
     expect(VALIDATION_UNIT_TEST_COMMAND).toContain(`PATH="${VALIDATION_TOOL_BIN}:$PATH"`);
