@@ -281,7 +281,35 @@ tested before the broker may assume any deploy role:
    the Source action succeeded and recorded the trusted CommitId; exactly one Validate action succeeded in
    a succeeded build of the validation project; each action read exactly the object its predecessor wrote;
    and the source archive and the cloud assembly each have exactly one version, no delete marker, written
-   while the producing action / build ran; and the build running the check is the broker action's own build.
+   while the producing action / build ran; and exactly one broker action of this execution is in progress
+   and the build running the check is a pipeline-started build of that action. The last condition is read
+   from CodeBuild's own record of the running build (`batch-get-builds --ids $CODEBUILD_BUILD_ID`, read-only
+   on exactly the validation and broker project ARNs): exactly one build, with that id, in the broker project,
+   `IN_PROGRESS`, `initiator` exactly `codepipeline/<pipeline name>` (no prefix or case-insensitive match),
+   started no earlier than the broker action (5 s tolerance). The broker project name is a constant of the
+   pinned module, not an environment value. A pipeline-started build gets `OR_PIPELINE_EXECUTION_ID` from
+   the stack's action configuration, so "started by this pipeline" binds the execution id to this build,
+   assuming the pipeline definition is unchanged (`UpdatePipeline` is a separate privilege, outside this
+   check). Only the initiator's class (`pipeline` / `other`) is recorded — a person's IAM or SSO session
+   name can be an e-mail address and the decision is printed to the build log. This replaced the
+   comparison with the in-progress action's `externalExecutionId`: in the 5th unarmed run (#1146
+   c6094357754) that field was not there while the action ran, so every honest run was denied
+   (`PROVENANCE_UNVERIFIABLE`); after completion it held the build id. Whether and when an in-progress
+   action shows the id is still unknown, so the decision records only its presence and key names
+   (`facts.observedBrokerActionShape`) and never uses it.
+   **What the self-binding does not guarantee.** It denies a build started outside the pipeline (a
+   retried or hand-started build carrying a copied execution id). It does not stop a principal that can
+   call `StartBuild` with `buildspecOverride` or `environmentVariablesOverride`: with the first the check
+   does not run at all; with the second alone the module locations and pins, `AWS_ENDPOINT_URL_*` or
+   `NODE_OPTIONS` can be replaced (the last two unverified). That boundary is IAM — an arming requirement
+   (#1257). If `RetryBuild` keeps the original `codepipeline/<name>` initiator (unverified), a retried old
+   build queued behind a stage retry's build could start inside the delay before CodePipeline ends the
+   action and pass; the earlier exact-id comparison would have denied it. Adding an exact match on an API
+   that shows the build id while the action runs, as an additional condition (AND, never a fallback), is
+   therefore also required before arming (#1257). Observed in the 5th run (read-only, by the owner): the
+   CloudTrail `StartBuild` event for the broker build was made by the pipeline's action role, invoked by
+   `codepipeline.amazonaws.com`, and its `requestParameters.environmentVariablesOverride` was empty even
+   though the build received the action's environment variables; nothing is built on that observation.
    An overwrite by candidate code of another execution therefore leaves a second version and denies. The
    module then fetches **exactly that version** (`get-object --version-id`) into a fresh broker-owned
    directory, refuses unsafe archive entries (absolute, `..`, duplicate names) and anything but plain files
@@ -294,17 +322,22 @@ tested before the broker may assume any deploy role:
    extraction of the broker's input still happens before any broker command (so before this check); if that
    agent step were vulnerable to a crafted archive, it would run before provenance. Needs live verification
    at arming: that agent behaviour; the exact CodePipeline / CodeBuild response fields the check relies on
-   (the in-progress broker action's `externalExecutionId` — if CodePipeline fills it only on completion, every
-   run is denied and `GetPipelineState` is the fallback —, source `outputVariables.CommitId`, V1
-   `sourceRevisions`); that the source zip's `LastModified` falls inside the source action's window; and the
-   entry count of a real validated artifact (the synthesized assembly alone has about 4,600 entries; the
-   limit is 50,000).
+   (the broker build's `initiator` while it runs — `codepipeline/OpenReceptionSparseDevDeploy` on both builds
+   of the 5th run, read after completion —, source `outputVariables.CommitId`, V1 `sourceRevisions`), which
+   the next run is the first to evaluate past the self-binding. Read-only observations of the 5th run's
+   artifacts (owner, 2026-10-10) suggest the later checks are satisfiable: each artifact key had exactly one
+   version and no delete marker; the source zip was written inside the source action's window, the validated
+   zip inside the validation build's (during its `UPLOAD_ARTIFACTS` phase, before `endTime`); `get-object`
+   returns `VersionId`; the real validated zip has 3,934 entries (limit 50,000), none outside the entry-name
+   allowlist; and the in-progress broker action's input artifact location is the validated key.
+   `resolvedSourceVersion` is empty on the broker build (its input is a build output, not a source); the
+   check does not use it.
 3. **No deploy-account pinning.** The target account is the stack's own `AWS::AccountId`; there is
    no independent, human-reviewed pin of the one dev account the broker may deploy to.
    **Status: pin established in code.** `DEV_DEPLOY_TARGET_ACCOUNT` is a reviewed constant equal to the account
    every ADR 0009 policy in `scripts/aws-policies/` pins (a test keeps them equal). A concrete synth for another
    account fails; both builds receive the literal (never `AWS::AccountId`); the trusted policy evaluates the
-   assembly against it; and the broker's first command checks that its own build ARN is in that account. The pin in that check and the `--account` given to the trusted policy are literals in the stack-owned buildspec, not environment values, because a StartBuild `environmentVariablesOverride` (or an action-level override) can replace any environment variable.
+   assembly against it; and the broker's first command checks that its own build ARN is in that account. The pin in that check and the `--account` given to the trusted policy are literals in the stack-owned buildspec, not environment values, because a StartBuild `environmentVariablesOverride` (or an action-level override) can replace any environment variable. (A literal does not by itself withstand an override principal: `AWS_ENDPOINT_URL_*` / `NODE_OPTIONS` remain; see "Before mutation can be armed", 5a, #1257.)
    Binding the account the armed broker actually deploys to (manifest role ARNs, asset destinations) is the
    trusted policy's job (blocker 1) and must be re-checked when the role chain is armed (e.g. caller identity
    after AssumeRole).
@@ -440,6 +473,7 @@ Required prerequisites:
 3. Trusted static policy tested against a real current cloud assembly; do **not** widen the allowlist merely to turn it green.
 4. Sparse deploy ledger implemented per Foundation safe-dev-deploy S6/S6b and the owner decision on #1153: record every attempt that reaches the mutation boundary and its outcome, count **attempts** against the daily limit (target 1, soft ceiling 2) over one declared IANA timezone (Asia/Tokyo), deny when the ledger is missing or unreadable (S6a), and allow a further attempt only through an S5a override bound to one revision **and one rule**, single-use, expiring and audited.
    **Status: implemented; delivery and denial audit wired, reservation not yet called** (`infra/broker/sparse-ledger.mjs`, `infra/broker/ledger-runner.mjs`, see "Sparse deploy attempt ledger" below). Calling `reserve` / `outcome` around the mutation is part of arming.
+5a. **StartBuild boundary and exact self-binding (#1257).** Only the pipeline's action role may `StartBuild` / `StartBuildBatch` / `RetryBuild` / `RetryBuildBatch` / `UpdateProject` the broker project or `UpdatePipeline` the pipeline (an inventory by `simulate-principal-policy`, Access Analyzer and the bootstrap roles' policies; an in-account admin needs an SCP). For an armed broker, holding `StartBuild` on its project is holding the broker role's deploy authority, because no check inside the build stops an override. The provenance self-binding (`initiator`) must also be ANDed with an exact build-id match from an API that shows the id while the action runs, once the next run has measured one. Moving the module locations and pins into buildspec literals is defence in depth only: blocker 3's reasoning that literals withstand an environment override overstates it while `AWS_ENDPOINT_URL_*` / `NODE_OPTIONS` remain.
 5. **Arming checklist (D-5, Foundation S6b): a promotion whose broker-computed change set is empty must not reach `reserve`.** It is not executed, consumes no budget and starts no cooldown. The live ChangeSet gate that runs before `reserve` must stop such a promotion (audited as a denial before the boundary, no budget); `reserve` itself cannot tell an empty change set from a real one, so wiring `reserve` after a gate that lets an empty change set through would spend budget and start the cooldown for nothing.
 
 ## Sparse deploy attempt ledger (#1153)

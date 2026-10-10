@@ -277,7 +277,7 @@ export const ARTIFACT_HISTORY_WRITES = [
   's3:PutBucketObjectLockConfiguration',
 ] as const;
 
-/** Read-only APIs the provenance check calls (and nothing else). */
+/** Read-only APIs the provenance check calls (and nothing else). `validationBuild` also reads the broker's own build. */
 export const PROVENANCE_READ_ACTIONS = {
   pipeline: ['codepipeline:ListPipelineExecutions', 'codepipeline:ListActionExecutions'],
   validationBuild: ['codebuild:BatchGetBuilds'],
@@ -1173,7 +1173,9 @@ export class DevDeployBrokerStack extends cdk.Stack {
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         actions: [...PROVENANCE_READ_ACTIONS.validationBuild],
-        resources: [validationProject.projectArn],
+        // The validation build, and this broker build's own record (`initiator`: started by this
+        // pipeline). Read only; exactly these two projects, never a wildcard.
+        resources: [validationProject.projectArn, brokerProject.projectArn],
       }),
     );
 
