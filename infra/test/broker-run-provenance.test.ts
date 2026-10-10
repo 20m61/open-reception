@@ -543,6 +543,21 @@ describe('runCli: bind, fetch the exact version, extract safely, record the deci
     expect(calls).toContainEqual(['codebuild', 'batch-get-builds', '--ids', BROKER_BUILD_ID]);
   });
 
+  it('an environment naming another project does not change the bound broker project', () => {
+    const root = scratch();
+    const zip = makeZip(root, { a: 'x' });
+    // A build of another project whose environment claims that project (or the broker's id prefix).
+    const runAws = (args: string[]): J => {
+      const r = fakeRunAws(zip)(args);
+      if (args[1] === 'batch-get-builds' && args[3] === BROKER_BUILD_ID) return { builds: [{ ...r.builds[0], projectName: 'Other' }] };
+      return r;
+    };
+    const env = { ...ENV, CODEBUILD_PROJECT: 'Other', CODEBUILD_PROJECT_NAME: 'Other', OR_BROKER_PROJECT: 'Other', BROKER_PROJECT_NAME: 'Other' };
+    const r = mod.runCli(ARGS, { now: NOW, env, runAws, workDir: join(root, 'work'), decisionPath: join(root, 'provenance.json') });
+    expect(r.exitCode).toBe(43);
+    expect(r.record.rule).toBe(mod.RULES.UNVERIFIABLE);
+  });
+
   it('mirrors the stack\'s broker-owned paths', () => {
     expect(mod.BROKER_WORK_DIR).toBe('/tmp/open-reception-broker-work');
     expect(mod.VALIDATED_DIR).toBe('/tmp/open-reception-broker-work/validated');
