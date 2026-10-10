@@ -265,6 +265,28 @@ const runUnitLane = (command: string, toolBin: string, env: Record<string, strin
   return { r, bin, seen, argv, trapRan: existsSync(trapMark) };
 };
 
+const UNIT_LANE_COMMAND_NAME = ['VALIDATION', 'UNIT', 'TEST', 'COMMAND'].join('_');
+/**
+ * Line numbers of references to the unit lane command outside the allowed forms: an import, inside
+ * `expect(...)` / a matcher, the first argument of `runUnitLane`, or a `.replace` / `.replaceAll`
+ * receiver whose result is a `const command` (each such test passes it to `runUnitLane`).
+ */
+const unitLaneCommandMisuses = (text: string): number[] => {
+  const n = UNIT_LANE_COMMAND_NAME;
+  const allowed = [
+    new RegExp(`^\\s*${n},\\s*$`),
+    new RegExp(`expect\\(${n}\\)`),
+    new RegExp(`\\.(toContain|toBe|toEqual)\\(\\[?${n}\\]?\\)`),
+    new RegExp(`runUnitLane\\(${n},`),
+    new RegExp(`const command = ${n}\\.(replace|replaceAll)\\(`),
+  ];
+  return text.split('\n').flatMap((line, i) => {
+    const uses = line.match(new RegExp(`\\b${n}\\b`, 'g'))?.length ?? 0;
+    const ok = allowed.reduce((k, re) => k + (line.match(new RegExp(re.source, 'g'))?.length ?? 0), 0);
+    return uses > ok ? [i + 1] : [];
+  });
+};
+
 describe('Validation unit lane: no ambient AWS credentials (7.5 class 2)', () => {
   it('reads the signal list from aws-runtime.ts', () => {
     expect(credentialSignalNames).toContain('AWS_CONTAINER_CREDENTIALS_RELATIVE_URI');
@@ -318,19 +340,35 @@ describe('Validation unit lane: no ambient AWS credentials (7.5 class 2)', () =>
 
   it('🔴 no test runs the unit lane command except through runUnitLane', () => {
     // The pin above covers the helper; this covers its callers. Running the command verbatim (as
-    // before #1146 81267eff) would pass anywhere the tool directory is absent and recurse in CodeBuild.
-    const testDir = __dirname;
-    const spawnLine = /\b(spawn|spawnSync|exec|execSync|execFile|execFileSync)\s*\(/;
-    const offenders = readdirSync(testDir)
-      .filter((f) => f.endsWith('.ts'))
-      .flatMap((f) =>
-        readFileSync(join(testDir, f), 'utf8')
-          .split('\n')
-          .map((line, i) => ({ f, i: i + 1, line }))
-          .filter(({ line }) => spawnLine.test(line) && /VALIDATION_(UNIT_TEST_COMMAND|TOOL_BIN)\b(?!,\s*bin\))/.test(line)),
-      )
-      .map(({ f, i }) => `${f}:${i}`);
+    // before #1146 81267eff) passes wherever the tool directory is absent and recurses in CodeBuild.
+    // An allowlist of every reference, not a list of forbidden calls: a multi-line spawn or another
+    // wrapper (`run(...)`) is a reference outside the list and fails.
+    const files = (readdirSync(__dirname, { recursive: true }) as string[]).filter((f) => f.endsWith('.ts'));
+    expect(files).toContain('dev-deploy-validation-env.test.ts');
+    const offenders = files.flatMap((f) =>
+      unitLaneCommandMisuses(readFileSync(join(__dirname, f), 'utf8')).map((line) => `${f}:${line}`),
+    );
     expect(offenders).toEqual([]);
+
+    // Lower bound: the forms that recurse are found, the allowed ones are not.
+    const cmd = UNIT_LANE_COMMAND_NAME;
+    for (const misuse of [
+      `const r = spawnSync('sh', ['-c', ${cmd}], {`,
+      `const r = spawnSync(\n  'sh',\n  ['-c', ${cmd}],\n);`,
+      `const r = run(${cmd}, stubNpm());`,
+      `const c = ${cmd};`,
+    ]) {
+      expect(unitLaneCommandMisuses(misuse), misuse).toHaveLength(1);
+    }
+    for (const allowed of [
+      `  ${cmd},`,
+      `expect(${cmd}).toContain('x');`,
+      `expect(buildCommands).toContain(${cmd});`,
+      `runUnitLane(${cmd}, VALIDATION_TOOL_BIN, ambient);`,
+      `const command = ${cmd}.replaceAll(VALIDATION_TOOL_BIN, installed);`,
+    ]) {
+      expect(unitLaneCommandMisuses(allowed), allowed).toEqual([]);
+    }
   });
 
   it('🔴 negative control: an npm other than the stub fails the run at once', () => {
