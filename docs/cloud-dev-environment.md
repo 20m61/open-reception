@@ -631,6 +631,16 @@ pip install --break-system-packages --ignore-installed PyJWT semgrep
 
 → `semgrep 1.172.0` が入り `sast` PASS（23s）。
 
+> 🔴 **2026-10 追記: system の site-packages へ入れる方式自体をやめ、専用 venv
+> （`/opt/semgrep-venv`）へ移した。** Cloud の Python で `mcp` 1.29.0 と 2.2.0 が重なり、
+> semgrep 1.180.0 が `ImportError: cannot import name 'TASK_STATUS_COMPLETED' from 'mcp.types'`
+> で落ちた。`command -v semgrep` は成功するので欠落として報告されず、sast を走らせるまで
+> 見えない。`cloud-setup.sh` と `restore-gate-tools.sh` の両方が venv へ入れて
+> `/usr/local/bin/{semgrep,pysemgrep}` を張る（`pysemgrep` も要る ―― semgrep は PATH 経由で
+> 呼ぶので、張らないと system 側の壊れた方が拾われる）。venv はイメージのパッケージを
+> 見ないので、上の `--ignore-installed PyJWT` も不要になった。**環境ダイアログの Setup
+> script も貼り替えること。**
+
 ### 6.2 shallow clone が `.gitleaksignore` の指紋を無効化する（→ `quality-gate.sh` 修正済み）
 
 `--full --strict` の 1 回目:
