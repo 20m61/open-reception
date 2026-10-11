@@ -4,12 +4,35 @@
 
 ## Experience principles
 
-1. **3秒以内に始め方が分かる** — 初見の来訪者が説明を読まず受付を始められる。
-2. **音声とタッチで同じ目的を達成できる** — 一方が失敗してももう一方へ自然に切り替えられる。
-3. **システム状態を沈黙させない** — 聞き取り中、認識中、確認中、発信中、接続中、失敗を明示する。
-4. **途中経過を失わない** — 聞き返し、通信失敗、担当者不在でも最初からやり直させない。
-5. **人につながる逃げ道を残す** — 自動受付を完遂できない場合に代表窓口や有人支援へ移れる。
-6. **公共空間のプライバシーを守る** — 個人情報、発話内容、担当者情報を必要以上に表示・読み上げない。
+1. **受付開始後は一つの視覚空間から退出しない** — 状態遷移を別ページの列ではなく、同じ Reception Stage 上の会話ターン更新として表現する。
+2. **3秒以内に始め方が分かる** — 初見の来訪者が説明を読まず受付を始められる。
+3. **来訪者にタイプさせない** — 入力は選択ボタンとテンキーを優先し、それらで表現できない自由入力は音声認識で扱う。software keyboard を通常受付へ出さない。
+4. **タッチと音声を役割分担し、行き止まりを作らない** — 定型操作はタッチで完結させ、自由入力は音声を使う。音声が使えない場合はキーボードへ戻さず、候補選択・再発話・有人支援へ自然に切り替える。
+5. **システム状態を沈黙させない** — 聞き取り中、認識中、確認中、発信中、接続中、失敗を明示する。
+6. **途中経過を失わない** — 聞き返し、通信失敗、担当者不在でも最初からやり直させない。
+7. **人につながる逃げ道を残す** — 自動受付を完遂できない場合に代表窓口や有人支援へ移れる。
+8. **公共空間のプライバシーを守る** — 個人情報、発話内容、担当者情報を必要以上に表示・読み上げない。
+
+### Single Reception Stage contract
+
+`idle -> purpose -> target -> visitor-info -> confirm -> calling -> result` は、来訪者にとって
+「複数画面を順番に進むフロー」ではなく、**同じ受付空間で質問と回答が一段ずつ進む会話**である。
+URL、`ReceptionState`、内部コンポーネントが変わること自体は許容するが、実装都合をページ遷移として
+知覚させない。
+
+- **Stage**: avatar / message / interaction / escape の基本 Composition と視線の座標系を保つ。
+- **Turn**: その瞬間の質問、必要最小限の前ターン context、回答 UI だけを更新する。
+- **Back**: 「前ページへ戻る」ではなく、一つ前の回答を訂正する会話操作として扱う。
+- **Error / recovery**: 失敗専用画面へ飛ばさず、理由と修正操作を同一 viewport・同一 Stage に置く。
+- **Input mode**: visitor input は button / numpad / voice を基本とし、touch / voice / QR の切替を理由に Stage 全体を別 UI へ置換しない。
+- **No typing**: `input[type=text|search|email|tel]` / `textarea` / contenteditable / OS software keyboard を通常の来訪者入力として使わない。自由入力は voice-required とする。
+- **Voice confirmation**: 氏名・担当者等の重要な固有名詞は、STT結果をそのまま確定せず、復唱または2〜4件程度の候補 + ボタンで明示確認する。
+- **Fallback**: VRM / TTS が無くても同じ情報構造を保つ。STT が利用不能・権限拒否・継続失敗の場合も keyboard を出さず、既知候補 / numpad / 再発話 / human assistance の順で復帰する。
+- **Motion**: 全面 slide / 全面 fade / blank frame を進行の主表現にしない。局所 transition は連続性を補助する場合だけ使い、reduced motion でも意味が成立すること。
+- **Accessibility**: 視覚連続性のために heading、focus、live region 等の semantics を弱めない。音声を使えない来訪者を行き止まりにせず、有人支援へ到達可能にする。
+
+signage / attract から reception へ入るモード境界、または別 journey である checkout の入口は例外に
+なり得る。ただし各 journey に入った後は同じ原則を適用する。詳細な実装・Evidence は #779 / #1055 / #1057 / #782。
 
 ## Primary actors
 
@@ -24,7 +47,7 @@
 `開始 -> 担当者を検索/選択 -> 認識結果を確認 -> 発信 -> 接続 -> 完了`
 
 成功条件:
-- タッチと音声のどちらでも担当者へ到達できる。
+- 既知候補はタッチで、候補外の自由入力は音声認識で担当者へ到達できる。
 - 同姓同名、認識揺れ、候補なしを安全に解決できる。
 - 発信先、現在の処理、失敗時の代替手段が分かる。
 
@@ -46,11 +69,12 @@
 
 ### J-OR-04 音声認識失敗から復帰
 
-`聞き取り -> 不確実/無音/騒音 -> 聞き返し -> 候補提示 -> タッチ切替または再発話 -> 継続`
+`聞き取り -> 不確実/無音/騒音 -> 聞き返し -> 候補提示 -> タッチ候補/再発話/有人支援 -> 継続`
 
 成功条件:
 - 失敗理由を来訪者の責任として表現しない。
 - 直前までの目的・候補・入力を保持する。
+- software keyboardを出して解決しない。
 
 ### J-OR-05 担当者不在・接続失敗
 
@@ -64,11 +88,12 @@
 
 `idle -> visitor_detected -> greeting -> choosing_method -> listening|touching|scanning -> recognizing -> confirming -> contacting -> connected -> completed`
 
-入力手段は 3 つある（`listening` = 音声、`touching` = タッチ、`scanning` = QR 読み取り）。
-ただし**原則 2 の等価性が要求するのは音声とタッチの 2 つだけ**で、`scanning` は加速手段。
-QR は予約済みの来訪者しか持たず、無くても通常受付で完遂できる。したがって
-「**QR でしかできないこと**」を作ってはならず、QR 経路の失敗は必ずタッチ経路へ戻せること
-（詳細と根拠は `docs/adr/0006-experience-state-model-gaps.md`）。
+来訪者の入力手段は、UI上は **button / numpad / voice** を基本とする。
+`touching` には選択ボタンとテンキーを含み、`listening` は音声認識、`scanning` は QR 読み取りを指す。
+QR は予約済みの来訪者向けの加速手段であり、QR でしかできない受付を作らない。
+定型journeyは button / numpad で完走可能にし、ボタンやテンキーで表現しきれない自由入力は
+voice-required とする。STT が使えない場合は keyboard を出さず、候補選択または有人支援へ文脈を
+保って遷移する（詳細と根拠は `docs/adr/0006-experience-state-model-gaps.md` と #1057）。
 
 例外状態:
 
@@ -76,12 +101,12 @@ QR は予約済みの来訪者しか持たず、無くても通常受付で完�
 
 | 例外状態 | 定義 |
 | --- | --- |
-| `speech_unclear` | 発話を解釈できなかった。**来訪者の落ち度として表現しない**。復唱確認かタッチへ倒す |
+| `speech_unclear` | 発話を解釈できなかった。**来訪者の落ち度として表現しない**。復唱確認、候補ボタン、再発話、有人支援の順で復帰する。keyboardへは逃がさない |
 | `no_match` | 指定された相手が見つからない（担当者検索 0 件）。部署一覧・相談導線へ逃がす |
 | `person_unavailable` | 相手は特定できたが応答が無い。再試行・代表窓口・伝言のいずれかを出す |
 | `contact_failed` | 呼び出しを完了できなかった（サーバ側の失敗）。代替導線を主 CTA にする |
 | `network_degraded` | 端末とサーバの疎通が不安定。**復旧待ちであることを伝える**。通信断で失敗した呼び出しは代替導線を約束しない（果たせないため） |
-| `privacy_blocked` | プライバシーに関わる権限（カメラ・マイク）を許可されず、**その入力手段では**続行できない。受付自体は失敗していない。必ず別手段へ文脈を保って戻す。権限の再要求で追い詰めない |
+| `privacy_blocked` | プライバシーに関わる権限（カメラ・マイク）を許可されず、**その入力手段では**続行できない。受付自体は失敗していない。既知候補で代替できなければ有人支援へ文脈を保って戻す。権限の再要求やkeyboard入力で追い詰めない |
 | `human_assistance` | 有人対応へ引き継いだ。誰に何を引き継いだかを来訪者に見せる |
 
 各状態は次を持つ。
@@ -95,12 +120,16 @@ QR は予約済みの来訪者しか持たず、無くても通常受付で完�
 
 ## UX pattern contracts
 
-- **Listening**: マイク入力中であること、停止方法、代替のタッチ操作を表示する。
-- **Recognition confirmation**: 高確信でも重要な固有名詞・発信先は確認可能にする。
+- **Listening**: マイク入力中であること、停止方法を表示する。タッチで表現可能な既知候補があれば代替として提示し、自由入力が不可欠で音声を使えない場合は有人支援へ逃がす。
+- **Recognition confirmation**: 高確信でも重要な固有名詞・発信先は復唱または候補ボタンで明示確認する。
+- **Visitor input**: 来訪者向け通常フローでは button / numpad / voice のみを使う。自由文字入力欄、textarea、contenteditable、software keyboardを出さない。数字だけで完結する値は共通テンキーUIを使う。
 - **Processing**: 処理名と待機理由を示し、長時間時は中止または代替手段を出す。
-- **Fallback**: 音声失敗からタッチ、担当者失敗から代表窓口へ文脈を保持して遷移する。
+- **Fallback**: 音声失敗時は既知候補、再発話、有人支援へ文脈を保持して遷移する。担当者失敗時は代表窓口へ移る。keyboard入力をfallbackにしない。
 - **Privacy**: フル氏名、電話番号、発話全文を公共画面へ必要以上に残さない。
 - **Completion**: 誰へつながったか、次に何をすべきか、受付が終了したかを明示する。
+- **Turn transition**: Stage 全体を差し替えず、そのターンで変わる質問・context・interaction を局所更新する。
+  前ターンの全情報を残して情報密度を増やすのではなく、次の判断に必要な context だけを凝縮する。
+  transition 中も escape / recovery を失わず、視覚上の連続性と a11y の状態通知を両立する。
 - **Unavailable**: 押せない・選べないことを**破線の枠**で示す（`#778`）。透明度だけに寄せない
   ——受付端末は明るいロビーに置かれ、`opacity` を下げただけの要素は「ただのボタン」に見えて
   反応しないまま連打される。高コントラストモードではさらに悪く、透明度は意味を伝えず
@@ -124,7 +153,8 @@ QR は予約済みの来訪者しか持たず、無くても通常受付で完�
 - Actor / user outcome
 - Related journey ID and step
 - Entry state / exit state / exception states
-- Voice and touch equivalence
+- Visitor input mapping（button / numpad / voice）と voice-required の有無
+- software keyboard / free text input を追加しないこと、または運用者画面に限定されること
 - Visible, spoken and haptic/animation response
 - Timeout, cancellation and fallback
 - PII and audit impact
@@ -133,13 +163,13 @@ QR は予約済みの来訪者しか持たず、無くても通常受付で完�
 
 ## Evaluation ladder
 
-1. **Static**: 用語、コントラスト、タップ領域、フォーカス、PII、状態欠落。
+1. **Static**: 用語、コントラスト、タップ領域、フォーカス、PII、状態欠落、visitor向けfree text input混入。
 2. **State/model**: 正常系・例外系・タイムアウト・取消・フォールバック遷移。
-3. **Automated browser**: タッチ導線、権限拒否、無デバイス、ネットワーク失敗。
+3. **Automated browser**: タッチ導線、音声認識、権限拒否、無デバイス、ネットワーク失敗、keyboard無しfallback。
 4. **Instrumentation**: STT/TTS、割込、発信、状態遷移の時間と失敗箇所。
 5. **Screenshot**: レイアウト・視線誘導が変わる画面だけ。
 6. **Video/agent**: J-OR-01〜05 の変更対象ジャーニーを通しで評価する。
-7. **Human/device**: 横向き iPad、騒音、距離、初見ユーザーでリリース前確認する。
+7. **Human/device**: 横向き iPad、騒音、距離、初見ユーザー、音声を使えないケースでリリース前確認する。
 
 ## Outcome metrics
 
