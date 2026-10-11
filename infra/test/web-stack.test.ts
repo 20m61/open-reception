@@ -155,15 +155,32 @@ describe.runIf(OPEN_NEXT_READY)('WebStack synthesis', () => {
   it('grants lambda:InvokeFunction to CloudFront for OAC (AWS 2025-10 requirement, #192)', () => {
     // OAC 経由の Function URL 呼び出しは InvokeFunctionUrl に加え InvokeFunction も必須。
     // server / image の 2 関数分。これが無いと CloudFront → Function URL が 403 になる。
+    // aws-cdk-lib >= 2.273.0 の FunctionUrlOrigin.withOriginAccessControl が付与する
+    // （Function URL 経由の呼び出しに限定: InvokedViaFunctionUrl=true）。
     template.resourcePropertiesCountIs(
       'AWS::Lambda::Permission',
       {
         Action: 'lambda:InvokeFunction',
         Principal: 'cloudfront.amazonaws.com',
         SourceArn: Match.anyValue(),
+        InvokedViaFunctionUrl: true,
       },
       2,
     );
+  });
+
+  it('does not grant CloudFront an InvokeFunction that is not bound to the Function URL', () => {
+    // 手動付与していた条件なしの重複（CloudFrontOacInvokeFunction）が戻っていないこと。
+    const unbound = Object.values(
+      template.findResources('AWS::Lambda::Permission', {
+        Properties: { Action: 'lambda:InvokeFunction', Principal: 'cloudfront.amazonaws.com' },
+      }),
+    ).filter(
+      (r) =>
+        (r as { Properties: { InvokedViaFunctionUrl?: boolean } }).Properties
+          .InvokedViaFunctionUrl !== true,
+    );
+    expect(unbound).toEqual([]);
   });
 
   it('attaches security headers to static/image assets via ResponseHeadersPolicy (#193)', () => {
@@ -603,7 +620,14 @@ describe.runIf(OPEN_NEXT_READY)('WebStack origin-verify via Secrets Manager (#61
         Action: 'lambda:InvokeFunction',
         Principal: 'cloudfront.amazonaws.com',
         SourceArn: Match.anyValue(),
+        InvokedViaFunctionUrl: true,
       },
+      1,
+    );
+    // CloudFront 向けの InvokeFunction は Function URL 経由に限定されたものだけ（#631 の image 分）。
+    template.resourcePropertiesCountIs(
+      'AWS::Lambda::Permission',
+      { Action: 'lambda:InvokeFunction', Principal: 'cloudfront.amazonaws.com' },
       1,
     );
   }, 30000);
