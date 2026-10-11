@@ -58,7 +58,8 @@ function avatarMasks(page: Page): Locator[] {
  * フォント描画差を吸収する緩い許容値はもう要らない。
  *
  * 唯一 0 で落ちていた `out-of-hours` は**「次回の受付開始」の日時が毎日動く**のが原因で、
- * これは閾値ではなく `mask` で潰した（下記）。**緩めるときは何を見逃すかを数値で確かめること。**
+ * これは閾値ではなくブラウザの時計を固定して潰した（下記）。**緩めるときは何を見逃すかを
+ * 数値で確かめること。**
  */
 const SHOT_BASE = { animations: 'disabled', maxDiffPixelRatio: 0.002 } as const;
 
@@ -323,21 +324,27 @@ test.describe('デモプレビュー経由の画面（営業時間外・サイ�
   });
 
   test('営業時間外画面の VRT + a11y', async ({ page }) => {
+    // 「次回の受付開始」はデモ注入がブラウザ側の `Date.now() + 12h` から導く
+    // （`deriveOperatingStatus`）。以前はこの値を mask していたが、**mask の箱の幅は
+    // 文字列の描画幅に追従する**ため、日付によって箱の左右端が ~1800px 動き、日によって
+    // 落ちていた（PR #1255 / #1258 の --full。落ちると pristine-state 依存の ~500 本が
+    // 走らない）。mask では潰せない —— 箱そのものが日付に依存している。
+    //
+    // そこでブラウザの時計を固定し、値そのものを決定化する。`setFixedTime` は `Date` だけを
+    // 固定し、タイマーは実時間で進む（画面の描画・待機を止めない）。値が決まるので
+    // **mask は外し、日時の表示自体も画像で縛る**（TZ 整形の退行も拾える）。
+    // 2026-01-05 19:00 JST（月曜の営業時間外）→ 再開 2026/01/06 7:00（Asia/Tokyo 整形）。
+    await page.clock.setFixedTime(new Date('2026-01-05T19:00:00+09:00'));
     // 共有営業ポリシーを書き換えず、Mock 注入のデモプレビューで OutOfHoursView を再現する。
     await page.goto('/admin/demo/preview?scenario=out-of-hours');
     await expect(page.getByTestId('kiosk-out-of-hours')).toBeVisible();
+    // 時計の固定が効いていることを画像より先に文字で確かめる（効かなければここで落ちる）。
+    await expect(page.getByTestId('kiosk-out-of-hours-reopen-time')).toHaveText('2026/01/06 7:00');
 
     await stabilize(page);
     await expect(page).toHaveScreenshot('kiosk-landscape-out-of-hours.png', {
       ...SHOT_BASE,
-      // 「次回の受付開始」の**日時の値だけ**を mask する。日付が変われば必ず動くため、
-      // 唯一この 1 枚が許容値 0 で落ちていた（実測 1813px・差分は全てこのテキスト）。
-      //
-      // **ラベルや枠ごと隠さない** — 第 72 wave で通話中パネルを丸ごと mask して VRT を
-      // 無意味にしかけた反省に従い、非決定的な値のノードへ絞る。`kiosk-out-of-hours-reopen`
-      // （枠）ではなく `-reopen-time`（値）を指すのはそのため。時刻が出ない場合に描かれる
-      // `-reopen-unknown` は固定文言なので mask しない（0 件マッチは no-op）。
-      mask: [...avatarMasks(page), page.getByTestId('kiosk-out-of-hours-reopen-time')],
+      mask: avatarMasks(page),
     });
 
     const violations = await blockingViolations(page);
