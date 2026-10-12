@@ -75,11 +75,8 @@ test("pinRequired=true では正しい PIN の authorize がセッションを�
     data: { pin: "0000" },
   });
   expect(auth.ok()).toBeTruthy();
+  // session-status はエンロール時点で true なので見ない（空虚に通る）。発行そのものを見る。
   expect(auth.headers()["set-cookie"] ?? "").toContain("kiosk_session=");
-
-  const status = await page.request.get("/api/kiosk/session-status");
-  const body = (await status.json()) as { authorized: boolean };
-  expect(body.authorized).toBe(true);
 });
 
 /**
@@ -110,10 +107,9 @@ test.describe("管理画面で決めた PIN (#1021)", () => {
       data: { pin: "4821" },
     });
     expect(ok.ok()).toBeTruthy();
-    const status = await page.request.get("/api/kiosk/session-status");
-    expect(((await status.json()) as { authorized: boolean }).authorized).toBe(
-      true,
-    );
+    // 🔴 session-status は見ない —— エンロールで cookie は既にあるので、authorize が何も
+    //    発行しなくても authorized=true になり空虚に通る。発行そのものを見る。
+    expect(ok.headers()["set-cookie"] ?? "").toContain("kiosk_session=");
   });
 
   /**

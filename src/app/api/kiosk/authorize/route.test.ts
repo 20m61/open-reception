@@ -201,6 +201,18 @@ describe('POST /api/kiosk/authorize は登録済みの端末に限る (#1237)', 
     expect(res.headers.get('set-cookie')).toContain('kiosk_session=');
   });
 
+  /** 既存の検査（IP・pinRequired）が登録の検査より先に効く（順序を入れ替えない）。 */
+  it.each([
+    ['IP 不許可', { pinRequired: true, pin: '0000', ipAllowlist: ['1.2.3.4'] }, 'ip not allowed'],
+    ['PIN 認可が無効', { pinRequired: false, pin: '0000', ipAllowlist: [] }, 'pin authorization disabled'],
+  ])('🔴 未登録でも %s なら既存の 403 で断る', async (_l, settings, message) => {
+    kioskCookie = undefined;
+    getSecuritySettings.mockResolvedValue(settings);
+    const res = await postWithXff({ pin: '0000' });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { message: string }).message).toContain(message);
+  });
+
   it('🔴 登録済みでも PIN 不一致は 401（登録は PIN を代替しない）', async () => {
     verifyPin.mockResolvedValue(false);
     const res = await post({ pin: 'wrong' });
