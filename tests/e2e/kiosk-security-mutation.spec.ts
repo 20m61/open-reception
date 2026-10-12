@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { loginAsAdmin } from "./helpers";
+import { establishKioskSession, loginAsAdmin } from "./helpers";
 
 /**
  * **グローバルなセキュリティ設定（PIN の値・pinRequired・緊急停止）を実際に書き換える** E2E
@@ -61,12 +61,21 @@ test("pinRequired=true では正しい PIN の authorize がセッションを�
   // グローバル設定を一時的に PIN 必須へ（戻すのは afterEach）。
   const put = await putSecurity(page, { pinRequired: true });
   expect(put.ok()).toBeTruthy();
-  // 既定 PIN 0000 で許可 → Set-Cookie。session-status が同 cookie を読み authorized=true を返す
-  // （authorize→cookie→再リクエストの実 HTTP 往復を検証）。
-  const auth = await page.request.post("/api/kiosk/authorize", {
+  // 🔴 **登録していない端末は正しい PIN でも通らない (#1237)。** body の kioskId は根拠にしない。
+  const unenrolled = await page.request.post("/api/kiosk/authorize", {
     data: { pin: "0000", kioskId: "kiosk-dev" },
   });
+  expect(unenrolled.status()).toBe(403);
+  const before = await page.request.get("/api/kiosk/session-status");
+  expect(((await before.json()) as { authorized: boolean }).authorized).toBe(false);
+
+  // 登録済みの端末は既定 PIN 0000 で許可 → Set-Cookie（下界。上の 403 を「全部拒否」で満たさせない）。
+  await establishKioskSession(page);
+  const auth = await page.request.post("/api/kiosk/authorize", {
+    data: { pin: "0000" },
+  });
   expect(auth.ok()).toBeTruthy();
+  expect(auth.headers()["set-cookie"] ?? "").toContain("kiosk_session=");
 
   const status = await page.request.get("/api/kiosk/session-status");
   const body = (await status.json()) as { authorized: boolean };
@@ -95,9 +104,10 @@ test.describe("管理画面で決めた PIN (#1021)", () => {
     expect(put).not.toContain("4821");
     expect(put).not.toContain("pbkdf2");
     expect(JSON.parse(put)).toMatchObject({ pinConfigured: true });
-    // 決めた PIN では通る（後始末は afterEach が持つ）。
+    // 決めた PIN では通る（後始末は afterEach が持つ）。PIN 認可は登録済みの端末に限る (#1237)。
+    await establishKioskSession(page);
     const ok = await page.request.post("/api/kiosk/authorize", {
-      data: { pin: "4821", kioskId: "kiosk-dev" },
+      data: { pin: "4821" },
     });
     expect(ok.ok()).toBeTruthy();
     const status = await page.request.get("/api/kiosk/session-status");
@@ -115,13 +125,15 @@ test.describe("管理画面で決めた PIN (#1021)", () => {
     await loginAsAdmin(page);
     const put = await putSecurity(page, { pinRequired: true, pin: "4821" });
     expect(put.ok()).toBeTruthy();
+    // 登録済みの端末で測る (#1237)。未登録だと PIN を見る前に 403 になり、下の拒否が何も言わない。
+    await establishKioskSession(page);
     const ng = await page.request.post("/api/kiosk/authorize", {
-      data: { pin: "0000", kioskId: "kiosk-dev" },
+      data: { pin: "0000" },
     });
     expect(ng.ok()).toBeFalsy();
     // 🔴 PIN を送らない要求も通らない（レビュー 1 周目 BLOCKER の通し確認）。
     const empty = await page.request.post("/api/kiosk/authorize", {
-      data: { kioskId: "kiosk-dev" },
+      data: {},
     });
     expect(empty.ok()).toBeFalsy();
     // 🔴 **下界 (#1021 AC4)。** 失敗した直後でも、**予算内なら正しい PIN で通る**。
@@ -132,7 +144,7 @@ test.describe("管理画面で決めた PIN (#1021)", () => {
     //    失敗を残したまま抜けると**後続の authorize が 429 になりうる**
     //    （成功は失敗数を捨てるので、ここで戻る）。#1161 と同じ「同居者との共有状態」の型。
     const recovered = await page.request.post("/api/kiosk/authorize", {
-      data: { pin: "4821", kioskId: "kiosk-dev" },
+      data: { pin: "4821" },
     });
     expect(
       recovered.ok(),

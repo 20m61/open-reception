@@ -1,7 +1,14 @@
 import { NextResponse } from 'next/server';
+import { cookies } from 'next/headers';
 import { getSecuritySettings, verifyPin } from '@/lib/security/security-store';
 import { isIpAllowed } from '@/domain/security/types';
-import { KIOSK_COOKIE, KIOSK_SESSION_TTL_MS, issueKioskSession } from '@/lib/auth/kiosk';
+import {
+  KIOSK_COOKIE,
+  KIOSK_SESSION_TTL_MS,
+  issueKioskSession,
+  readKioskSession,
+} from '@/lib/auth/kiosk';
+import { resolveDeviceBinding } from '@/lib/product-context/device-binding';
 import { readJson } from '@/lib/data-stores/result-http';
 import { KIOSK_AUTHORIZE_LAYERS } from '@/domain/security/attempt-budget';
 import { assertIdentitySaltAvailable, clientIdentity } from '@/lib/security/client-identity';
@@ -44,9 +51,13 @@ const ATTEMPT_SCOPE = 'kiosk-authorize';
  * さもないと `verifyPin` が任意 PIN で true を返し、誰でも authorize でセッションを取得できてしまい、
  * `/kiosk` セッションゲート (#239) を回避できる。IP allowlist は単独では認可根拠にしない（client 提供の
  * `x-forwarded-for` は詐称可能なため）。PIN 不要運用の端末は管理発行 URL/QR でエンロールする。
+ *
+ * 🔴 **PIN で認可できるのは登録済みの端末だけ (#1237)。** 端末 ID は request body から取らず、
+ * 管理発行 URL/QR のエンロール（`/api/kiosk/enroll`）で得た kiosk セッションから導出し、
+ * 端末台帳で有効な端末に限る。満たさなければ 403 で、エンロールへ案内する。
  */
 export async function POST(request: Request): Promise<NextResponse> {
-  const body = (await readJson(request)) as { pin?: unknown; kioskId?: unknown } | null;
+  const body = (await readJson(request)) as { pin?: unknown } | null;
   const settings = await getSecuritySettings();
   const clientIp = (request.headers.get('x-forwarded-for') ?? '').split(',')[0]?.trim() ?? '';
 
@@ -61,6 +72,17 @@ export async function POST(request: Request): Promise<NextResponse> {
   if (!settings.pinRequired) {
     return NextResponse.json(
       { error: 'forbidden', message: 'pin authorization disabled; enroll via issued URL/QR' },
+      { status: 403 },
+    );
+  }
+  // 🔴 **端末の身元はエンロール済みセッションだけが決める (#1237)。** body の `kioskId` は読まない。
+  //    台帳で有効な端末に限る（`resolveDeviceBinding` は未登録・失効・ストア障害で null ＝ fail-closed）。
+  //    PIN の試行ではないので予算は数えず、照合も走らせない（未登録の要求で PBKDF2 を回させない）。
+  const session = await readKioskSession((await cookies()).get(KIOSK_COOKIE)?.value);
+  const binding = session ? await resolveDeviceBinding(session.kioskId) : null;
+  if (!binding) {
+    return NextResponse.json(
+      { error: 'not_enrolled', message: 'device is not enrolled; enroll via issued URL/QR' },
       { status: 403 },
     );
   }
@@ -122,8 +144,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     reportAttemptStoreUnavailable(ATTEMPT_SCOPE);
   }
 
-  const kioskId = typeof body?.kioskId === 'string' && body.kioskId ? body.kioskId : 'kiosk-dev';
-  const token = await issueKioskSession(kioskId);
+  const token = await issueKioskSession(binding.kioskId);
   const res = NextResponse.json({ ok: true });
   res.cookies.set(KIOSK_COOKIE, token, {
     httpOnly: true,

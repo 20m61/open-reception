@@ -26,6 +26,18 @@ vi.mock('@/lib/auth/kiosk', () => ({
   KIOSK_COOKIE: 'kiosk_session',
   KIOSK_SESSION_TTL_MS: 1000,
   issueKioskSession: vi.fn(async () => 'signed-kiosk-session'),
+  readKioskSession: vi.fn(async () => ({ kioskId: 'kiosk-enrolled' })),
+}));
+// 登録済みの端末からの要求として通す（登録の検査は `route.test.ts` が縛る, #1237）。
+vi.mock('next/headers', () => ({
+  cookies: async () => ({ get: () => ({ value: 'enrolled-session' }) }),
+}));
+vi.mock('@/lib/product-context/device-binding', () => ({
+  resolveDeviceBinding: vi.fn(async (kioskId: string) => ({
+    tenantId: 'internal',
+    siteId: 'default-site',
+    kioskId,
+  })),
 }));
 
 import { POST } from './route';
