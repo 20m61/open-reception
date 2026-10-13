@@ -21,6 +21,9 @@ const synthBin = (outdir: string, region: string | undefined) => {
   for (const key of Object.keys(env)) if (key.startsWith('AWS_') || key.startsWith('CDK_DEFAULT_')) delete env[key];
   env.CDK_OUTDIR = outdir;
   if (region !== undefined) env.CDK_DEFAULT_REGION = region;
+  // Type-checking was ~75% of each child (7.3s -> 1.9s, #1146: 215s on CodeBuild Validation).
+  // Types are checked by `npm --prefix infra run typecheck` (gate and Validation); this pins the wiring.
+  env.TS_NODE_TRANSPILE_ONLY = 'true';
   return execFileSync('npx', ['ts-node', '--prefer-ts-exts', 'bin/dev-deploy-broker.ts'], {
     cwd: INFRA,
     env: env as NodeJS.ProcessEnv,

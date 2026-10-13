@@ -38,6 +38,8 @@ set -u
 # 「復旧したのに Setup script と違う版が入る」ことになる。
 # `tests/config/gate-tooling-wiring.test.ts` が 3 者の一致を静的に縛っている。
 GITLEAKS_VERSION=8.29.0
+# semgrep の venv。`scripts/cloud-setup.sh` と同じ場所（同じく wiring テストが一致を縛る）。
+SEMGREP_VENV=/opt/semgrep-venv
 
 restore_note() { printf '  %s\n' "$*" >&2; }
 
@@ -63,16 +65,21 @@ restore_gitleaks() {
 }
 
 restore_semgrep() {
-  # ⚠️ `--ignore-installed PyJWT` が要る。イメージの PyJWT は debian パッケージ由来で
-  # RECORD を持たず、pip が uninstall できずに依存解決がそこで止まる
-  # （`ERROR: Cannot uninstall PyJWT 2.7.0, RECORD file not found.`）。
-  # 握り潰すと「セッションは起動するのに semgrep だけ黙って入っていない」状態になる。
+  # 🔴 system の site-packages ではなく専用 venv へ入れる（`scripts/cloud-setup.sh` と同じ手順）。
+  # system へ入れるとイメージの Python パッケージと依存が重なって壊れる ―― 2026-10 に
+  # `mcp` 1.29.0 / 2.2.0 が重なり semgrep 1.180.0 が import で落ちた。venv はイメージの
+  # パッケージを見ないので、以前の `--ignore-installed PyJWT` 回避も要らない。
+  # `pysemgrep` も張る ―― semgrep は PATH 経由で pysemgrep を呼ぶので、張らないと
+  # system 側の壊れた pysemgrep が拾われる（実測）。
   if [ "${OPEN_RECEPTION_TOOL_RESTORE_DRY_RUN:-0}" = "1" ]; then
-    restore_note "would install semgrep via pip (--break-system-packages --ignore-installed PyJWT)"
+    restore_note "would install semgrep into ${SEMGREP_VENV} and link /usr/local/bin/{semgrep,pysemgrep}"
     return 0
   fi
   # pip の進捗は長い。失敗したときだけ見えればよいので、成功時は捨てる。
-  as_root pip install --break-system-packages --ignore-installed PyJWT semgrep >/dev/null 2>&1
+  as_root python3 -m venv "${SEMGREP_VENV}" &&
+    as_root "${SEMGREP_VENV}/bin/pip" install --quiet semgrep >/dev/null 2>&1 &&
+    as_root ln -sf "${SEMGREP_VENV}/bin/semgrep" /usr/local/bin/semgrep &&
+    as_root ln -sf "${SEMGREP_VENV}/bin/pysemgrep" /usr/local/bin/pysemgrep
 }
 
 missing=()

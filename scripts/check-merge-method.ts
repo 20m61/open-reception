@@ -100,6 +100,10 @@ export const KNOWN_VIOLATIONS: Readonly<Record<string, string>> = {
     '2026-09-29 の PR #1208 を owner が merge commit で merge した。理由は owner の記憶では不明（2026-10-03 に確認）。同じ日の直前に #1197 と #1207 が merge commit で merge されている。',
   '64ce41f2170dcd21e8fb5c09ee55c8021abffd9b':
     '2026-10-07（UTC）の PR #1245 を、owner の merge スクリプトが merge commit で merge した（squash ではなかった）。',
+  '22a843b9ddfa3033e88f1e423f54369903b3947e':
+    '2026-10-08 の PR #1249 を owner が merge commit で merge した（64ce41f を KNOWN_VIOLATIONS に記録する PR 自身）。理由は未確認。',
+  '9e863e51c5f86463c743fa1fa87092ed7536a643':
+    '2026-10-08 の PR #1250 を owner が merge commit で merge した（#1245・#1249 に続く 3 回目）。同日、repo 設定を squash のみに変更して再発を止めた。',
 };
 
 /** `git log --merges` の 1 行を読む。 */
