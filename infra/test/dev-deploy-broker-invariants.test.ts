@@ -75,6 +75,7 @@ import {
   VALIDATION_MIN_HEAP_MIB,
   VALIDATION_OS_RESERVE_MIB,
 } from '../lib/config/validation-build-resources';
+import { VALIDATION_SOURCE_BIND_SCRIPT } from '../lib/config/validation-gate-env';
 import {
   DYNAMODB_TABLE_RESOURCE_POLICY_ACTIONS,
   DYNAMODB_TABLE_RESOURCE_POLICY_REJECTED,
@@ -1020,9 +1021,23 @@ describe('dev deploy broker invariants: trusted source revision', () => {
     for (const name of [VALIDATION_PROJECT, BROKER_PROJECT]) {
       const text = buildSpecText(name);
       expect(text).not.toContain('CODEBUILD_RESOLVED_SOURCE_VERSION');
-      expect(text).not.toContain('rev-parse');
-      expect(text).not.toMatch(/\bgit\b/);
     }
+    // The broker never reads git metadata.
+    expect(buildSpecText(BROKER_PROJECT)).not.toContain('rev-parse');
+    expect(buildSpecText(BROKER_PROJECT)).not.toMatch(/\bgit\b/);
+    // Validation runs git in exactly one command (7.5, 2026-10-08: the unit lane needs the history),
+    // and that command only checks the checkout against the trusted revision: it takes the revision
+    // from OR_TRUSTED_SOURCE_REVISION alone and writes no file, so the evidence (VALIDATION_EVIDENCE_SCRIPT)
+    // still carries CodePipeline's CommitId, never one read from git.
+    const bindCommand = nodeEval(VALIDATION_SOURCE_BIND_SCRIPT);
+    const validationCommands = allCommands(VALIDATION_PROJECT);
+    expect(validationCommands.filter((c) => c === bindCommand)).toHaveLength(1);
+    const others = JSON.stringify(validationCommands.filter((c) => c !== bindCommand));
+    expect(others).not.toContain('rev-parse');
+    expect(others).not.toMatch(/\bgit\b/);
+    expect(VALIDATION_SOURCE_BIND_SCRIPT.match(/\bsha=/g)).toEqual(['sha=']);
+    expect(VALIDATION_SOURCE_BIND_SCRIPT).toContain('const sha=process.env.OR_TRUSTED_SOURCE_REVISION;');
+    expect(VALIDATION_SOURCE_BIND_SCRIPT).not.toMatch(/writeFile|appendFile|createWriteStream|console\.|process\.stdout/);
   });
 
   it('the synthesized commands are exactly the exported, tested scripts', () => {

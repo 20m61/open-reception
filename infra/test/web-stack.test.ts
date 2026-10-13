@@ -1,12 +1,12 @@
 import * as path from 'node:path';
 import { beforeAll, describe, it, expect } from 'vitest';
-import * as cdk from 'aws-cdk-lib';
 import { Template, Match } from 'aws-cdk-lib/assertions';
 import { WebStack } from '../lib/stacks/web-stack';
 import { openNextArtifactState, describeArtifactState } from '../lib/build-artifacts';
 import { resolveEnv, ENVIRONMENTS } from '../lib/config/environments';
 import { SERVICE_HOLD_PAGE_PATH } from '../../src/domain/reception/service-hold-page';
 import { ADMIN_PASSWORD_POLICY } from '../../src/domain/auth/admin-user-provisioning';
+import { appWithoutAssetStaging } from './support/app-without-asset-staging';
 
 describe('environments config', () => {
   it('resolves known environments and defaults to dev', () => {
@@ -112,7 +112,7 @@ if (!OPEN_NEXT_READY) {
 describe.runIf(OPEN_NEXT_READY)('WebStack synthesis', () => {
   let template: Template;
   beforeAll(() => {
-    const app = new cdk.App();
+    const app = appWithoutAssetStaging();
     template = Template.fromStack(
       new WebStack(app, 'TestWeb', {
         env: { account: '123456789012', region: 'ap-northeast-1' },
@@ -155,15 +155,32 @@ describe.runIf(OPEN_NEXT_READY)('WebStack synthesis', () => {
   it('grants lambda:InvokeFunction to CloudFront for OAC (AWS 2025-10 requirement, #192)', () => {
     // OAC 経由の Function URL 呼び出しは InvokeFunctionUrl に加え InvokeFunction も必須。
     // server / image の 2 関数分。これが無いと CloudFront → Function URL が 403 になる。
+    // aws-cdk-lib >= 2.273.0 の FunctionUrlOrigin.withOriginAccessControl が付与する
+    // （Function URL 経由の呼び出しに限定: InvokedViaFunctionUrl=true）。
     template.resourcePropertiesCountIs(
       'AWS::Lambda::Permission',
       {
         Action: 'lambda:InvokeFunction',
         Principal: 'cloudfront.amazonaws.com',
         SourceArn: Match.anyValue(),
+        InvokedViaFunctionUrl: true,
       },
       2,
     );
+  });
+
+  it('does not grant CloudFront an InvokeFunction that is not bound to the Function URL', () => {
+    // 手動付与していた条件なしの重複（CloudFrontOacInvokeFunction）が戻っていないこと。
+    const unbound = Object.values(
+      template.findResources('AWS::Lambda::Permission', {
+        Properties: { Action: 'lambda:InvokeFunction', Principal: 'cloudfront.amazonaws.com' },
+      }),
+    ).filter(
+      (r) =>
+        (r as { Properties: { InvokedViaFunctionUrl?: boolean } }).Properties
+          .InvokedViaFunctionUrl !== true,
+    );
+    expect(unbound).toEqual([]);
   });
 
   it('attaches security headers to static/image assets via ResponseHeadersPolicy (#193)', () => {
@@ -343,7 +360,7 @@ describe.runIf(OPEN_NEXT_READY)('WebStack custom domain (#189)', () => {
   };
 
   const synth = (createDnsRecord: boolean) => {
-    const app = new cdk.App({ context: createDnsRecord ? hostedZoneContext : undefined });
+    const app = appWithoutAssetStaging({ context: createDnsRecord ? hostedZoneContext : undefined });
     const stack = new WebStack(app, 'TestWebCustomDomain', {
       env: { account: ACCOUNT, region: REGION },
       config: resolveEnv('prod'),
@@ -390,7 +407,7 @@ describe.runIf(OPEN_NEXT_READY)('WebStack custom domain (#189)', () => {
   }, 30000);
 
   it('rejects createDnsRecord without a hosted zone', () => {
-    const app = new cdk.App();
+    const app = appWithoutAssetStaging();
     expect(
       () =>
         new WebStack(app, 'TestWebBadDomain', {
@@ -412,7 +429,7 @@ describe.runIf(OPEN_NEXT_READY)('WebStack custom domain (#189)', () => {
 // APP_SECRETS_ARN env と secretsmanager:GetSecretValue 権限を付与する。
 describe.runIf(OPEN_NEXT_READY)('WebStack app secrets (#194)', () => {
   const synth = (appSecretsName?: string) => {
-    const app = new cdk.App();
+    const app = appWithoutAssetStaging();
     const stack = new WebStack(app, 'TestWebSecrets', {
       env: { account: '123456789012', region: 'ap-northeast-1' },
       config: resolveEnv('prod'),
@@ -459,7 +476,7 @@ describe.runIf(OPEN_NEXT_READY)('WebStack tenant provider secrets (#405 Inc2)', 
     providerSecretBackend?: 'memory' | 'secrets-manager';
     providerSecretPrefix?: string;
   }) => {
-    const app = new cdk.App();
+    const app = appWithoutAssetStaging();
     const stack = new WebStack(app, 'TestWebProviderSecrets', {
       env: { account: '123456789012', region: 'ap-northeast-1' },
       config: resolveEnv('prod'),
@@ -569,7 +586,7 @@ describe.runIf(OPEN_NEXT_READY)('WebStack tenant provider secrets (#405 Inc2)', 
 describe.runIf(OPEN_NEXT_READY)('WebStack origin-verify via Secrets Manager (#612)', () => {
   const SECRET_NAME = 'open-reception/test/app';
   const synth = (envName: 'dev' | 'prod') => {
-    const app = new cdk.App();
+    const app = appWithoutAssetStaging();
     const stack = new WebStack(app, `TestWebOriginVerifySm${envName}`, {
       env: { account: '123456789012', region: 'ap-northeast-1' },
       config: resolveEnv(envName),
@@ -603,7 +620,14 @@ describe.runIf(OPEN_NEXT_READY)('WebStack origin-verify via Secrets Manager (#61
         Action: 'lambda:InvokeFunction',
         Principal: 'cloudfront.amazonaws.com',
         SourceArn: Match.anyValue(),
+        InvokedViaFunctionUrl: true,
       },
+      1,
+    );
+    // CloudFront 向けの InvokeFunction は Function URL 経由に限定されたものだけ（#631 の image 分）。
+    template.resourcePropertiesCountIs(
+      'AWS::Lambda::Permission',
+      { Action: 'lambda:InvokeFunction', Principal: 'cloudfront.amazonaws.com' },
       1,
     );
   }, 30000);
@@ -694,7 +718,7 @@ describe('WebStack origin-verify argument guards (#612)', () => {
       },
     ) =>
     () => {
-      const app = new cdk.App();
+      const app = appWithoutAssetStaging();
       return new WebStack(app, 'TestWebOriginVerifyGuard', {
         env: { account: '123456789012', region: 'ap-northeast-1' },
         config: resolveEnv(envName),
@@ -800,7 +824,7 @@ describe('WebStack origin-verify argument guards (#612)', () => {
   // 🔴 appEnv 経由の自爆経路。origin-verify 無効構成では addEnvironment による上書きが走らないので、
   // REQUIRED=1 だけが残って全リクエストが恒久 503 になる。
   it('rejects ORIGIN_VERIFY_* passed through appEnv', () => {
-    const app = new cdk.App();
+    const app = appWithoutAssetStaging();
     expect(
       () =>
         new WebStack(app, 'TestWebOriginVerifyAppEnv', {
@@ -835,7 +859,7 @@ describe('WebStack origin-verify argument guards (#612)', () => {
 // コスト微最適化 (issue #300): 全環境 PriceClass_200 + アセットバケットの安全なライフサイクル。
 describe.runIf(OPEN_NEXT_READY)('WebStack cost optimization (#300)', () => {
   const synth = (envName: 'dev' | 'prod') => {
-    const app = new cdk.App();
+    const app = appWithoutAssetStaging();
     const stack = new WebStack(app, `TestWebCost${envName}`, {
       env: { account: '123456789012', region: 'ap-northeast-1' },
       config: resolveEnv(envName),
@@ -886,7 +910,7 @@ describe.runIf(OPEN_NEXT_READY)('WebStack admin Cognito auth', () => {
   // describe ボディ直下で構築しない理由はファイル冒頭の注意書きを参照。
   let template: Template;
   beforeAll(() => {
-    const app = new cdk.App();
+    const app = appWithoutAssetStaging();
     template = Template.fromStack(
       new WebStack(app, 'TestWebCognito', {
         env: { account: '123456789012', region: 'ap-northeast-1' },
@@ -962,7 +986,7 @@ describe.runIf(OPEN_NEXT_READY)('WebStack admin Cognito auth', () => {
   }, 30000);
 
   it('does NOT create Cognito when cognitoAuth is unset', () => {
-    const app2 = new cdk.App();
+    const app2 = appWithoutAssetStaging();
     const noCog = new WebStack(app2, 'TestWebNoCognito', {
       env: { account: '123456789012', region: 'ap-northeast-1' },
       config: resolveEnv('dev'),
