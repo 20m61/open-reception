@@ -36,6 +36,7 @@ import {
   iamArnGlobMatchesGeneratedName,
 } from '../../src/domain/governance/cfn-generated-name';
 import { REVIEWED_CDK_GENERATED_LOGICAL_IDS } from '../../src/domain/governance/deploy-diff-gate';
+import { appWithoutAssetStaging } from './support/app-without-asset-staging';
 
 // `.open-next/` が **在るだけ**では足りない（古いと WebStack の synth が凍結ガードで throw
 // する）。`fresh` のときだけ実 WebStack を synth し、それ以外は理由付きで describe ごと
@@ -75,7 +76,7 @@ const BOUNDARY_ARN = {
  * その等価性が無いことは下の `CustomResourceProvider 系ロール` describe が固定する。
  */
 function synth(context?: Record<string, unknown>): Template {
-  const app = new cdk.App({ context });
+  const app = appWithoutAssetStaging({ context });
   applyClaudeDeployBoundary(app);
   const stack = new cdk.Stack(app, 'BoundaryTest', {
     env: { account: ACCOUNT, region: 'ap-northeast-1' },
@@ -147,7 +148,7 @@ describe('applyClaudeDeployBoundary (#680 Critical 2)', () => {
   // 読むので、文字列を渡すと両方 `undefined` になり **警告もエラーも出さず no-op** になる。
   // つまり `-c '@aws-cdk/core:permissionsBoundary={"name":"..."}'` は効かない。
   it('CDK 標準キーへ文字列（CLI が渡す形）を入れても boundary は付かない = no-op の罠', () => {
-    const app = new cdk.App({
+    const app = appWithoutAssetStaging({
       context: { [cdk.PERMISSIONS_BOUNDARY_CONTEXT_KEY]: '{"name":"OpenReceptionClaudeBoundary"}' },
     });
     const stack = new cdk.Stack(app, 'RawStringContext', {
@@ -158,7 +159,7 @@ describe('applyClaudeDeployBoundary (#680 Critical 2)', () => {
   });
 
   it('CDK 標準キーへオブジェクトを入れれば付く（上のテストが「壊れている」のではないことの対照）', () => {
-    const app = new cdk.App({
+    const app = appWithoutAssetStaging({
       context: { [cdk.PERMISSIONS_BOUNDARY_CONTEXT_KEY]: { name: 'OpenReceptionClaudeBoundary' } },
     });
     const stack = new cdk.Stack(app, 'ObjectContext', {
@@ -217,7 +218,7 @@ let cachedPair:
 function synthCrossRegionPair(): NonNullable<typeof cachedPair> {
   if (cachedPair !== undefined) return cachedPair;
 
-  const app = new cdk.App({
+  const app = appWithoutAssetStaging({
     context: { [CLAUDE_BOUNDARY_CONTEXT_KEY]: 'OpenReceptionClaudeBoundary' },
   });
   applyClaudeDeployBoundary(app);
@@ -445,7 +446,7 @@ describe.runIf(OPEN_NEXT_READY)('CustomResourceProvider 系ロール (#680 R1)',
    */
   it('boundary とタグが付く通常のロールは carve-out に一致しない', () => {
     const pattern = carveOutPattern();
-    const app = new cdk.App({
+    const app = appWithoutAssetStaging({
       context: { [CLAUDE_BOUNDARY_CONTEXT_KEY]: 'OpenReceptionClaudeBoundary' },
     });
     applyClaudeDeployBoundary(app);
@@ -483,7 +484,7 @@ describe.runIf(OPEN_NEXT_READY)('CustomResourceProvider 系ロール (#680 R1)',
  */
 describe('Function URL の allowlist (#680 R10 / B)', () => {
   it('WebStack と同じ construct パスから、gate の allowlist と同じ論理 ID が出る', () => {
-    const app = new cdk.App();
+    const app = appWithoutAssetStaging();
     const stack = new cdk.Stack(app, 'OpenReception-Web-dev', {
       env: { account: ACCOUNT, region: 'ap-northeast-1' },
     });
@@ -514,7 +515,7 @@ describe('Function URL の allowlist (#680 R10 / B)', () => {
    * Permission 2 本。gate はこの 2 本だけを通す。
    */
   it('authType NONE のとき CDK が足す公開 invoke 許可は、gate の allowlist と一致する', () => {
-    const app = new cdk.App();
+    const app = appWithoutAssetStaging();
     const stack = new cdk.Stack(app, 'OpenReception-Web-dev', {
       env: { account: ACCOUNT, region: 'ap-northeast-1' },
     });
@@ -593,7 +594,7 @@ function stripComments(source: string): string {
  */
 describe('PassRole のタグ条件が依拠する前提: CDK が IAM Role にタグを付ける (Important 4)', () => {
   it('applyCostTags 配下の AWS::IAM::Role に Project / Environment タグが付く', () => {
-    const app = new cdk.App();
+    const app = appWithoutAssetStaging();
     const stack = new cdk.Stack(app, 'TaggedRoles', {
       env: { account: ACCOUNT, region: 'ap-northeast-1' },
     });

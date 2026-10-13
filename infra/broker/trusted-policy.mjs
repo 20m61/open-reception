@@ -69,13 +69,21 @@ export const PINNED_PROVIDER_FUNCTIONS = Object.freeze({
  * Lambda layers the dev assembly may declare (owner decision on #1146, 2026-09-28: approve CDK
  * BucketDeployment's AWS CLI layer). A layer is code for every function that loads it, so like the
  * pinned providers it is reviewed by content: the zip the CLI would publish under `Content.S3Key`
- * must be exactly the reviewed file (`@aws-cdk/asset-awscli-v1` 2.2.282 `lib/layer.zip`), and no
+ * must be exactly the reviewed file (`@aws-cdk/asset-awscli-v1` 2.2.292 `lib/layer.zip`), and no
  * other layer, property or content is accepted. A CDK upgrade that changes the file is a policy change.
+ *
+ * 2026-10-12 (aws-cdk-lib 2.263.0 -> 2.273.0, owner-approved PR): re-pinned from 2.2.282
+ * (`e32c5645...4b4bd7`) to 2.2.292, the version aws-cdk-lib 2.273.0 depends on exactly. Verified by
+ * `sha256sum` of `node_modules/@aws-cdk/asset-awscli-v1/lib/layer.zip` and of the same file in a
+ * fresh `npm pack @aws-cdk/asset-awscli-v1@2.2.292` (identical); the tarball's sha512 matches the
+ * registry `dist.integrity`, the lockfile `integrity` and the subject of the package's npm SLSA
+ * provenance attestation (built from github.com/cdklabs/awscdk-asset-awscli,
+ * `.github/workflows/release-awscli-v1.yml`, ref `awscli-v1/main`).
  */
 export const PINNED_LAYERS = Object.freeze({
   AssetDeploymentAwsCliLayerC0B4D779: Object.freeze({
     description: '/opt/awscli/aws',
-    fileSha256: 'e32c564500d8f80cfaaff79b1211480b95448f76780301d2b09c7133b89b4bd7',
+    fileSha256: 'a50d5225673b37be97302ae9094308bf4f5085a325d502950adf11fbe35245e7',
   }),
 });
 
