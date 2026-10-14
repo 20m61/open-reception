@@ -31,6 +31,9 @@ import { establishKioskSession, loginAsAdmin, openMoreIdleActions } from './help
 
 const LANDSCAPE = { width: 1080, height: 810 } as const;
 
+/** 営業時間外画面を撮るときのブラウザ時刻（日付で mask 矩形の幅が動くのを止める。下記テスト参照）。 */
+const OUT_OF_HOURS_NOW = new Date('2026-03-04T20:00:00Z');
+
 // 横向き iPad・低 DSF・reducedMotion で固定する。`chromium-ipad` project の縦向き
 // エミュレーション viewport を本 spec 用に上書きする。
 test.use({ viewport: LANDSCAPE, deviceScaleFactor: 1, reducedMotion: 'reduce' });
@@ -324,6 +327,16 @@ test.describe('デモプレビュー経由の画面（営業時間外・サイ�
 
   test('営業時間外画面の VRT + a11y', async ({ page }) => {
     // 共有営業ポリシーを書き換えず、Mock 注入のデモプレビューで OutOfHoursView を再現する。
+    //
+    // **ブラウザの時計を固定する（#1237 派生）。** 再開時刻は `deriveOperatingStatus` が
+    // ブラウザの `Date.now() + 12h` から作る。値は下で mask しているが、**mask の矩形は
+    // 文字列の幅そのもの**で、数字はプロポーショナルなので日付によって 260〜299px 動く
+    // （実測。`.notice` は shrink-to-fit なので枠ごと動く）。許容値 0.002（1749px）を
+    // 超える日だけ落ちていた（main 95c24b4 で 1821px / 別 head で 2157px）。
+    // 時刻は linux ベースラインの mask 矩形（x=392..687）と同じ幅になるものを選んである
+    // （→ 表示は `2026/03/05 17:00`）。`setFixedTime` は Date だけを固定し timer は進めるので、
+    // 画面の進行には干渉しない。
+    await page.clock.setFixedTime(OUT_OF_HOURS_NOW);
     await page.goto('/admin/demo/preview?scenario=out-of-hours');
     await expect(page.getByTestId('kiosk-out-of-hours')).toBeVisible();
 
