@@ -70,6 +70,33 @@ describe('runReservationTtlBackfill (#1022 backfill)', () => {
     expect(fake.queries.every((q) => (q.ExpressionAttributeValues as never)[':pk'] === PK)).toBe(true);
   });
 
+  it('走査は期限の計算に要る属性だけを投影する（来訪者の情報を読み出さない）', async () => {
+    // 🔴 許可の列挙で縛る（PII の属性名を数え上げない）。投影を外す・広げる変更はここで落ちる。
+    // 一覧は実装から import しない（実装と同じ誤りを共有しないように）。
+    const allowed = new Set(['SK', 'visitAt', 'expiresAt', 'retentionDays', 'ttl']);
+    const fake = new FakeDoc();
+    fake.pageSize = 1;
+    legacy(fake, 'a');
+    legacy(fake, 'b');
+    await runReservationTtlBackfill({ doc: doc(fake), table: TABLE, nowMs: NOW });
+    expect(fake.queries.length).toBeGreaterThan(1); // 2 ページ目以降の Query も同じ投影であること
+    for (const q of fake.queries) {
+      const projection = q.ProjectionExpression;
+      expect(typeof projection === 'string' && projection.trim() !== '').toBe(true);
+      const names = (q.ExpressionAttributeNames ?? {}) as Record<string, string>;
+      const attrs = (projection as string)
+        .split(',')
+        .flatMap((path) => path.split(/[.[\]]/))
+        .map((s) => s.trim())
+        .filter((s) => s !== '' && !/^\d+$/.test(s))
+        .map((s) => (s.startsWith('#') ? names[s] : s));
+      expect(attrs.length).toBeGreaterThan(0);
+      for (const a of attrs) expect(allowed).toContain(a);
+      // 投影が属性を読み落としていないこと（期限の計算と報告に要るものは全部読む）。
+      expect(new Set(attrs)).toEqual(allowed);
+    }
+  });
+
   it('予約以外のパーティションは対象にしない', async () => {
     const fake = new FakeDoc();
     legacy(fake, 'a');

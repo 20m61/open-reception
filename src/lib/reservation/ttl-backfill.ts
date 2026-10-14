@@ -2,7 +2,7 @@
  * 既存の予約レコードへ `ttl` を後付けする backfill の DynamoDB 入出力（#1022 / PR #1244）。
  *
  * 何をするかの規則は `@/domain/reservation/ttl-backfill`（純関数）、実行手順は
- * `docs/runbook-reservation-ttl-backfill.md`、CLI は `scripts/reservation-ttl-backfill.ts`。
+ * `docs/runbook-reservation-ttl-backfill.md`、CLI は `src/lib/reservation/ttl-backfill-cli.ts`。
  * **本番データ操作なので実行は owner（Mac の端末）だけ。** Claude のセッションからは
  * MiniStack に対してしか回さない。
  *

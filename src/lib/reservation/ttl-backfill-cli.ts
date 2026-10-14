@@ -13,7 +13,8 @@
  * `scripts/` ではなくここに置いているのは、`scripts/` へ置くと共有ファイル
  * （`package.json` か `scripts/check-script-wiring.ts` の手動実行リスト）への登録が要るため。
  *
- * 終了コード: 0 = 完了 / 1 = 実行時エラー / 2 = 引数の誤り / 3 = dry-run 後に件数が変わった（未書き込み）。
+ * 終了コード: 0 = 完了 / 1 = 実行時エラー / 2 = 引数の誤り / 3 = dry-run 後に件数が変わった（未書き込み）
+ * （対応は `ttlBackfillExitCode`）。
  */
 import { pathToFileURL } from 'node:url';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -102,37 +103,61 @@ export function formatTtlBackfillReport(report: TtlBackfillReport): string {
   return lines.join('\n');
 }
 
-async function main(argv: readonly string[]): Promise<number> {
-  let args: TtlBackfillArgs;
+/**
+ * 終了コード: 0 = 完了 / 1 = 実行時エラー / 2 = 引数の誤り / 3 = dry-run 後に件数が変わった（未書き込み）。
+ * `failure` は投げられたもの（成功なら `undefined`）。runbook の表と同じ対応を unit が縛る。
+ */
+export function ttlBackfillExitCode(failure: unknown): 0 | 1 | 2 | 3 {
+  if (failure === undefined) return 0;
+  if (failure instanceof TtlBackfillUsageError) return 2;
+  if (failure instanceof TtlBackfillAbortedError) return 3;
+  return 1;
+}
+
+export type TtlBackfillCliDeps = {
+  /** 向き先を解決して client を作る。`target` は最初に stderr へ出す（owner が目で確かめる）。 */
+  readonly connect: () => { readonly doc: Pick<DynamoDBDocumentClient, 'send'>; readonly target: string };
+  readonly nowMs: () => number;
+  readonly out: (line: string) => void;
+  readonly err: (line: string) => void;
+};
+
+/** CLI 本体。投げたものは全部 `ttlBackfillExitCode` で終了コードへ写す（未処理の reject にしない）。 */
+export async function runTtlBackfillCli(
+  argv: readonly string[],
+  deps: TtlBackfillCliDeps,
+): Promise<number> {
   try {
-    args = parseTtlBackfillArgs(argv);
-  } catch (err) {
-    console.error((err as Error).message);
-    return 2;
-  }
-  const config = awsClientConfig();
-  // 向き先を最初に出す（どのテーブルへ書くかを owner が目で確かめられるように）。
-  console.error(
-    `target: runtime=${resolveAwsRuntime(process.env)} region=${config.region} table=${args.table}`,
-  );
-  const doc = DynamoDBDocumentClient.from(new DynamoDBClient(config));
-  try {
+    const args = parseTtlBackfillArgs(argv);
+    const { doc, target } = deps.connect();
+    deps.err(`target: ${target} table=${args.table}`);
     const report = await runReservationTtlBackfill({
       doc,
       table: args.table,
-      nowMs: Date.now(),
+      nowMs: deps.nowMs(),
       apply: args.apply,
     });
-    console.log(args.json ? JSON.stringify(report, null, 2) : formatTtlBackfillReport(report));
-    return 0;
+    deps.out(args.json ? JSON.stringify(report, null, 2) : formatTtlBackfillReport(report));
+    return ttlBackfillExitCode(undefined);
   } catch (err) {
-    console.error((err as Error).message);
-    return err instanceof TtlBackfillAbortedError ? 3 : 1;
+    deps.err(err instanceof Error ? err.message : String(err));
+    return ttlBackfillExitCode(err);
   }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main(process.argv.slice(2)).then((code) => {
+  runTtlBackfillCli(process.argv.slice(2), {
+    connect: () => {
+      const config = awsClientConfig();
+      return {
+        doc: DynamoDBDocumentClient.from(new DynamoDBClient(config)),
+        target: `runtime=${resolveAwsRuntime(process.env)} region=${config.region}`,
+      };
+    },
+    nowMs: () => Date.now(),
+    out: (line) => console.log(line),
+    err: (line) => console.error(line),
+  }).then((code) => {
     process.exitCode = code;
   });
 }

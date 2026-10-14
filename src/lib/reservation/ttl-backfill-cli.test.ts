@@ -1,10 +1,15 @@
+import type { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { describe, expect, it } from 'vitest';
+import { FakeDoc } from '@/lib/data/fake-dynamo';
+import { RESERVATION_COLLECTION } from './data-backed-repository';
 import {
   formatTtlBackfillReport,
   parseTtlBackfillArgs,
+  runTtlBackfillCli,
+  ttlBackfillExitCode,
   TtlBackfillUsageError,
 } from './ttl-backfill-cli';
-import type { TtlBackfillReport } from './ttl-backfill';
+import { TtlBackfillAbortedError, type TtlBackfillReport } from './ttl-backfill';
 
 describe('parseTtlBackfillArgs', () => {
   it('既定は dry-run', () => {
@@ -85,5 +90,97 @@ describe('formatTtlBackfillReport', () => {
     expect(text).toContain('mode: apply');
     expect(text).toContain('updated: 0');
     expect(text).toContain('skippedChanged id: a');
+  });
+});
+
+describe('ttlBackfillExitCode', () => {
+  // runbook の表（0 = 完了 / 1 = 実行時エラー / 2 = 引数の誤り / 3 = 件数が変わった・未書き込み）と同じ対応。
+  it('失敗の種類ごとに終了コードを返す', () => {
+    expect(ttlBackfillExitCode(undefined)).toBe(0);
+    expect(ttlBackfillExitCode(new TtlBackfillUsageError('x'))).toBe(2);
+    expect(ttlBackfillExitCode(new TtlBackfillAbortedError(1, 2))).toBe(3);
+    expect(ttlBackfillExitCode(new Error('throttled'))).toBe(1);
+    expect(ttlBackfillExitCode('not an error')).toBe(1);
+  });
+
+  it('名前だけ似せたエラーを 2 / 3 に数えない（0 や 3 を誤って返さない）', () => {
+    expect(ttlBackfillExitCode(Object.assign(new Error('x'), { name: 'TtlBackfillAbortedError' }))).toBe(1);
+    expect(ttlBackfillExitCode(Object.assign(new Error('x'), { name: 'TtlBackfillUsageError' }))).toBe(1);
+    expect(ttlBackfillExitCode(null)).toBe(1);
+  });
+});
+
+describe('runTtlBackfillCli（終了コードの配線）', () => {
+  const PK = `col#${RESERVATION_COLLECTION}`;
+  const DAY = 24 * 60 * 60 * 1000;
+  const NOW = Date.now();
+
+  function setup() {
+    const fake = new FakeDoc();
+    fake.store.set(`${PK}\u0000a`, {
+      PK,
+      SK: 'a',
+      visitAt: new Date(NOW + DAY).toISOString(),
+      expiresAt: new Date(NOW + 2 * DAY).toISOString(),
+      retentionDays: 30,
+    });
+    const out: string[] = [];
+    const err: string[] = [];
+    let connected = 0;
+    const deps = {
+      connect: () => {
+        connected += 1;
+        return { doc: fake as unknown as DynamoDBDocumentClient, target: 'runtime=test' };
+      },
+      nowMs: () => NOW,
+      out: (s: string) => out.push(s),
+      err: (s: string) => err.push(s),
+    };
+    return { fake, out, err, deps, connected: () => connected };
+  }
+
+  it('dry-run は 0', async () => {
+    const t = setup();
+    expect(await runTtlBackfillCli(['--table', 'T'], t.deps)).toBe(0);
+    expect(t.out.join('\n')).toContain('toSet: 1');
+  });
+
+  it('引数の誤りは 2 で、接続もしない', async () => {
+    const t = setup();
+    expect(await runTtlBackfillCli(['--table', 'T', '--apply'], t.deps)).toBe(2);
+    expect(t.connected()).toBe(0);
+    expect(t.err.join('\n')).toContain('--expect-to-set');
+  });
+
+  it('dry-run 後に件数が変わったら 3 で、1 件も書かない', async () => {
+    const t = setup();
+    expect(await runTtlBackfillCli(['--table', 'T', '--apply', '--expect-to-set', '2'], t.deps)).toBe(3);
+    expect(t.fake.calls.some((c) => c.name === 'UpdateCommand')).toBe(false);
+  });
+
+  it('実行時エラーは 1', async () => {
+    const t = setup();
+    t.fake.send = async () => {
+      throw new Error('network down');
+    };
+    expect(await runTtlBackfillCli(['--table', 'T'], t.deps)).toBe(1);
+    expect(t.err.join('\n')).toContain('network down');
+  });
+
+  it('接続の解決で投げても 1 を返す（未処理の reject にしない）', async () => {
+    const t = setup();
+    const deps = {
+      ...t.deps,
+      connect: () => {
+        throw new Error('real credentials in a local lane');
+      },
+    };
+    expect(await runTtlBackfillCli(['--table', 'T'], deps)).toBe(1);
+  });
+
+  it('apply が通れば 0', async () => {
+    const t = setup();
+    expect(await runTtlBackfillCli(['--table', 'T', '--apply', '--expect-to-set', '1'], t.deps)).toBe(0);
+    expect(t.out.join('\n')).toContain('updated: 1');
   });
 });
