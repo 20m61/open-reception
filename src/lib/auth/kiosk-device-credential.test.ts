@@ -63,6 +63,15 @@ describe('端末証明 (#1237)', () => {
     expect(await readDeviceCredential(enroll)).toBeNull();
   });
 
+  it('🔴 同じ鍵・同じ形でも role の違う署名は読まない', async () => {
+    const { getEnrollmentSecret } = await import('./kiosk-enrollment');
+    const exp = Date.now() + 60_000;
+    for (const role of ['kiosk-enroll', 'kiosk', 'admin']) {
+      const other = await signSession({ role, exp, kioskId: 'kiosk-1', generation: 1 }, getEnrollmentSecret());
+      expect(await readDeviceCredential(other)).toBeNull();
+    }
+  });
+
   it('🔴 証明は kiosk セッションとして読まれない（逆向きの取り違え）', async () => {
     const credential = await issueDeviceCredential('kiosk-1', 1);
     expect(await readKioskSession(credential)).toBeNull();

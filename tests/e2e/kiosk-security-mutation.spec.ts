@@ -185,7 +185,8 @@ test.describe("端末証明による PIN 再認可 (#1237)", () => {
 
     const res = await submitPin(kp, "0000");
     expect(res.status()).toBe(200);
-    expect(res.headers()["set-cookie"] ?? "").toContain("kiosk_session=");
+    // ブラウザ側の応答は Set-Cookie を見せないので、発行は cookie ジャーで確かめる。
+    expect((await kiosk.cookies()).some((c) => c.name === "kiosk_session")).toBe(true);
     // PIN 画面を抜けて受付の待機画面へ。
     await expect(kp.getByTestId("kiosk-pin")).toHaveCount(0, { timeout: 15_000 });
     await expect(kp.getByTestId("start-reception").first()).toBeVisible({ timeout: 15_000 });
