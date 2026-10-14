@@ -1566,8 +1566,8 @@ function KioskAuthorizeView({
       const res = await fetch('/api/kiosk/authorize', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        // 端末 ID は送らない (#419)。サーバは body の端末 ID を読まず、エンロール済みの
-        // セッションから導出する（登録済みの端末に限る, #1237）。
+        // 端末 ID は送らない (#419)。サーバは body の端末 ID を読まず、エンロールで得た
+        // 端末証明（HttpOnly cookie）かセッションから導出する（登録済みの端末に限る, #1237）。
         body: JSON.stringify({ pin }),
       });
       if (res.ok) {

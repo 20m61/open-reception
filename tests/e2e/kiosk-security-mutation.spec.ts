@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Browser, type Page } from "@playwright/test";
 import { establishKioskSession, loginAsAdmin } from "./helpers";
 
 /**
@@ -133,6 +133,115 @@ test("🔴 未登録の端末は正しい PIN でも PIN 画面に再登録の�
   // 受付フローへは入らない（PIN 画面のまま）。
   await expect(kp.getByTestId("start-reception")).toHaveCount(0);
   await kiosk.close();
+});
+
+/**
+ * 🔴 **セッションが切れた登録済みの端末は、PIN 画面から再認可できる（#1237 端末証明）。**
+ *
+ * PIN 画面が出るのは有効なセッションが無いときである。セッションだけを登録の根拠にすると、
+ * PIN 画面からの PIN は**常に** `not_enrolled` になる（#1263 のレビュー）。エンロールで発行する
+ * 端末証明（`kiosk_device`、HttpOnly・authorize 限定 path）が、セッションと別に登録を示す。
+ *
+ * - セッション切れは `kiosk_session` cookie だけを消して再現する（証明は残る）。
+ * - 端末は**別の context**（admin cookie を持たない）。管理操作は `page` 側で行う。
+ * - 後始末: 設定の復元は afterEach。context は閉じ損ねても worker 終了で破棄される。
+ */
+test.describe("端末証明による PIN 再認可 (#1237)", () => {
+  async function enrolledKioskWithoutSession(browser: Browser) {
+    const kiosk = await browser.newContext();
+    const kp = await kiosk.newPage();
+    const deviceId = await establishKioskSession(kp);
+    const credential = (await kiosk.cookies()).find((c) => c.name === "kiosk_device");
+    // 証明の形（ここが崩れたら下の主張は別の原因を見ている）。
+    expect(credential, "エンロールが端末証明を設定していない").toBeDefined();
+    expect(credential?.httpOnly).toBe(true);
+    expect(credential?.path).toBe("/api/kiosk/authorize");
+    await kiosk.clearCookies({ name: "kiosk_session" });
+    return { kiosk, kp, deviceId, credential: credential! };
+  }
+
+  async function submitPin(kp: Page, value: string) {
+    await kp.goto("/kiosk");
+    const pin = kp.getByTestId("kiosk-pin");
+    await expect(pin).toBeVisible({ timeout: 15_000 });
+    await pin.fill(value);
+    const responded = kp.waitForResponse((r) => r.url().endsWith("/api/kiosk/authorize"));
+    await kp.getByTestId("kiosk-authorize").click();
+    return responded;
+  }
+
+  test("🔴 セッション切れの登録済み端末は、PIN 画面の正しい PIN で受付に戻る（誤った PIN は 401）", async ({
+    page,
+    browser,
+  }) => {
+    await loginAsAdmin(page);
+    expect((await putSecurity(page, { pinRequired: true })).ok()).toBeTruthy();
+    const { kiosk, kp } = await enrolledKioskWithoutSession(browser);
+
+    // 誤った PIN は登録済みでも 401（登録は PIN を代替しない）。
+    const wrong = await submitPin(kp, "9999");
+    expect(wrong.status()).toBe(401);
+    await expect(kp.getByTestId("kiosk-pin-error")).toHaveAttribute("data-failure", "wrong_pin");
+
+    const res = await submitPin(kp, "0000");
+    expect(res.status()).toBe(200);
+    expect(res.headers()["set-cookie"] ?? "").toContain("kiosk_session=");
+    // PIN 画面を抜けて受付の待機画面へ。
+    await expect(kp.getByTestId("kiosk-pin")).toHaveCount(0, { timeout: 15_000 });
+    await expect(kp.getByTestId("start-reception").first()).toBeVisible({ timeout: 15_000 });
+    await kiosk.close();
+  });
+
+  test("🔴 失効した端末は、証明を持っていても PIN 画面で再登録の案内になる", async ({
+    page,
+    browser,
+  }) => {
+    await loginAsAdmin(page);
+    expect((await putSecurity(page, { pinRequired: true })).ok()).toBeTruthy();
+    const { kiosk, kp, deviceId } = await enrolledKioskWithoutSession(browser);
+    const revoked = await page.request.patch(`/api/admin/devices/${deviceId}`, {
+      data: { tenantId: "internal", enabled: false },
+    });
+    expect(revoked.ok()).toBeTruthy();
+
+    const res = await submitPin(kp, "0000");
+    expect(res.status()).toBe(403);
+    expect(((await res.json()) as { error: string }).error).toBe("not_enrolled");
+    await expect(kp.getByTestId("kiosk-pin-error")).toHaveAttribute("data-failure", "not_enrolled");
+    await kiosk.close();
+  });
+
+  test("🔴 再登録の前に発行された古い証明では再認可できない（新しい証明では通る）", async ({
+    page,
+    browser,
+  }) => {
+    await loginAsAdmin(page);
+    expect((await putSecurity(page, { pinRequired: true })).ok()).toBeTruthy();
+    const { kiosk, kp, deviceId, credential: old } = await enrolledKioskWithoutSession(browser);
+
+    // 同じ端末を登録し直す（世代が上がる）。
+    const issued = await page.request.post(`/api/admin/devices/${deviceId}/reissue-token`, {
+      data: { tenantId: "internal" },
+    });
+    expect(issued.ok()).toBeTruthy();
+    const { enrollmentUrl } = (await issued.json()) as { enrollmentUrl: string };
+    const token = new URL(enrollmentUrl).searchParams.get("token") ?? "";
+    expect((await kp.request.post("/api/kiosk/enroll", { data: { token } })).ok()).toBeTruthy();
+    const fresh = (await kiosk.cookies()).find((c) => c.name === "kiosk_device");
+    expect(fresh?.value).not.toBe(old.value);
+
+    // 古い証明に差し替え、セッションを消す。
+    await kiosk.clearCookies({ name: "kiosk_session" });
+    await kiosk.addCookies([old]);
+    const stale = await submitPin(kp, "0000");
+    expect(stale.status()).toBe(403);
+    expect(((await stale.json()) as { error: string }).error).toBe("not_enrolled");
+
+    // 下界: 新しい証明なら通る（上の 403 を「全部拒否」で満たさせない）。
+    await kiosk.addCookies([fresh!]);
+    expect((await submitPin(kp, "0000")).status()).toBe(200);
+    await kiosk.close();
+  });
 });
 
 test.describe("管理画面で決めた PIN (#1021)", () => {
