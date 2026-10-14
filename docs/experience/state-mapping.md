@@ -212,7 +212,7 @@ Actor は来訪者ではなく**設置・運用担当者**（端末を据え付�
 | `ready` | セッションあり | 受付フロー | — |
 
 **#1237 で PIN 認可は登録済みの端末に限った**（`POST /api/kiosk/authorize` は端末 ID を
-エンロール済みセッションから導出し、端末台帳で有効な端末だけに発行する。満たさなければ
+エンロールで得た端末証明またはセッションから導出し、端末台帳で有効な端末だけに発行する。満たさなければ
 403 `not_enrolled`）。owner の判断（journey B）で、**PIN 画面は残し**、403 `not_enrolled` の
 ときだけ**登録し直す案内**を出す。
 
@@ -232,11 +232,19 @@ PIN 画面の失敗は `AuthorizeFailure`（`src/components/kiosk/authorize-outc
 - 本文が読めないときは `null` ＝ 従来の判定へ戻る（throw して `unreachable` へ落とさない）。
 - 表示は `role="alert"`。文言は辞書（`kiosk.authorize.notEnrolled`、ja / en / ko / zh。
   `ja-simple` は ja へフォールバック）。
-- 🔴 **実際の到達経路**: `authorize` ゲートは「有効なセッションが無い」ときに出る。一方で
-  認可が通るのも「有効なセッションがある」ときだけなので、**PIN 画面から送った PIN は、
-  いまの実装では常に `not_enrolled` になる**（セッションの期限切れで PIN 画面へ落ちた登録済み
-  端末も、登録し直しへ案内される）。PIN 画面を「登録済みの端末の再認可」として成立させるには、
-  セッションの期限と端末の登録を分けて持つ必要がある —— これは journey B の範囲外で、
-  別の判断として残す。
+- 🔴 **到達経路と端末証明（#1237 選択肢 A）**: `authorize` ゲートは「有効なセッションが無い」
+  ときに出る。セッションだけを登録の根拠にすると PIN 画面からの PIN は常に `not_enrolled` に
+  なるので、**登録の証跡をセッションと分けて持つ**。エンロール成功時に端末証明 cookie
+  `kiosk_device`（HttpOnly・SameSite=Strict・path=`/api/kiosk/authorize`・1 年）を発行し、
+  authorize は「証明 → セッション」の順で端末を解決する。証明は台帳の
+  `Device.credentialGeneration`（エンロールの消費・失効・再有効化で上がる）と一致し、かつ台帳で
+  有効な端末のときだけ通る。PIN 認可では証明を発行も延長もしない（1 年たったら登録し直す）。
+- 🔴 **移行**: 証明はエンロールでしか発行しないので、**この変更より前に登録した端末は証明を
+  持たない**。その端末は 30 日のセッションが切れた時点で従来どおり `not_enrolled` になる。
+  配備後、セッションが切れる前に管理発行の受付 URL / QR で登録し直すこと。
+- 🔴 **鍵**: 証明は `KIOSK_ENROLLMENT_SECRET` で署名する（role で取り違えを断つ）。この鍵を
+  回すと、全端末の証明・未消費の受付 URL・試行予算の識別が同時に無効になる。回したあとに
+  セッションが切れた端末は登録し直しになる。
 - 検証: unit `authorize-outcome.test.ts` / `authorize-wiring.test.ts`、e2e
-  `kiosk-security-mutation.spec.ts`（「未登録の端末は正しい PIN でも PIN 画面に再登録の案内が出る」）。
+  `kiosk-security-mutation.spec.ts`（「未登録の端末は正しい PIN でも PIN 画面に再登録の案内が出る」・
+  「端末証明による PIN 再認可」）、unit `src/app/api/kiosk/authorize/route.test.ts`。

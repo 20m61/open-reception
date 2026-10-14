@@ -28,7 +28,7 @@ export async function loginAsAdmin(page: Page): Promise<void> {
  * keep-alive agent を使い、`dispose()` してもソケットが残る。サーバが先に切ったあと再利用すると
  * 最初の `POST /api/admin/login` が `ECONNRESET` になり、spec に到達せず retry で緑になる。
  */
-export async function establishKioskSession(page: Page): Promise<void> {
+export async function establishKioskSession(page: Page): Promise<string> {
   // request.newContext() は config の use.baseURL を継承しないため明示的に渡す（config と同じ解決）。
   // 空文字 PLAYWRIGHT_BASE_URL を fallback へ倒すため `||` を使う。
   const baseURL =
@@ -69,6 +69,7 @@ export async function establishKioskSession(page: Page): Promise<void> {
     // エンロールは page コンテキストで叩き、kiosk_session cookie を page 側へ落とす。
     const enroll = await page.request.post('/api/kiosk/enroll', { data: { token } });
     expect(enroll.ok()).toBeTruthy();
+    return deviceId;
   } finally {
     await admin.dispose();
   }

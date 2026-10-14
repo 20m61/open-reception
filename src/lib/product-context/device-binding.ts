@@ -11,12 +11,15 @@
  */
 import type { Actor } from '@/domain/tenant/authorization';
 import { asDeviceId, asSiteId, asTenantId, type SiteId, type TenantId } from '@/domain/tenant/types';
+import { credentialGenerationOf } from '@/domain/tenant/device-credential';
 import { getTenantStore } from '@/lib/tenant/store';
 
 export type ResolvedDeviceBinding = {
   tenantId: TenantId;
   siteId: SiteId;
   kioskId: string;
+  /** 端末証明の世代（未設定の旧レコードは 0）。PIN 再認可で証明と突き合わせる (#1237)。 */
+  credentialGeneration: number;
 };
 
 /** 登録済みかつ有効な端末のみ束縛を返す。未登録・失効・ストア障害は null。 */
@@ -33,6 +36,7 @@ export async function resolveDeviceBinding(
       tenantId: asTenantId(String(device.tenantId)),
       siteId: asSiteId(String(device.siteId)),
       kioskId: trimmed,
+      credentialGeneration: credentialGenerationOf(device),
     };
   } catch {
     return null;
@@ -43,7 +47,9 @@ export async function resolveDeviceBinding(
  * 端末束縛から認可判定用の actor を組む。端末は `kiosk_device` 割り当て 1 件だけを持ち、
  * 管理系の権限は一切持たない（`resolveProductContext` が管理領域で弾く）。
  */
-export function deviceActorFor(binding: ResolvedDeviceBinding): Actor {
+export function deviceActorFor(
+  binding: Pick<ResolvedDeviceBinding, 'tenantId' | 'siteId' | 'kioskId'>,
+): Actor {
   return {
     status: 'active',
     assignments: [

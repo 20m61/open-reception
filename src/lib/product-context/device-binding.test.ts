@@ -33,6 +33,15 @@ describe('resolveDeviceBinding', () => {
       tenantId: asTenantId('tenant-a'),
       siteId: asSiteId('site-1'),
       kioskId: 'kiosk-1',
+      // 世代を持たない旧レコードは 0 (#1237)。
+      credentialGeneration: 0,
+    });
+  });
+
+  it('🔴 台帳の端末証明の世代を運ぶ（authorize が証明と突き合わせる, #1237）', async () => {
+    findDeviceById.mockResolvedValue({ ...ACTIVE_DEVICE, credentialGeneration: 5 });
+    await expect(resolveDeviceBinding('kiosk-1')).resolves.toMatchObject({
+      credentialGeneration: 5,
     });
   });
 

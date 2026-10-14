@@ -187,12 +187,14 @@ class DataBackedDeviceRepository implements DeviceRepository {
     deviceId: DeviceId,
     expectedJti: string,
     lastSeenAt: string,
+    generation: { expected: number | undefined; next: number },
   ): Promise<boolean> {
-    // 条件付き部分更新: enrollmentTokenId === expectedJti のときのみ消去 + lastSeenAt 更新。
+    // 条件付き部分更新: enrollmentTokenId === expectedJti（かつ世代が読んだ時点のまま）のときのみ
+    // 消去 + lastSeenAt 更新 + 端末証明の世代を上げる (#1237)。
     return this.col().updateIf(
       String(deviceId),
-      { enrollmentTokenId: undefined, lastSeenAt },
-      { enrollmentTokenId: expectedJti },
+      { enrollmentTokenId: undefined, lastSeenAt, credentialGeneration: generation.next },
+      { enrollmentTokenId: expectedJti, credentialGeneration: generation.expected },
     );
   }
 }

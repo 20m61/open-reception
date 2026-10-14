@@ -369,7 +369,8 @@ describe('DeviceService.consumeEnrollment (受付エンロール)', () => {
       deviceId: String(D_A1),
       jti,
     });
-    expect(r).toEqual({ ok: true, kioskId: String(D_A1) });
+    // 世代を持たない旧レコードは 0 として読み、消費で 1 へ上がる (#1237)。
+    expect(r).toEqual({ ok: true, kioskId: String(D_A1), credentialGeneration: 1 });
     const after = await store.devices.getDevice(T_A, D_A1);
     expect(after?.enrollmentTokenId).toBeUndefined();
     expect(after?.lastSeenAt).toBe(NOW.toISOString());
@@ -657,5 +658,93 @@ describe('DeviceService.syncKioskState (#284 inc1 /admin/kiosks の逆方向即�
     await svc.syncKioskState({ id: 'kiosk-new', displayName: '新端末', enabled: true }, SCOPE);
     await svc.syncKioskState({ id: String(D_A1), displayName: '受付1', enabled: false }, SCOPE);
     expect(audits).toEqual([]);
+  });
+});
+
+describe('端末証明の世代 (#1237)', () => {
+  const claimsFor = (jti: string) => ({
+    tenantId: String(T_A),
+    siteId: String(S_A1),
+    deviceId: String(D_A1),
+    jti,
+  });
+  async function enroll(svc: DeviceService) {
+    const r = await svc.issueEnrollment(developer, T_A, D_A1);
+    if (!r.ok) throw new Error('issue failed');
+    return svc.consumeEnrollment(claimsFor(extractJti(r.value.enrollment.token)));
+  }
+
+  it('🔴 再登録のたびに世代が上がり、台帳と返り値が一致する', async () => {
+    const { svc, store } = makeService();
+    const first = await enroll(svc);
+    const second = await enroll(svc);
+    expect(first).toMatchObject({ ok: true, credentialGeneration: 1 });
+    expect(second).toMatchObject({ ok: true, credentialGeneration: 2 });
+    expect((await store.devices.getDevice(T_A, D_A1))?.credentialGeneration).toBe(2);
+  });
+
+  it('既存の世代から上げる（旧レコードの 0 ではなく現在値 + 1）', async () => {
+    const { svc, store } = makeService();
+    await store.devices.putDevice(
+      device({ id: D_A1, tenantId: T_A, siteId: S_A1, credentialGeneration: 7 }),
+    );
+    expect(await enroll(svc)).toMatchObject({ ok: true, credentialGeneration: 8 });
+  });
+
+  it('🔴 失効で世代が上がり、再有効化でもさらに上がる', async () => {
+    const { svc, store } = makeService();
+    await enroll(svc); // 1
+    await svc.setEnabled(tenantAdminA, T_A, D_A1, false);
+    expect((await store.devices.getDevice(T_A, D_A1))?.credentialGeneration).toBe(2);
+    await svc.setEnabled(tenantAdminA, T_A, D_A1, true);
+    expect((await store.devices.getDevice(T_A, D_A1))?.credentialGeneration).toBe(3);
+  });
+
+  it('状態が変わらない setEnabled では世代を据え置く（下界）', async () => {
+    const { svc, store } = makeService();
+    await enroll(svc); // 1
+    await svc.setEnabled(tenantAdminA, T_A, D_A1, true);
+    expect((await store.devices.getDevice(T_A, D_A1))?.credentialGeneration).toBe(1);
+  });
+
+  it('🔴 /admin/kiosks からの失効（syncKioskState）でも世代が上がる', async () => {
+    const { svc, store } = makeService();
+    await enroll(svc); // 1
+    await svc.syncKioskState(
+      { id: String(D_A1), displayName: '受付1', enabled: false },
+      { tenantId: T_A, siteId: S_A1 },
+    );
+    expect((await store.devices.getDevice(T_A, D_A1))?.credentialGeneration).toBe(2);
+  });
+
+  it('🔴 読んだあとに世代が変わっていたら消費しない（CAS は世代も条件にする）', async () => {
+    const { svc, store } = makeService();
+    const r = await svc.issueEnrollment(developer, T_A, D_A1);
+    if (!r.ok) throw new Error('issue failed');
+    const jti = extractJti(r.value.enrollment.token);
+    // 消費の read と write の間に世代だけが変わった状態を、リポジトリを直接叩いて作る。
+    const won = await store.devices.consumeEnrollment(D_A1, jti, NOW.toISOString(), {
+      expected: 5,
+      next: 6,
+    });
+    expect(won).toBe(false);
+    const after = await store.devices.getDevice(T_A, D_A1);
+    expect(after?.enrollmentTokenId).toBe(jti);
+    expect(after?.credentialGeneration).toBeUndefined();
+  });
+
+  it('🔴 未設定を期待したのに世代が付いていたら消費しない（attribute_not_exists 側）', async () => {
+    const { svc, store } = makeService();
+    const r = await svc.issueEnrollment(developer, T_A, D_A1);
+    if (!r.ok) throw new Error('issue failed');
+    const jti = extractJti(r.value.enrollment.token);
+    const current = await store.devices.getDevice(T_A, D_A1);
+    await store.devices.putDevice({ ...current!, credentialGeneration: 2 });
+    const won = await store.devices.consumeEnrollment(D_A1, jti, NOW.toISOString(), {
+      expected: undefined,
+      next: 1,
+    });
+    expect(won).toBe(false);
+    expect((await store.devices.getDevice(T_A, D_A1))?.credentialGeneration).toBe(2);
   });
 });

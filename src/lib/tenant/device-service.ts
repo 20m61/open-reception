@@ -38,6 +38,7 @@ import {
   type SiteId,
   type TenantId,
 } from '@/domain/tenant/types';
+import { credentialGenerationOf, generationAfterStatusChange } from '@/domain/tenant/device-credential';
 import type { AppendAudit, ServiceResult } from './site-service';
 import type { DeviceRepository, SiteRepository } from './repository';
 
@@ -222,10 +223,13 @@ export class DeviceService {
     if (!canAccessSite(actor, tenantId, found.siteId, 'write'))
       return fail('forbidden', 'actor cannot write to this device');
 
+    const status = enabled ? 'active' : 'revoked';
     const next: Device = {
       ...found,
-      status: enabled ? 'active' : 'revoked',
+      status,
       enrollmentTokenId: undefined,
+      // 失効・再有効化で端末証明の世代を上げる（それ以前の証明で PIN 再認可させない。#1237）。
+      credentialGeneration: generationAfterStatusChange(found, status),
       updatedAt: this.now().toISOString(),
     };
     await this.devices.putDevice(next);
@@ -281,7 +285,9 @@ export class DeviceService {
    */
   async consumeEnrollment(
     claims: EnrollmentClaims,
-  ): Promise<{ ok: true; kioskId: string } | { ok: false; reason: ConsumeFailure }> {
+  ): Promise<
+    { ok: true; kioskId: string; credentialGeneration: number } | { ok: false; reason: ConsumeFailure }
+  > {
     const tenantId = asTenantId(claims.tenantId);
     const device = await this.devices.getDevice(tenantId, asDeviceId(claims.deviceId));
     if (!device) return { ok: false, reason: 'not_found' };
@@ -292,10 +298,13 @@ export class DeviceService {
     // 消去は **条件付き部分更新**（enrollmentTokenId === jti のときのみ）で原子的に行う。同一 URL の
     // 同時アクセスで上の read チェックを両者が通過しても、書込で勝てるのは 1 つだけ → 二重消費を防ぐ。
     // アイテム全体は置換せず該当フィールドのみ更新するため lost-update も避ける (issue #239)。
+    // 同じ書込で端末証明の世代を上げる（再登録で、以前に発行した証明を通らなくする。#1237）。
+    const credentialGeneration = credentialGenerationOf(device) + 1;
     const won = await this.devices.consumeEnrollment(
       asDeviceId(claims.deviceId),
       claims.jti,
       this.now().toISOString(),
+      { expected: device.credentialGeneration, next: credentialGeneration },
     );
     if (!won) {
       // 競合で書込に負けた。再読込で割り込みの種類を区別する（used と取り違えない）。
@@ -304,7 +313,7 @@ export class DeviceService {
       if (after.status === 'revoked') return { ok: false, reason: 'revoked' };
       return { ok: false, reason: 'used' };
     }
-    return { ok: true, kioskId: String(device.id) };
+    return { ok: true, kioskId: String(device.id), credentialGeneration };
   }
 
   /**
@@ -427,6 +436,8 @@ export class DeviceService {
       ...existing,
       status,
       enrollmentTokenId: undefined,
+      // setEnabled と同じく、登録状態の切替で端末証明の世代を上げる (#1237)。
+      credentialGeneration: generationAfterStatusChange(existing, status),
       updatedAt: this.now().toISOString(),
     });
     return { created: false, updated: true };
