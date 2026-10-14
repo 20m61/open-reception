@@ -187,21 +187,21 @@ class DataBackedDeviceRepository implements DeviceRepository {
   async changeDeviceStatus(
     deviceId: DeviceId,
     change: {
-      from: Pick<Device, 'status' | 'credentialGeneration'>;
-      to: { status: Device['status']; credentialGeneration?: number };
+      expectedGeneration: number | undefined;
+      status: Device['status'];
+      credentialGeneration?: number;
       updatedAt: string;
     },
   ): Promise<boolean> {
     const changes: Partial<Device> = {
-      status: change.to.status,
+      status: change.status,
       enrollmentTokenId: undefined,
       updatedAt: change.updatedAt,
     };
-    if (change.to.credentialGeneration !== undefined)
-      changes.credentialGeneration = change.to.credentialGeneration;
+    if (change.credentialGeneration !== undefined)
+      changes.credentialGeneration = change.credentialGeneration;
     return this.col().updateIf(String(deviceId), changes, {
-      status: change.from.status,
-      credentialGeneration: change.from.credentialGeneration,
+      credentialGeneration: change.expectedGeneration,
     });
   }
 

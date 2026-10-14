@@ -441,7 +441,7 @@ export class DeviceService {
   /**
    * 登録状態を条件付き部分更新で切り替える（#1237 の follow-up）。
    *
-   * 読んだ時点の status と世代を条件に書くので、間にエンロールの消費（世代 +1）や別の切替が
+   * 読んだ時点の世代を条件に書くので、間にエンロールの消費や別の切替（どちらも世代を上げる）が
    * 入っていれば書き込みに負ける。負けたら読み直して、**最新の世代から**やり直す。
    * これで (a) 世代は巻き戻らず、(b) 切替なら切替前に発行されたどの証明の世代よりも大きくなる。
    * 状態が変わらない切替は世代を据え置く（証明を巻き添えで失効させない）。保留中の
@@ -457,8 +457,9 @@ export class DeviceService {
     let current: Device | undefined = found;
     for (let attempt = 0; attempt < STATUS_CHANGE_ATTEMPTS && current; attempt += 1) {
       const won = await this.devices.changeDeviceStatus(current.id, {
-        from: { status: current.status, credentialGeneration: current.credentialGeneration },
-        to: { status, credentialGeneration: generationAfterStatusChange(current, status) },
+        expectedGeneration: current.credentialGeneration,
+        status,
+        credentialGeneration: generationAfterStatusChange(current, status),
         updatedAt: this.now().toISOString(),
       });
       if (won) return reread();

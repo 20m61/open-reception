@@ -89,17 +89,20 @@ export interface DeviceRepository {
    */
   updateDeviceFields(deviceId: DeviceId, changes: DeviceFieldChanges): Promise<boolean>;
   /**
-   * 登録状態を**条件付き部分更新**で切り替える（#1237 の follow-up）。現在の `status` と
-   * `credentialGeneration` が `from` と一致するときだけ `to` を書き、保留中のエンロール URL
-   * （`enrollmentTokenId`）を消して true。一致しない・端末が無いなら何も書かず false。
-   * `from.credentialGeneration` の `undefined` は「欄が無い」を要求する（旧レコード）。
-   * `to.credentialGeneration` を省くと世代は書かない（状態が変わらない切替で巻き戻さない）。
+   * 登録状態を**条件付き部分更新**で切り替える（#1237 の follow-up）。現在の
+   * `credentialGeneration` が `expectedGeneration` と一致するときだけ `status` と世代を書き、
+   * 保留中のエンロール URL（`enrollmentTokenId`）を消して true。一致しない・端末が無いなら
+   * 何も書かず false。`expectedGeneration` の `undefined` は「欄が無い」を要求する（旧レコード）。
+   * 条件は世代だけで足りる —— status の切替とエンロールの消費は必ず世代を上げるので、
+   * 読んだあとに status が変わっていれば世代も変わっている。
+   * `credentialGeneration` を省くと世代は書かない。
    */
   changeDeviceStatus(
     deviceId: DeviceId,
     change: {
-      from: Pick<Device, 'status' | 'credentialGeneration'>;
-      to: { status: Device['status']; credentialGeneration?: number };
+      expectedGeneration: number | undefined;
+      status: Device['status'];
+      credentialGeneration?: number;
       updatedAt: string;
     },
   ): Promise<boolean>;
