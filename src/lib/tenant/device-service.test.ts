@@ -732,4 +732,19 @@ describe('端末証明の世代 (#1237)', () => {
     expect(after?.enrollmentTokenId).toBe(jti);
     expect(after?.credentialGeneration).toBeUndefined();
   });
+
+  it('🔴 未設定を期待したのに世代が付いていたら消費しない（attribute_not_exists 側）', async () => {
+    const { svc, store } = makeService();
+    const r = await svc.issueEnrollment(developer, T_A, D_A1);
+    if (!r.ok) throw new Error('issue failed');
+    const jti = extractJti(r.value.enrollment.token);
+    const current = await store.devices.getDevice(T_A, D_A1);
+    await store.devices.putDevice({ ...current!, credentialGeneration: 2 });
+    const won = await store.devices.consumeEnrollment(D_A1, jti, NOW.toISOString(), {
+      expected: undefined,
+      next: 1,
+    });
+    expect(won).toBe(false);
+    expect((await store.devices.getDevice(T_A, D_A1))?.credentialGeneration).toBe(2);
+  });
 });
