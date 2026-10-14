@@ -39,6 +39,14 @@ export interface SiteRepository {
   putSite(site: Site): Promise<void>;
 }
 
+/** {@link DeviceRepository.updateDeviceFields} が書いてよい欄。status と世代は含めない。 */
+export type DeviceFieldChanges = Partial<
+  Pick<
+    Device,
+    'name' | 'location' | 'kind' | 'maintenance' | 'tokenRegistered' | 'enrollmentTokenId' | 'updatedAt'
+  >
+>;
+
 export interface DeviceRepository {
   /** 指定サイト配下の端末のみ返す。 */
   listDevices(tenantId: TenantId, siteId: SiteId): Promise<Device[]>;
@@ -67,7 +75,34 @@ export interface DeviceRepository {
    */
   findDeviceById(id: DeviceId): Promise<Device | undefined>;
   createDevice(device: Device): Promise<RepoResult<Device>>;
+  /**
+   * レコード全体を置き換える。🔴 **seed・テスト専用。DeviceService の書き込み経路では使わない**。
+   * 読んだ時点の値で丸ごと上書きするため、read→write の間に consumeEnrollment が上げた
+   * `credentialGeneration` や、別の管理操作が変えた `status` を巻き戻す（#1237 の follow-up）。
+   * サービスは {@link updateDeviceFields} / {@link changeDeviceStatus} を使う。
+   */
   putDevice(device: Device): Promise<void>;
+  /**
+   * 表示メタ・エンロール URL の欄だけを**部分更新**する（条件なし。端末が無ければ false）。
+   * 型の上で `status` と `credentialGeneration` を書けないので、並行する登録状態の切替や
+   * エンロールの消費を巻き戻さない（#1237 の follow-up）。値が `undefined` の欄は消える。
+   */
+  updateDeviceFields(deviceId: DeviceId, changes: DeviceFieldChanges): Promise<boolean>;
+  /**
+   * 登録状態を**条件付き部分更新**で切り替える（#1237 の follow-up）。現在の `status` と
+   * `credentialGeneration` が `from` と一致するときだけ `to` を書き、保留中のエンロール URL
+   * （`enrollmentTokenId`）を消して true。一致しない・端末が無いなら何も書かず false。
+   * `from.credentialGeneration` の `undefined` は「欄が無い」を要求する（旧レコード）。
+   * `to.credentialGeneration` を省くと世代は書かない（状態が変わらない切替で巻き戻さない）。
+   */
+  changeDeviceStatus(
+    deviceId: DeviceId,
+    change: {
+      from: Pick<Device, 'status' | 'credentialGeneration'>;
+      to: { status: Device['status']; credentialGeneration?: number };
+      updatedAt: string;
+    },
+  ): Promise<boolean>;
   /**
    * `lastSeenAt` **だけ**を部分更新する（heartbeat 用, issue #239）。全置換 put は read→write 間に
    * 別経路（consumeEnrollment の消去）で変わった `enrollmentTokenId` を stale 値で書き戻し、消費済

@@ -8,8 +8,8 @@ import {
   type Device,
   type Site,
 } from '@/domain/tenant/types';
-import { __resetBackend } from '@/lib/data';
-import { DataBackedTenantStore } from './data-repository';
+import { __resetBackend, getBackend } from '@/lib/data';
+import { DataBackedTenantStore, DEVICE_COLLECTION } from './data-repository';
 import { DeviceService } from './device-service';
 import type { AppendAudit } from './site-service';
 
@@ -748,3 +748,195 @@ describe('端末証明の世代 (#1237)', () => {
     expect((await store.devices.getDevice(T_A, D_A1))?.credentialGeneration).toBe(2);
   });
 });
+
+describe('管理操作とエンロールの消費が競合しても世代を巻き戻さない (#1237 follow-up)', () => {
+  /**
+   * 不変条件: 管理操作の read と write の間にエンロールの消費が割り込んでも、
+   *   (a) 台帳の世代は、消費が発行した証明の世代を下回らない（巻き戻らない）
+   *   (b) 登録状態を切り替える操作なら、世代はその証明の世代より大きい（切替前の証明を通さない）
+   *   (c) 割り込みが無い場合と同じ status に落ち着く
+   * 管理操作が端末を最初に読んだ直後に、保留中の URL を消費させて割り込みを作る。
+   */
+  function racingService() {
+    const base = makeService();
+    let interleave: (() => Promise<void>) | undefined;
+    const devices: typeof base.store.devices = Object.create(base.store.devices);
+    const fire = async () => {
+      const once = interleave;
+      interleave = undefined;
+      await once?.();
+    };
+    devices.getDevice = async (t, id) => {
+      const snap = await base.store.devices.getDevice(t, id);
+      await fire();
+      return snap;
+    };
+    devices.findDeviceById = async (id) => {
+      const snap = await base.store.devices.findDeviceById(id);
+      await fire();
+      return snap;
+    };
+    const svc = new DeviceService({
+      devices,
+      sites: base.store.sites,
+      appendAudit: vi.fn(),
+      now: () => NOW,
+    });
+    return {
+      ...base,
+      svc,
+      /** 次に端末を読んだ直後に、保留中の URL（jti）を消費させる。消費が返した世代を受け取る。 */
+      consumeOnNextRead(jti: string, issued: { generation?: number }) {
+        interleave = async () => {
+          const r = await base.svc.consumeEnrollment({
+            tenantId: String(T_A),
+            siteId: String(S_A1),
+            deviceId: String(D_A1),
+            jti,
+          });
+          if (!r.ok) throw new Error(`interleaved consume failed: ${r.reason}`);
+          issued.generation = r.credentialGeneration;
+        };
+      },
+    };
+  }
+
+  async function pendingJti(svc: DeviceService) {
+    const r = await svc.issueEnrollment(developer, T_A, D_A1);
+    if (!r.ok) throw new Error('issue failed');
+    return extractJti(r.value.enrollment.token);
+  }
+
+  type Op = {
+    name: string;
+    run: (svc: DeviceService) => Promise<unknown>;
+    expectedStatus: 'active' | 'revoked';
+    flipsStatus: boolean;
+  };
+  const ops: Op[] = [
+    {
+      name: 'update（名称・設置場所）',
+      run: (svc) => svc.update(tenantAdminA, T_A, D_A1, { name: '受付1改', location: '1F' }),
+      expectedStatus: 'active',
+      flipsStatus: false,
+    },
+    {
+      name: 'issueEnrollment（URL の再発行）',
+      run: (svc) => svc.issueEnrollment(developer, T_A, D_A1),
+      expectedStatus: 'active',
+      flipsStatus: false,
+    },
+    {
+      name: 'setEnabled（状態が変わらない）',
+      run: (svc) => svc.setEnabled(tenantAdminA, T_A, D_A1, true),
+      expectedStatus: 'active',
+      flipsStatus: false,
+    },
+    {
+      name: 'setEnabled（失効）',
+      run: (svc) => svc.setEnabled(tenantAdminA, T_A, D_A1, false),
+      expectedStatus: 'revoked',
+      flipsStatus: true,
+    },
+    {
+      name: 'syncKioskState（失効）',
+      run: (svc) =>
+        svc.syncKioskState(
+          { id: String(D_A1), displayName: '受付1', enabled: false },
+          { tenantId: T_A, siteId: S_A1 },
+        ),
+      expectedStatus: 'revoked',
+      flipsStatus: true,
+    },
+    {
+      name: 'syncKioskState（状態が変わらない）',
+      run: (svc) =>
+        svc.syncKioskState(
+          { id: String(D_A1), displayName: '受付1', enabled: true },
+          { tenantId: T_A, siteId: S_A1 },
+        ),
+      expectedStatus: 'active',
+      flipsStatus: false,
+    },
+  ];
+
+  for (const op of ops) {
+    for (const startGeneration of [undefined, 4] as const) {
+      it(`🔴 ${op.name} / 開始時の世代 ${startGeneration ?? '未設定'}`, async () => {
+        const r = racingService();
+        if (startGeneration !== undefined) {
+          await r.store.devices.putDevice(
+            device({ id: D_A1, tenantId: T_A, siteId: S_A1, credentialGeneration: startGeneration }),
+          );
+        }
+        const jti = await pendingJti(r.svc);
+        const issued: { generation?: number } = {};
+        r.consumeOnNextRead(jti, issued);
+
+        await op.run(r.svc);
+
+        // 下界: 割り込みが実際に起きている（起きていなければこのテストは空虚に通る）。
+        expect(issued.generation).toBe((startGeneration ?? 0) + 1);
+        const after = await r.store.devices.getDevice(T_A, D_A1);
+        const generation = after?.credentialGeneration ?? 0;
+        expect(generation).toBeGreaterThanOrEqual(issued.generation!);
+        if (op.flipsStatus) expect(generation).toBeGreaterThan(issued.generation!);
+        expect(after?.status).toBe(op.expectedStatus);
+      });
+    }
+  }
+
+  it('🔴 update の部分更新は、並行した失効を有効へ戻さない', async () => {
+    const { store } = makeService();
+    const admin = makeServiceFromStore(store);
+    const devices: typeof store.devices = Object.create(store.devices);
+    let fired = false;
+    devices.getDevice = async (t, id) => {
+      const snap = await store.devices.getDevice(t, id);
+      if (!fired) {
+        fired = true;
+        await admin.setEnabled(tenantAdminA, T_A, D_A1, false);
+      }
+      return snap;
+    };
+    const svc = new DeviceService({ devices, sites: store.sites, appendAudit: vi.fn(), now: () => NOW });
+    const res = await svc.update(tenantAdminA, T_A, D_A1, { name: '受付1改' });
+    expect(res.ok).toBe(true);
+    const after = await store.devices.getDevice(T_A, D_A1);
+    expect(fired).toBe(true);
+    expect(after?.status).toBe('revoked');
+    expect(after?.credentialGeneration).toBe(1);
+    expect(after?.name).toBe('受付1改');
+  });
+
+  it('update は location を空にすると欄を消す（部分更新でも put と同じ意味）', async () => {
+    const { svc, store } = makeService();
+    await svc.update(tenantAdminA, T_A, D_A1, { location: '1F' });
+    await svc.update(tenantAdminA, T_A, D_A1, { location: '  ' });
+    const after = await store.devices.getDevice(T_A, D_A1);
+    expect(after && 'location' in after).toBe(false);
+  });
+
+  it('update は割り込みで端末が消えていたら not_found（作り直さない）', async () => {
+    const { store } = makeService();
+    const devices: typeof store.devices = Object.create(store.devices);
+    devices.getDevice = async (t, id) => {
+      const snap = await store.devices.getDevice(t, id);
+      await getBackend().collection<Device>(DEVICE_COLLECTION).remove(String(id));
+      return snap;
+    };
+    const svc = new DeviceService({ devices, sites: store.sites, appendAudit: vi.fn(), now: () => NOW });
+    const res = await svc.update(tenantAdminA, T_A, D_A1, { name: 'x' });
+    expect(res).toMatchObject({ ok: false, error: { code: 'not_found' } });
+    expect(await store.devices.getDevice(T_A, D_A1)).toBeUndefined();
+  });
+});
+
+function makeServiceFromStore(store: ReturnType<typeof makeService>['store']) {
+  return new DeviceService({
+    devices: store.devices,
+    sites: store.sites,
+    appendAudit: vi.fn(),
+    now: () => NOW,
+  });
+}

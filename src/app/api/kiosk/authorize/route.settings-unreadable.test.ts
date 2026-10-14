@@ -33,10 +33,9 @@ vi.mock('next/headers', () => ({
   cookies: async () => ({ get: () => ({ value: 'enrolled-session' }) }),
 }));
 vi.mock('@/lib/product-context/device-binding', () => ({
-  resolveDeviceBinding: vi.fn(async (kioskId: string) => ({
-    tenantId: 'internal',
-    siteId: 'default-site',
-    kioskId,
+  lookupDeviceBinding: vi.fn(async (kioskId: string) => ({
+    kind: 'enrolled',
+    binding: { tenantId: 'internal', siteId: 'default-site', kioskId, credentialGeneration: 0 },
   })),
 }));
 

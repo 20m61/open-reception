@@ -9,8 +9,8 @@ import {
   readKioskSession,
 } from '@/lib/auth/kiosk';
 import {
-  resolveDeviceBinding,
-  type ResolvedDeviceBinding,
+  lookupDeviceBinding,
+  type DeviceBindingLookup,
 } from '@/lib/product-context/device-binding';
 import { KIOSK_DEVICE_COOKIE, readDeviceCredential } from '@/lib/auth/kiosk-device-credential';
 import { getEnrollmentSecret } from '@/lib/auth/kiosk-enrollment';
@@ -83,8 +83,9 @@ export async function POST(request: Request): Promise<NextResponse> {
       { status: 403 },
     );
   }
-  // 🔴 **端末の身元はエンロール済みセッションだけが決める (#1237)。** body の `kioskId` は読まない。
-  //    台帳で有効な端末に限る（`resolveDeviceBinding` は未登録・失効・ストア障害で null ＝ fail-closed）。
+  // 🔴 **端末の身元は登録の証跡（端末証明 → kiosk セッションの順）だけが決める (#1237)。**
+  //    body の `kioskId` は読まない。台帳で有効な端末に限る（未登録・失効・ストア障害は
+  //    どれもセッションを出さない ＝ fail-closed。障害だけは応答を 503 に分ける）。
   //    PIN の試行ではないので予算は数えず、照合も走らせない（未登録の要求で PBKDF2 を回させない）。
   const jar = await cookies();
   const credentialToken = jar.get(KIOSK_DEVICE_COOKIE)?.value;
@@ -97,13 +98,20 @@ export async function POST(request: Request): Promise<NextResponse> {
       return secretUnavailableResponse('KIOSK_ENROLLMENT_SECRET');
     }
   }
-  const binding = await resolveEnrolledDevice(credentialToken, jar.get(KIOSK_COOKIE)?.value);
-  if (!binding) {
+  const found = await resolveEnrolledDevice(credentialToken, jar.get(KIOSK_COOKIE)?.value);
+  if (found.kind === 'unavailable') {
+    // 🔴 台帳が読めないのは「未登録」ではない（#1237 follow-up）。再登録を案内すると、
+    //    担当者に直らない作業をさせる。セッションは出さず（fail-closed）、503 で返す。
+    //    帳簿の障害と同じ形で、未捕捉 500 にもしない。
+    return NextResponse.json({ error: 'unavailable' }, { status: 503 });
+  }
+  if (found.kind === 'not_enrolled') {
     return NextResponse.json(
       { error: 'not_enrolled', message: 'device is not enrolled; enroll via issued URL/QR' },
       { status: 403 },
     );
   }
+  const { binding } = found;
   // 🔴 **照合の前に予算を見る（#1021 AC4）。** 予算超過の試行は `verifyPin` を
   //    **走らせない** —— AC3 で照合は PBKDF2（実測 約 5ms/回）になったので、走らせると
   //    叩くだけで Lambda の GB-ms と同時実行を消費させられる。断るついでに
@@ -180,18 +188,29 @@ export async function POST(request: Request): Promise<NextResponse> {
  * PIN 画面が出るのは有効なセッションが無いときなので、セッションだけを身元の根拠にすると
  * PIN 画面からの PIN は常に未登録になる。証明はエンロールでだけ発行され（1 年）、台帳の世代
  * （失効・再登録で上がる）と一致するときだけ通る。証明が無い・通らないときは従来どおり
- * セッションを見る。どちらでも、台帳で有効な端末でなければ null（＝ 403 not_enrolled）。
+ * セッションを見る。どちらでも、台帳で有効な端末でなければ通さない（＝ 403 not_enrolled）。
+ *
+ * どちらの経路でも通らず、**途中で台帳が読めなかった**なら `unavailable`（登録の有無が
+ * 分からない）。片方が読めずにもう片方で通ったなら、その端末を返す（従来と同じ）。
  * 🔴 鍵が解決できないと `readDeviceCredential` は throw する。呼び出し側が先に鍵を確かめる。
  */
 async function resolveEnrolledDevice(
   credentialToken: string | undefined,
   sessionToken: string | undefined,
-): Promise<ResolvedDeviceBinding | null> {
+): Promise<DeviceBindingLookup> {
+  let unreadable = false;
   const credential = await readDeviceCredential(credentialToken);
   if (credential) {
-    const binding = await resolveDeviceBinding(credential.kioskId);
-    if (binding && binding.credentialGeneration === credential.generation) return binding;
+    const found = await lookupDeviceBinding(credential.kioskId);
+    if (found.kind === 'enrolled' && found.binding.credentialGeneration === credential.generation)
+      return found;
+    if (found.kind === 'unavailable') unreadable = true;
   }
   const session = await readKioskSession(sessionToken);
-  return session ? resolveDeviceBinding(session.kioskId) : null;
+  if (session) {
+    const found = await lookupDeviceBinding(session.kioskId);
+    if (found.kind === 'enrolled') return found;
+    if (found.kind === 'unavailable') unreadable = true;
+  }
+  return unreadable ? { kind: 'unavailable' } : { kind: 'not_enrolled' };
 }

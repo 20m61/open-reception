@@ -33,6 +33,7 @@ import type { Collection, CollectionOpts } from '@/lib/data/backend';
 import { DataBackedAdminUserRepository } from './admin-user-store';
 import type {
   AdminUserRepository,
+  DeviceFieldChanges,
   DeviceRepository,
   RepoResult,
   SiteRepository,
@@ -176,6 +177,32 @@ class DataBackedDeviceRepository implements DeviceRepository {
 
   async putDevice(device: Device): Promise<void> {
     await this.col().put(device);
+  }
+
+  async updateDeviceFields(deviceId: DeviceId, changes: DeviceFieldChanges): Promise<boolean> {
+    // expected なし = 無条件の部分更新。status / credentialGeneration は書かない（巻き戻さない）。
+    return this.col().updateIf(String(deviceId), changes, {});
+  }
+
+  async changeDeviceStatus(
+    deviceId: DeviceId,
+    change: {
+      from: Pick<Device, 'status' | 'credentialGeneration'>;
+      to: { status: Device['status']; credentialGeneration?: number };
+      updatedAt: string;
+    },
+  ): Promise<boolean> {
+    const changes: Partial<Device> = {
+      status: change.to.status,
+      enrollmentTokenId: undefined,
+      updatedAt: change.updatedAt,
+    };
+    if (change.to.credentialGeneration !== undefined)
+      changes.credentialGeneration = change.to.credentialGeneration;
+    return this.col().updateIf(String(deviceId), changes, {
+      status: change.from.status,
+      credentialGeneration: change.from.credentialGeneration,
+    });
   }
 
   async touchLastSeen(deviceId: DeviceId, lastSeenAt: string): Promise<void> {
