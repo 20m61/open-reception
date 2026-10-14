@@ -196,3 +196,47 @@ dispatch するのは `SELECT_TARGET` のみ。その後は必ずタッチ経路
    「プライバシー権限を許可されず**その入力手段では**続行できない状態」、`scanning` は
    **第 3 の入力手段**（ただし等価性の要件は音声とタッチのまま）。どちらも既に在る振る舞いに
    名前と境界を与えただけで、遷移も画面も増えていない。
+
+## 7. 端末ゲート（受付の手前）と PIN 画面の失敗（#239 / #1021 / #1237）
+
+受付の Journey（J-OR-01〜05）に入る**手前**で、端末そのものが受付に使えるかを判定する層がある。
+Actor は来訪者ではなく**設置・運用担当者**（端末を据え付ける人）である。画面の層では全部
+`KioskMode.degraded` に写る（§冒頭の表）。
+
+| ゲート（`resolveKioskGate`） | 条件 | 画面 | 抜け方 |
+| --- | --- | --- | --- |
+| `checking` | heartbeat 未確定 | 確認中の中立表示 | heartbeat 成功で確定 |
+| `revoked` | `active=false`（失効・緊急停止） | 利用停止表示 | 管理画面で再有効化・解除 |
+| `unenrolled` | セッション無し かつ `pinRequired=false` | 未エンロール案内 | 管理発行の受付 URL / QR でエンロール |
+| `authorize` | セッション無し かつ `pinRequired=true` | **PIN 画面** | PIN 認可（下記） |
+| `ready` | セッションあり | 受付フロー | — |
+
+**#1237 で PIN 認可は登録済みの端末に限った**（`POST /api/kiosk/authorize` は端末 ID を
+エンロール済みセッションから導出し、端末台帳で有効な端末だけに発行する。満たさなければ
+403 `not_enrolled`）。owner の判断（journey B）で、**PIN 画面は残し**、403 `not_enrolled` の
+ときだけ**登録し直す案内**を出す。
+
+PIN 画面の失敗は `AuthorizeFailure`（`src/components/kiosk/authorize-outcome.ts`）で区別する:
+
+| 応答 | `AuthorizeFailure` | 案内 |
+| --- | --- | --- |
+| 403 かつ本文 `error=not_enrolled` | `not_enrolled` | **PIN を疑わせない**。担当者が管理発行の受付 URL / QR で端末を登録し直す |
+| 401 / その他の 403（IP 不許可・PIN 認可無効） | `wrong_pin` | PIN の打ち直し（従来どおり） |
+| 429 | `too_many_attempts` | 待ち時間（分かれば秒数）と担当者への声かけ |
+| 5xx | `unavailable` | 担当者への声かけ |
+| 応答なし | `unreachable` | 通信状態の確認 |
+
+- 🔴 **`not_enrolled` は「403 かつ error コード」の両方が揃ったときだけ。** 403 は IP 不許可・
+  PIN 認可無効でも返るので状態コードだけでは区別できず、逆に error コードだけを見ると
+  429 / 5xx が本文に上書きされる（`authorize-outcome.test.ts` が総当たりで縛る）。
+- 本文が読めないときは `null` ＝ 従来の判定へ戻る（throw して `unreachable` へ落とさない）。
+- 表示は `role="alert"`。文言は辞書（`kiosk.authorize.notEnrolled`、ja / en / ko / zh。
+  `ja-simple` は ja へフォールバック）。
+- 🔴 **実際の到達経路**: `authorize` ゲートは「有効なセッションが無い」ときに出る。一方で
+  認可が通るのも「有効なセッションがある」ときだけなので、**PIN 画面から送った PIN は、
+  いまの実装では常に `not_enrolled` になる**（セッションの期限切れで PIN 画面へ落ちた登録済み
+  端末も、登録し直しへ案内される）。PIN 画面を「登録済みの端末の再認可」として成立させるには、
+  セッションの期限と端末の登録を分けて持つ必要がある —— これは journey B の範囲外で、
+  別の判断として残す。
+- 検証: unit `authorize-outcome.test.ts` / `authorize-wiring.test.ts`、e2e
+  `kiosk-security-mutation.spec.ts`（「未登録の端末は正しい PIN でも PIN 画面に再登録の案内が出る」）。

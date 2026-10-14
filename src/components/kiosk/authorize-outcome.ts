@@ -24,6 +24,13 @@ export type AuthorizeFailure =
   /** サーバが検査したうえで断った（401/403）。PIN が違う、または PIN 認可が無効。 */
   | 'wrong_pin'
   /**
+   * この端末は登録されていない（403 `not_enrolled`, #1237 journey B）。
+   *
+   * 🔴 **PIN を疑わせない。** PIN 認可は登録済みの端末に限られたので、正しい PIN でも
+   * 通らない。必要なのは打ち直しではなく、管理発行の受付 URL / QR での登録し直しである。
+   */
+  | 'not_enrolled'
+  /**
    * 試行回数の予算を使い切った（429）。
    *
    * 🔴 **来訪者に落ち度は無い。** サイト全体で数えているので、**別の誰か**（多くは
@@ -35,10 +42,39 @@ export type AuthorizeFailure =
   /** 応答が返らなかった。届いたか分からない。 */
   | 'unreachable';
 
-/** HTTP 応答の状態コードを失敗の種類へ写す。 */
-export function authorizeFailureForStatus(status: number): AuthorizeFailure {
+/**
+ * HTTP 応答の状態コード（と本文の error コード）を失敗の種類へ写す。
+ *
+ * 🔴 **`not_enrolled` は 403 と error コードの両方が揃ったときだけ (#1237 journey B)。**
+ * 403 は IP 不許可・PIN 認可無効でも返るので、状態コードだけでは区別できない。
+ * 逆に error コードだけを見ると、429 / 5xx の判定が本文に上書きされる。
+ */
+export function authorizeFailureForStatus(
+  status: number,
+  errorCode: string | null = null,
+): AuthorizeFailure {
   if (status === 429) return 'too_many_attempts';
+  if (status === 403 && errorCode === 'not_enrolled') return 'not_enrolled';
   return isServerSideFailure(status) ? 'unavailable' : 'wrong_pin';
+}
+
+/**
+ * 応答本文の `error` コードを読む。**読めなければ `null`（throw しない）。**
+ *
+ * throw すると呼び出し側の catch（`unreachable`）へ落ち、応答は届いているのに
+ * 「通信状態を確かめて」と言うことになる。
+ */
+export async function readAuthorizeErrorCode(res: Response): Promise<string | null> {
+  try {
+    const body: unknown = await res.json();
+    if (body !== null && typeof body === 'object' && 'error' in body) {
+      const { error } = body as { error: unknown };
+      return typeof error === 'string' ? error : null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -69,6 +105,8 @@ export function authorizeFailureMessage(
   switch (failure) {
     case 'wrong_pin':
       return t('kiosk.authorize.wrongPin', locale);
+    case 'not_enrolled':
+      return t('kiosk.authorize.notEnrolled', locale);
     case 'too_many_attempts': {
       // 🔴 **PIN を疑わせない。** 閉まった原因は来訪者ではない（サイト全体で数えている）。
       // 🔴 **次の一手を残す。** 待つだけしか言わないと来訪者は立ち尽くす ——
@@ -121,11 +159,13 @@ export type AuthorizeState = { kind: 'idle' } | AuthorizeError;
 export function authorizeStateFromResponse(
   status: number,
   retryAfterHeader: string | null,
+  // 🔴 省略可能にしない —— 渡し忘れると 403 `not_enrolled` が黙って `wrong_pin` へ戻る。
+  errorCode: string | null,
 ): AuthorizeError {
   const parsed = retryAfterHeader !== null ? Number.parseInt(retryAfterHeader, 10) : Number.NaN;
   return {
     kind: 'error',
-    failure: authorizeFailureForStatus(status),
+    failure: authorizeFailureForStatus(status, errorCode),
     // 🔴 `Number.isFinite` を外すと「約 NaN 秒後」と出る（変異 M34 が生存した穴）。
     retryAfterSec: Number.isFinite(parsed) ? parsed : undefined,
   };

@@ -33,15 +33,37 @@ vi.mock('@/lib/security/client-identity', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/security/client-identity')>()),
   assertIdentitySaltAvailable: (...a: unknown[]) => assertIdentitySaltAvailable(...a),
 }));
-vi.mock('@/lib/auth/kiosk', () => ({
-  KIOSK_COOKIE: 'kiosk_session',
+// 🔴 **`readKioskSession` は本物のまま残す (#1237)。** 署名検証ごとモックすると、
+//    「偽造 cookie では通らない」が配線を通らず空虚に通る。差し替えるのは発行だけ。
+vi.mock('@/lib/auth/kiosk', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/auth/kiosk')>()),
   KIOSK_SESSION_TTL_MS: 1000,
   issueKioskSession: (...a: unknown[]) => issueKioskSession(...a),
+}));
+let kioskCookie: string | undefined;
+vi.mock('next/headers', () => ({
+  cookies: async () => ({
+    get: (name: string) =>
+      name === 'kiosk_session' && kioskCookie !== undefined ? { value: kioskCookie } : undefined,
+  }),
+}));
+/** 端末台帳で有効な端末 id の集合（`resolveDeviceBinding` は未登録・失効で null）。 */
+const ENROLLED = 'kiosk-enrolled';
+let activeDevices: ReadonlySet<string>;
+const resolveDeviceBinding = vi.fn(async (kioskId: string) =>
+  activeDevices.has(kioskId) ? { tenantId: 'internal', siteId: 'default-site', kioskId } : null,
+);
+vi.mock('@/lib/product-context/device-binding', () => ({
+  resolveDeviceBinding: (kioskId: string) => resolveDeviceBinding(kioskId),
 }));
 
 import { POST } from './route';
 import { KIOSK_AUTHORIZE_LAYERS } from '@/domain/security/attempt-budget';
 import { __resetSecretUnavailableLog } from '@/lib/auth/secret-unavailable';
+
+const realKiosk = await vi.importActual<typeof import('@/lib/auth/kiosk')>('@/lib/auth/kiosk');
+/** エンロールが発行するのと同じ署名の kiosk セッション。 */
+const sessionFor = (kioskId: string) => realKiosk.issueKioskSession(kioskId);
 
 function post(body: unknown = { pin: '0000', kioskId: 'kiosk-dev' }) {
   return POST(
@@ -67,7 +89,7 @@ function postWithXff(body: unknown = { pin: '0000', kioskId: 'kiosk-dev' }) {
   );
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks();
   getSecuritySettings.mockResolvedValue({ pinRequired: true, pin: '0000', ipAllowlist: [] });
   verifyPin.mockResolvedValue(true);
@@ -81,6 +103,9 @@ beforeEach(() => {
   //    「記録に失敗した」と読まれる（下界のテストがこの取りこぼしを捕まえた）。
   recordLayeredSuccess.mockResolvedValue(true);
   assertIdentitySaltAvailable.mockReturnValue(undefined);
+  // 既定は「エンロール済みで台帳でも有効な端末」。未登録の扱いは下の describe が縛る。
+  activeDevices = new Set([ENROLLED]);
+  kioskCookie = await sessionFor(ENROLLED);
 });
 
 describe('POST /api/kiosk/authorize (#244)', () => {
@@ -117,6 +142,81 @@ describe('POST /api/kiosk/authorize (#244)', () => {
       }),
     );
     expect(res.status).toBe(403);
+    expect(issueKioskSession).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 🔴 **PIN で認可できるのは登録済みの端末だけ (#1237)。**
+ *
+ * 端末 ID は body から取らず、エンロールで得た kiosk セッション（署名検証つき）から導出し、
+ * 端末台帳で有効な端末に限る。下界（登録済みなら通る）を併せて縛り、
+ * 「全部拒否」の世界でも満たせる形にしない。
+ */
+describe('POST /api/kiosk/authorize は登録済みの端末に限る (#1237)', () => {
+  it('🔴 セッションの無い端末は正しい PIN でも 403（照合も予約もしない）', async () => {
+    kioskCookie = undefined;
+    const res = await post({ pin: '0000', kioskId: ENROLLED });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error: 'not_enrolled' });
+    expect(issueKioskSession).not.toHaveBeenCalled();
+    expect(res.headers.get('set-cookie')).toBeNull();
+    expect(verifyPin).not.toHaveBeenCalled();
+    expect(reserveLayeredSafely).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['署名の無い値', 'kiosk-enrolled'],
+    ['改ざんした値', 'x.y'],
+    ['空文字', ''],
+  ])('🔴 検証できない cookie（%s）は 403', async (_l, value) => {
+    kioskCookie = value;
+    const res = await post({ pin: '0000', kioskId: ENROLLED });
+    expect(res.status).toBe(403);
+    expect(issueKioskSession).not.toHaveBeenCalled();
+  });
+
+  it('🔴 台帳で有効でない端末（未登録・失効）のセッションは 403', async () => {
+    kioskCookie = await sessionFor('kiosk-revoked');
+    const res = await post({ pin: '0000', kioskId: ENROLLED });
+    expect(res.status).toBe(403);
+    expect(resolveDeviceBinding).toHaveBeenCalledWith('kiosk-revoked');
+    expect(issueKioskSession).not.toHaveBeenCalled();
+  });
+
+  it('🔴 body の kioskId は無視し、セッションの端末 id だけを発行する', async () => {
+    activeDevices = new Set([ENROLLED, 'kiosk-other']);
+    for (const kioskId of ['kiosk-other', 'kiosk-dev', '', undefined, 42]) {
+      issueKioskSession.mockClear();
+      const res = await post({ pin: '0000', kioskId });
+      expect(res.status, String(kioskId)).toBe(200);
+      expect(issueKioskSession.mock.calls, String(kioskId)).toEqual([[ENROLLED]]);
+    }
+  });
+
+  it('🔴 body に kioskId が無くても、登録済みの端末は自分の id で通る（下界）', async () => {
+    const res = await post({ pin: '0000' });
+    expect(res.status).toBe(200);
+    expect(issueKioskSession.mock.calls).toEqual([[ENROLLED]]);
+    expect(res.headers.get('set-cookie')).toContain('kiosk_session=');
+  });
+
+  /** 既存の検査（IP・pinRequired）が登録の検査より先に効く（順序を入れ替えない）。 */
+  it.each([
+    ['IP 不許可', { pinRequired: true, pin: '0000', ipAllowlist: ['1.2.3.4'] }, 'ip not allowed'],
+    ['PIN 認可が無効', { pinRequired: false, pin: '0000', ipAllowlist: [] }, 'pin authorization disabled'],
+  ])('🔴 未登録でも %s なら既存の 403 で断る', async (_l, settings, message) => {
+    kioskCookie = undefined;
+    getSecuritySettings.mockResolvedValue(settings);
+    const res = await postWithXff({ pin: '0000' });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { message: string }).message).toContain(message);
+  });
+
+  it('🔴 登録済みでも PIN 不一致は 401（登録は PIN を代替しない）', async () => {
+    verifyPin.mockResolvedValue(false);
+    const res = await post({ pin: 'wrong' });
+    expect(res.status).toBe(401);
     expect(issueKioskSession).not.toHaveBeenCalled();
   });
 });
