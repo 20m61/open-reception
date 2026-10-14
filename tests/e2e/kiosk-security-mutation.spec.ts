@@ -89,6 +89,52 @@ test("pinRequired=true では正しい PIN の authorize がセッションを�
  *
  * 🔴 **グローバルな PIN の値そのもの**を書き換える（#1161 の直接の対象）。後始末は上の afterEach。
  */
+/**
+ * 🔴 **未登録の端末の PIN 画面は、登録し直す案内を出す（#1237 journey B）。**
+ *
+ * PIN 認可は登録済みの端末に限られた。未登録の端末が PIN 画面で**正しい PIN**を入れても
+ * 403 `not_enrolled` になる。そのとき「PIN が正しくありません」と出すと、PIN を疑って
+ * 打ち直し続けるだけで、登録が要るという本当の原因へ辿り着けない。
+ *
+ * - 画面は**別の context**（admin cookie も kiosk セッションも持たない端末）で開く。
+ * - 判定は `data-failure`（文言の書き写しではない）と、「PIN を疑わせない」の否定。
+ * - 下界: 送った PIN は**正しい既定 PIN**。誤った PIN で測ると、`wrong_pin` を出す実装との
+ *   区別が「PIN が違うから」に飲み込まれる。
+ */
+test("🔴 未登録の端末は正しい PIN でも PIN 画面に再登録の案内が出る（#1237 journey B）", async ({
+  page,
+  browser,
+}) => {
+  await loginAsAdmin(page);
+  const put = await putSecurity(page, { pinRequired: true });
+  expect(put.ok()).toBeTruthy();
+
+  // 🔴 後始末に finally を使わない（このファイルの規約。設定の復元は afterEach が持つ）。
+  //    context は閉じ損ねても worker の終了で破棄され、グローバル設定には触れない。
+  const kiosk = await browser.newContext();
+  const kp = await kiosk.newPage();
+  await kp.goto("/kiosk");
+  // pinRequired=true の未認可端末は PIN 画面（journey B: PIN 画面は残す）。
+  const pin = kp.getByTestId("kiosk-pin");
+  await expect(pin).toBeVisible({ timeout: 15_000 });
+  await pin.fill("0000");
+  const authorized = kp.waitForResponse((r) => r.url().endsWith("/api/kiosk/authorize"));
+  await kp.getByTestId("kiosk-authorize").click();
+  const res = await authorized;
+  // サーバ側の前提（ここが崩れたら下の画面の主張は別の原因を見ている）。
+  expect(res.status()).toBe(403);
+  expect(((await res.json()) as { error: string }).error).toBe("not_enrolled");
+
+  const error = kp.getByTestId("kiosk-pin-error");
+  await expect(error).toHaveAttribute("data-failure", "not_enrolled");
+  await expect(error).toHaveAttribute("role", "alert");
+  await expect(error).not.toContainText("PIN が正しくありません");
+  await expect(error).toContainText("QR");
+  // 受付フローへは入らない（PIN 画面のまま）。
+  await expect(kp.getByTestId("start-reception")).toHaveCount(0);
+  await kiosk.close();
+});
+
 test.describe("管理画面で決めた PIN (#1021)", () => {
   test("🔴 管理画面で決めた PIN で authorize できる（ハッシュ保存の通し確認, #1021）", async ({
     page,

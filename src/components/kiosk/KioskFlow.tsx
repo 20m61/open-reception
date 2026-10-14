@@ -3,6 +3,7 @@
 import {
   authorizeFailureMessage,
   authorizeStateFromResponse,
+  readAuthorizeErrorCode,
   type AuthorizeState,
 } from './authorize-outcome';
 import { asCallResult, asCreatedReception } from '@/domain/reception/parse';
@@ -1575,7 +1576,15 @@ function KioskAuthorizeView({
         // 🔴 **状態コードを見る。** 非 ok を一括で「PIN が違う」にしない (#1021 AC4)。
         //    判定は `authorizeStateFromResponse` の 1 式に寄せてある（#826 の教訓。
         //    配線を変異させられる形にしないと、保証が丸ごと落ちても緑のままになる）。
-        setState(authorizeStateFromResponse(res.status, res.headers.get('retry-after')));
+        //    403 `not_enrolled`（未登録の端末, #1237 journey B）は本文の error でしか
+        //    区別できないので、本文のコードも渡す（読めなければ null ＝ 従来の判定）。
+        setState(
+          authorizeStateFromResponse(
+            res.status,
+            res.headers.get('retry-after'),
+            await readAuthorizeErrorCode(res),
+          ),
+        );
       }
     } catch {
       // 応答が返らなかった。**届いたか分かっていない**ので、PIN のせいにしない。
