@@ -373,9 +373,13 @@ tested before the broker may assume any deploy role:
    **Status (a): closed in code** (owner decision on #1146, 2026-09-28: approve the layer). The policy
    accepts exactly one layer, `AssetDeploymentAwsCliLayerC0B4D779`, with its reviewed description, only
    `Content.{S3Bucket, S3Key}` in the stack region's bootstrap bucket, and content equal to
-   `@aws-cdk/asset-awscli-v1` 2.2.282 `lib/layer.zip` (SHA-256 pinned in `PINNED_LAYERS`; every source
+   `@aws-cdk/asset-awscli-v1` 2.2.292 `lib/layer.zip` (SHA-256 pinned in `PINNED_LAYERS`; every source
    published under the key must be that plain file, in the layer's region). Any other layer, property or
-   content is `LAYER_NOT_REVIEWED`; a CDK upgrade that changes the file is a policy change. The zip is
+   content is `LAYER_NOT_REVIEWED`; a CDK upgrade that changes the file is a policy change. (Re-pinned
+   2026-10-12 from 2.2.282 to 2.2.292 with the aws-cdk-lib 2.273.0 upgrade; the digest was recomputed
+   from the installed package and a fresh `npm pack`, and the tarball matched the registry integrity,
+   the lockfile and the npm provenance attestation. Changing the pin changes the policy hash, so the
+   human-managed broker stack must be redeployed before the next dev deploy.) The zip is
    21 MB and not committed: tests copy it from `node_modules`. As with the provider code, the armed broker
    must upload the reviewed zip itself rather than rely on the CLI's skip-if-present. With (a), (b) and (c)
    closed, a synth for the dev account is `allowed`.

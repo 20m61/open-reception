@@ -120,6 +120,45 @@ describe('gate-tooling の復旧 (#985)', () => {
     expect(restoreVersion).toBe(setupVersion);
   });
 
+  /**
+   * 🔴 **semgrep は system の site-packages へ入れない。** 2026-10 に Cloud の Python で
+   * `mcp` 1.29.0 と 2.2.0 が重なり、semgrep 1.180.0 が import で落ちた。`command -v semgrep`
+   * は成功するので欠落として報告されず、sast を走らせるまで壊れていることが見えない。
+   * 専用 venv へ入れ、`cloud-setup.sh`（環境ダイアログの写し）と復旧の**両方**が同じ venv を
+   * 使うことを縛る（片方だけ直すと、もう片方の経路で system へ戻る）。
+   */
+  it('🔴 semgrep は両経路とも同じ専用 venv へ入れ、system pip へ入れない', () => {
+    const restore = readFileSync(RESTORE, 'utf8');
+    const setup = readFileSync(join(ROOT, 'scripts/cloud-setup.sh'), 'utf8');
+    const venv = /SEMGREP_VENV=(\S+)/.exec(restore)?.[1];
+    expect(venv, '復旧スクリプトから venv の場所を読めない').toBeDefined();
+    expect(setup).toContain(`python3 -m venv ${venv}`);
+    expect(setup).toContain(`${venv}/bin/pip install`);
+    // pysemgrep も張る: semgrep は PATH 経由で pysemgrep を呼ぶので、片方だけだと
+    // system 側の壊れた pysemgrep が拾われて同じ ImportError で落ちる（実測）
+    for (const bin of ['semgrep', 'pysemgrep']) {
+      expect(setup).toContain(`ln -sf ${venv}/bin/${bin} /usr/local/bin/${bin}`);
+      expect(restore).toContain(`ln -sf "\${SEMGREP_VENV}/bin/${bin}" /usr/local/bin/${bin}`);
+    }
+    expect(restore).toMatch(/python3 -m venv "\$\{SEMGREP_VENV\}"/);
+    expect(restore).toMatch(/"\$\{SEMGREP_VENV\}\/bin\/pip" install/);
+    // system の site-packages へ入れる経路が残っていないこと（コメントは除いて見る）
+    const code = (src: string) =>
+      src
+        .split('\n')
+        .filter((l) => !l.trimStart().startsWith('#'))
+        .join('\n');
+    for (const [name, src] of [
+      ['cloud-setup.sh', setup],
+      ['restore-gate-tools.sh', restore],
+    ] as const) {
+      expect(code(src), `${name} が system pip で semgrep を入れている`).not.toMatch(/(^|[\s;&(])pip3? install/m);
+      expect(code(src), `${name} が system の site-packages を壊す指定を残している`).not.toContain(
+        '--break-system-packages',
+      );
+    }
+  });
+
   it('道具が揃っていれば何もしない（毎セッションの起動を延ばさない）', () => {
     const r = spawnSync('bash', [RESTORE], {
       encoding: 'utf8',
@@ -165,12 +204,16 @@ describe('gate-tooling の復旧 (#985)', () => {
    */
   it.each([
     { who: 'root', uid: '0', sudoCalls: '' },
-    { who: '非 root', uid: '501', sudoCalls: 'pip install --break-system-packages --ignore-installed PyJWT semgrep\n' },
+    // 非 root では venv の作成が sudo を通る（stub の sudo は失敗するので、後段へは進まない）
+    { who: '非 root', uid: '501', sudoCalls: 'python3 -m venv /opt/semgrep-venv\n' },
   ])('🔴 取得に失敗しても exit 0（ただし黙らない）— $who', ({ uid, sudoCalls }) => {
     const stub = makeTempDir('broken-curl-');
     try {
       writeFileSync(join(stub, 'curl'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
       writeFileSync(join(stub, 'pip'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+      // 🔴 python3 も stub する。root の枝は sudo を通らず直接 venv を作りにいくので、
+      // 本物に届くと /opt/semgrep-venv を実際に作り semgrep を取得しにいく。
+      writeFileSync(join(stub, 'python3'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
       writeFileSync(join(stub, 'id'), `#!/bin/sh\n[ "$1" = "-u" ] && { echo ${uid}; exit 0; }\nexit 1\n`, {
         mode: 0o755,
       });

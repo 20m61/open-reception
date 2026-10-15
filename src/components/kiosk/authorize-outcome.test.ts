@@ -22,10 +22,17 @@ import {
   authorizeFailureForStatus,
   authorizeFailureMessage,
   authorizeStateFromResponse,
+  readAuthorizeErrorCode,
   type AuthorizeFailure,
 } from './authorize-outcome';
 
-const ALL: AuthorizeFailure[] = ['wrong_pin', 'too_many_attempts', 'unavailable', 'unreachable'];
+const ALL: AuthorizeFailure[] = [
+  'wrong_pin',
+  'not_enrolled',
+  'too_many_attempts',
+  'unavailable',
+  'unreachable',
+];
 
 describe('status から原因への写像 (#1021 AC4)', () => {
   it('🔴 429 は too_many_attempts（PIN のせいにしない）', () => {
@@ -111,13 +118,7 @@ describe('文言 (#1021 AC4)', () => {
    * テストも直すことになり、**辞書とテストが同じ誤りを共有**する。
    */
   it('🔴 どの原因でも locale が効く（ja に固定されない）', () => {
-    const failures: AuthorizeFailure[] = [
-      'wrong_pin',
-      'too_many_attempts',
-      'unavailable',
-      'unreachable',
-    ];
-    for (const failure of failures) {
+    for (const failure of ALL) {
       const ja = authorizeFailureMessage(failure, 90, 'ja');
       const en = authorizeFailureMessage(failure, 90, 'en');
       expect(en, `${failure} が locale を無視して ja に固定されている`).not.toBe(ja);
@@ -187,12 +188,12 @@ describe('文言 (#1021 AC4)', () => {
  */
 describe('応答から画面状態への写像 (#1021 AC4)', () => {
   it('🔴 429 と Retry-After から待ち時間つきの状態を作る', () => {
-    const s = authorizeStateFromResponse(429, '90');
+    const s = authorizeStateFromResponse(429, '90', null);
     expect(s).toEqual({ kind: 'error', failure: 'too_many_attempts', retryAfterSec: 90 });
   });
 
   it('🔴 Retry-After が無ければ待ち時間は undefined（NaN にしない）', () => {
-    expect(authorizeStateFromResponse(429, null).retryAfterSec).toBeUndefined();
+    expect(authorizeStateFromResponse(429, null, null).retryAfterSec).toBeUndefined();
   });
 
   /**
@@ -203,7 +204,7 @@ describe('応答から画面状態への写像 (#1021 AC4)', () => {
   it.each(['soon', '', 'Wed, 21 Oct 2015 07:28:00 GMT'])(
     '🔴 Retry-After が数値でない（%j）なら待ち時間は undefined',
     (header) => {
-      const s = authorizeStateFromResponse(429, header);
+      const s = authorizeStateFromResponse(429, header, null);
       expect(s.kind).toBe('error');
       expect(s.retryAfterSec).toBeUndefined();
       // 下界: 文言が壊れていない（NaN を出さない）。
@@ -212,6 +213,104 @@ describe('応答から画面状態への写像 (#1021 AC4)', () => {
   );
 
   it('🔴 401 は wrong_pin（下界。全部 too_many_attempts にしていない）', () => {
-    expect(authorizeStateFromResponse(401, null).failure).toBe('wrong_pin');
+    expect(authorizeStateFromResponse(401, null, null).failure).toBe('wrong_pin');
+  });
+});
+
+/**
+ * 未登録の端末への案内（#1237 journey B）。
+ *
+ * PIN 認可は登録済みの端末に限られた（`/api/kiosk/authorize` が 403 `not_enrolled`）。
+ * PIN 画面が 403 を一律に「PIN が正しくありません」と出すと、**正しい PIN を持つ担当者が
+ * PIN を疑って打ち直し続け**、登録が要るという本当の原因へ辿り着けない。
+ *
+ * ## 縛る不変条件
+ *
+ * > **`not_enrolled` と判定するのは「403 かつ本文の error が `not_enrolled`」のときだけ。**
+ * > そのときは PIN を疑わせず、登録し直す導線を出す。
+ * > それ以外の 401/403 は従来どおり `wrong_pin`（下界。全部を登録案内へ倒さない）。
+ */
+describe('未登録の端末 (#1237 journey B)', () => {
+  const CODES = [null, 'not_enrolled', 'forbidden', 'unauthorized', 'too_many_attempts', ''];
+  const STATUSES = [401, 403, 429, 500, 503];
+
+  it('🔴 not_enrolled になるのは 403 かつ error=not_enrolled のときだけ（総当たり）', () => {
+    for (const status of STATUSES) {
+      for (const code of CODES) {
+        const failure = authorizeStateFromResponse(status, null, code).failure;
+        const expected = status === 403 && code === 'not_enrolled';
+        expect(failure === 'not_enrolled', `status=${status} code=${String(code)}`).toBe(expected);
+      }
+    }
+  });
+
+  /** 🔴 下界: 他の 403（IP 不許可・PIN 認可無効）と 401 は従来どおり wrong_pin。 */
+  it.each<[number, string | null]>([
+    [401, 'unauthorized'],
+    [401, 'not_enrolled'],
+    [403, 'forbidden'],
+    [403, null],
+  ])('🔴 %i / %j は wrong_pin のまま（下界）', (status, code) => {
+    expect(authorizeStateFromResponse(status, null, code).failure).toBe('wrong_pin');
+  });
+
+  /** 🔴 status の判定（429 / 5xx）は error に上書きされない。 */
+  it('🔴 429 と 5xx は error コードに関係なく従来の原因', () => {
+    expect(authorizeStateFromResponse(429, '30', 'not_enrolled')).toEqual({
+      kind: 'error',
+      failure: 'too_many_attempts',
+      retryAfterSec: 30,
+    });
+    expect(authorizeStateFromResponse(503, null, 'not_enrolled').failure).toBe('unavailable');
+  });
+
+  it('🔴 not_enrolled では PIN を疑わせない', () => {
+    for (const locale of ['ja', 'ja-simple'] as const) {
+      const m = authorizeFailureMessage('not_enrolled', undefined, locale);
+      expect(m).not.toContain('PIN が正しくありません');
+      expect(m).not.toContain('PIN が違');
+      expect(m).not.toBe(authorizeFailureMessage('wrong_pin', undefined, locale));
+    }
+    expect(authorizeFailureMessage('not_enrolled', undefined, 'en')).not.toMatch(/incorrect pin/i);
+  });
+
+  /** 🔴 次の一手: 登録し直す導線（担当者・URL / QR）を出す。 */
+  it('🔴 not_enrolled は登録し直す導線を出す', () => {
+    const m = authorizeFailureMessage('not_enrolled', undefined, 'ja');
+    expect(m).toContain('担当者');
+    expect(m).toContain('QR');
+    expect(m).toContain('登録');
+  });
+});
+
+/**
+ * 応答本文から error コードを読む（#1237 journey B）。
+ *
+ * 🔴 **読めなくても状態は作れる。** 本文が JSON でない・`error` が文字列でない・読み取りが
+ * 失敗した、のいずれでも `null` を返す（throw すると PIN 画面が `unreachable` へ落ち、
+ * 応答は届いているのに「通信を確かめて」と言うことになる）。
+ */
+describe('応答本文の error コード (#1237 journey B)', () => {
+  it('🔴 JSON の error を返す', async () => {
+    const res = new Response(JSON.stringify({ error: 'not_enrolled', message: 'x' }), {
+      status: 403,
+    });
+    await expect(readAuthorizeErrorCode(res)).resolves.toBe('not_enrolled');
+  });
+
+  it.each<[string, string]>([
+    ['JSON でない', 'not json'],
+    ['空', ''],
+    ['error が無い', '{}'],
+    ['error が文字列でない', '{"error":403}'],
+    ['null', 'null'],
+  ])('🔴 %s なら null', async (_label, body) => {
+    await expect(readAuthorizeErrorCode(new Response(body, { status: 403 }))).resolves.toBeNull();
+  });
+
+  it('🔴 読み取りが失敗しても null（throw しない）', async () => {
+    const res = new Response('{"error":"not_enrolled"}', { status: 403 });
+    await res.text(); // 本文を消費済みにする（2 度目の読み取りは reject する）
+    await expect(readAuthorizeErrorCode(res)).resolves.toBeNull();
   });
 });

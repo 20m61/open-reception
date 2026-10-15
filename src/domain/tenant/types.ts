@@ -94,6 +94,12 @@ export type Device = {
    * 平文トークンは保持しない（jti のみ）。発行で採番・consume / 再発行で無効化（消去・更新）。
    */
   enrollmentTokenId?: string;
+  /**
+   * 端末証明（`src/lib/auth/kiosk-device-credential.ts`）の世代 (#1237)。証明はこの値と一致する
+   * ときだけ PIN 再認可に使える。エンロールの消費・登録状態（active/revoked）の切替で上がり、
+   * 古い証明を通らなくする。任意（未設定の旧レコードは 0 として読む）。証明そのものは保持しない。
+   */
+  credentialGeneration?: number;
   createdAt: string;
   updatedAt: string;
 };
