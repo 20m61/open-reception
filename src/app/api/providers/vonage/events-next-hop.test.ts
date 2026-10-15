@@ -24,9 +24,23 @@ vi.mock('@/lib/routing/voice-dial', () => ({
   resolveVoiceInitiator: async () => ({ key: 'vonage', initiate }),
 }));
 
-// `/give-up` は端末セッションを要求する。ここで見たいのは「終端したら取次が止まる」なので、
-// 認可は通った前提にする（認可そのものは give-up の route test が固定している）。
-vi.mock('@/lib/kiosk/session-guard', () => ({ denyWithoutKioskSession: async () => null }));
+// `/give-up` は作成端末のセッションを要求する。ここで見たいのは「終端したら取次が止まる」なので、
+// 認可は通った前提にする（認可そのものは `receptions/[id]/ownership.test.ts` が固定している）。
+// 受付は実ストアから読む（差し替えるのは認可の判定だけ）。
+vi.mock('@/lib/kiosk/session-guard', async () => {
+  const { getReception } = await import('@/lib/data-stores/reception-store');
+  return {
+    requireOwnedReception: async (id: string) => {
+      const found = await getReception(id);
+      if (!found.ok) return { ok: false, response: new Response(null, { status: 404 }) };
+      return {
+        ok: true,
+        session: { kioskId: found.value.kioskId, tenantId: 'internal', siteId: 'default-site' },
+        reception: found.value,
+      };
+    },
+  };
+});
 
 import {
   getCallCorrelationRepository,

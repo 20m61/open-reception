@@ -14,7 +14,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const markCallFailed = vi.fn();
 const getReception = vi.fn();
-const denyWithoutKioskSession = vi.fn();
+const TENANT = 'TEST-tenant';
+const SITE = 'TEST-site';
+const readKioskSession = vi.fn();
+// 認証は共通ガード（`@/lib/kiosk/session-guard`）を実物で通す。差し替えるのは cookie・署名検証・
+// 端末台帳だけ（所有権判定を含むガード本体はモックしない）。
+vi.mock('next/headers', () => ({ cookies: async () => ({ get: () => ({ value: 'TEST-token' }) }) }));
+vi.mock('@/lib/auth/kiosk', () => ({
+  KIOSK_COOKIE: 'kiosk_session',
+  readKioskSession: (...a: unknown[]) => readKioskSession(...a),
+}));
+vi.mock('@/lib/product-context/device-binding', () => ({
+  resolveDeviceBinding: async (kioskId: string) => ({ kioskId, tenantId: TENANT, siteId: SITE }),
+}));
 const hangUpIfRinging = vi.fn();
 
 vi.mock('@/lib/data-stores/reception-store', () => ({
@@ -24,12 +36,6 @@ vi.mock('@/lib/data-stores/reception-store', () => ({
 vi.mock('@/lib/routing/hang-up', () => ({
   hangUpIfRinging: (...a: unknown[]) => hangUpIfRinging(...a),
 }));
-vi.mock('@/lib/tenant/default-scope', () => ({
-  resolveDefaultScope: () => ({ tenantId: 'TEST-tenant', siteId: 'TEST-site' }),
-}));
-vi.mock('@/lib/kiosk/session-guard', () => ({
-  denyWithoutKioskSession: () => denyWithoutKioskSession(),
-}));
 
 import { POST } from './route';
 
@@ -38,7 +44,7 @@ const request = () => new Request('https://reception.test/x', { method: 'POST' }
 
 beforeEach(() => {
   vi.clearAllMocks();
-  denyWithoutKioskSession.mockResolvedValue(null);
+  readKioskSession.mockResolvedValue({ kioskId: 'k1' });
   getReception.mockResolvedValue({ ok: true, value: { id: 'rec-1', state: 'calling', kioskId: 'k1' } });
   markCallFailed.mockResolvedValue({ ok: true, value: { id: 'rec-1', state: 'failed' } });
   hangUpIfRinging.mockResolvedValue({ kind: 'terminated' });
@@ -56,9 +62,7 @@ describe('POST /api/kiosk/receptions/:id/give-up (#743)', () => {
   });
 
   it('端末セッションが無ければ受け付けない', async () => {
-    denyWithoutKioskSession.mockResolvedValue(
-      new Response('forbidden', { status: 403 }) as never,
-    );
+    readKioskSession.mockResolvedValue(null);
     const res = await POST(request(), { params });
     expect(res.status).toBe(403);
     expect(markCallFailed).not.toHaveBeenCalled();
