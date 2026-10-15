@@ -231,6 +231,11 @@ describe('self-binding: this build is the pipeline-started build of the in-progr
     return new Date(ACTION_START + ms).toISOString();
   };
 
+  it('decisions are attributed to the initiator-based rule set (provenance version 2)', () => {
+    expect(decide().facts.provenanceVersion).toBe(2);
+    expect(decide((o) => (build(o).initiator = 'owner')).facts.provenanceVersion).toBe(2);
+  });
+
   it('the clock tolerance is 5 s (the sweep\'s fixed offsets assume it)', () => {
     expect(mod.CLOCK_TOLERANCE_MS).toBe(5000);
   });

@@ -297,8 +297,12 @@ tested before the broker may assume any deploy role:
    (`PROVENANCE_UNVERIFIABLE`); after completion it held the build id. Whether and when an in-progress
    action shows the id is still unknown, so the decision records only its presence and key names
    (`facts.observedBrokerActionShape`) and never uses it.
-   **What the self-binding does not guarantee.** It denies a build started outside the pipeline (a
-   retried or hand-started build carrying a copied execution id). It does not stop a principal that can
+   **What the self-binding does not guarantee.** It denies a hand-started build carrying a copied
+   execution id; a retried build is denied only if `RetryBuild` does not keep the original initiator
+   (unverified, #1257 AC3). `initiator` is a label CodeBuild derives from the caller, not an
+   authenticated principal (assumed, not measured), so even "a build outside the pipeline is denied"
+   holds only within the IAM boundary of #1257 AC1 (only the pipeline's action role may start, retry
+   or update the broker project). It does not stop a principal that can
    call `StartBuild` with `buildspecOverride` or `environmentVariablesOverride`: with the first the check
    does not run at all; with the second alone the module locations and pins, `AWS_ENDPOINT_URL_*` or
    `NODE_OPTIONS` can be replaced (the last two unverified). That boundary is IAM — an arming requirement

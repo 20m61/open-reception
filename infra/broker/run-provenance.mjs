@@ -17,8 +17,10 @@
  *   CODEBUILD_BUILD_ID) shows it in progress, in the broker project, started by this pipeline
  *   (`initiator` is exactly `codepipeline/<pipeline name>`) no earlier than the action started.
  *   Run 5 of #1146 runbook 7.5 showed the in-progress action has no build id to compare with.
- *   This denies a build started outside the pipeline (a retried or hand-started build carrying a
- *   copied execution id). It does NOT stop a principal that can StartBuild with overrides
+ *   This denies a hand-started build carrying a copied execution id; a retried build only if
+ *   RetryBuild does not keep the original initiator (unverified, #1257 AC3). `initiator` is a label
+ *   CodeBuild derives from the caller, not an authenticated principal, so this holds only within
+ *   the IAM boundary of #1257 AC1. It does NOT stop a principal that can StartBuild with overrides
  *   (buildspec or environment): such a build need not run this check at all. That boundary is
  *   IAM (who may start, retry or update the broker project / pipeline), an arming requirement.
  * A substituted object (a second version, a delete marker, a version written outside the
