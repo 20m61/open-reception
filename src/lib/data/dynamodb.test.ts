@@ -186,6 +186,9 @@ describe('DynamoBackend collection putIfAbsent() の条件付き作成 (#367)', 
           Item: { PK: 'p', SK: 's' },
           ConditionExpression: 'size(#a) > :n',
           ExpressionAttributeNames: { '#a': 'a' },
+          // 値を揃えておく。無いと「未定義の値の参照」（ValidationException）が先に立ち、
+          // 未対応の式を見る経路まで届かない。
+          ExpressionAttributeValues: { ':n': 0 },
         }),
       ),
     ).rejects.toThrow('unsupported ConditionExpression');
