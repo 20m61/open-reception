@@ -416,6 +416,21 @@ cd infra && npx cdk deploy OpenReception-Web-prod -c env=prod -c appEnv.<...>
 静的アセットは immutable（ハッシュ付き）。動的レスポンスは CloudFront でキャッシュ無効
 （`CACHING_DISABLED`）のため、ページ更新の即時反映に手動 invalidation は不要。
 
+#### 端末証明（#1237）を含む版を初めて配備したとき: 全端末の再登録
+
+PIN 画面からの再認可に使う端末証明（`kiosk_device` cookie）は**エンロールでしか発行しない**。
+この版より前に登録した端末は証明を持たず、kiosk セッションが切れた時点で
+PIN 画面が `not_enrolled`（登録し直しの案内）になる。kiosk セッションは**発行から固定 30 日**
+（延長しない。発行するのは enroll と authorize だけ）なので、配備前に発行されたセッションは
+**配備から 30 日より早く**切れる。
+
+- 🔴 **配備後なるべく早く、遅くとも配備から 30 日以内に、すべての受付端末を管理発行の
+  受付 URL / QR で登録し直す**（owner 判断。手順は `docs/operator-guide.md` 2.3 / 2.3.1）。
+  配備の完了報告に「再登録はなるべく早く。最終期限は配備日 + 30 日（それより前に止まる
+  端末がある）」と書き、運用者へ渡す。
+- `KIOSK_ENROLLMENT_SECRET` を回したときも同じ扱いになる（全端末の証明が無効になる）。
+- 根拠と状態の写像は `docs/experience/state-mapping.md`（authorize の節）。
+
 ## dev をゼロから立ち上げる手順（2026-08-04 実測）
 
 **この節は実際に一度通した記録。** 抜けると必ず詰まる箇所が 4 つあり、いずれも

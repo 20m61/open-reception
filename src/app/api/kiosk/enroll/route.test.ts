@@ -48,7 +48,7 @@ beforeEach(() => {
   // 鍵を throw させるテストの実装が次のテストへ漏れないよう、毎回立て直す。
   getEnrollmentSecret.mockImplementation(() => 'TEST-enrollment-secret');
   readEnrollmentToken.mockResolvedValue(claims);
-  consumeEnrollment.mockResolvedValue({ ok: true, kioskId: 'kiosk-dev' });
+  consumeEnrollment.mockResolvedValue({ ok: true, kioskId: 'kiosk-dev', credentialGeneration: 4 });
   issueKioskSession.mockResolvedValue('signed-kiosk-session');
 });
 
@@ -85,6 +85,49 @@ describe('POST /api/kiosk/enroll', () => {
     const body = await res.json();
     expect(body).toEqual({ ok: true, kioskId: 'kiosk-dev' });
     expect(JSON.stringify(body)).not.toContain('signed-kiosk-session');
+  });
+});
+
+/**
+ * 🔴 **登録の証跡（端末証明）を発行する (#1237)。** セッションが切れたあと PIN 画面から
+ * 再認可できるのは、この証明を持つ端末だけ。証明が消費で上がった世代を運ぶことを縛る
+ * （運ばないと、再登録・失効で上げた世代と突き合わせられない）。
+ */
+describe('端末証明の発行 (#1237)', () => {
+  const credentialCookie = (res: Response) =>
+    res.headers.getSetCookie().find((c) => c.startsWith('kiosk_device='));
+
+  it('🔴 成功で kiosk_device を HttpOnly・authorize 限定 path・1 年で設定する', async () => {
+    const cookie = credentialCookie(await call());
+    expect(cookie).toBeDefined();
+    const lower = (cookie ?? '').toLowerCase();
+    expect(lower).toContain('httponly');
+    expect(lower).toContain('path=/api/kiosk/authorize');
+    expect(lower).toContain(`max-age=${365 * 24 * 60 * 60}`);
+    expect(lower).toContain('samesite=strict');
+  });
+
+  it('🔴 証明は消費で上がった世代と端末 id を運ぶ', async () => {
+    const res = await call();
+    const value = decodeURIComponent((credentialCookie(res) ?? '').split(';')[0]!.slice('kiosk_device='.length));
+    const { readDeviceCredential } = await import('@/lib/auth/kiosk-device-credential');
+    expect(await readDeviceCredential(value)).toEqual({ kioskId: 'kiosk-dev', generation: 4 });
+  });
+
+  it('🔴 失敗（used / revoked / 無効トークン）では証明を発行しない', async () => {
+    consumeEnrollment.mockResolvedValue({ ok: false, reason: 'used' });
+    expect(credentialCookie(await call())).toBeUndefined();
+    consumeEnrollment.mockResolvedValue({ ok: false, reason: 'revoked' });
+    expect(credentialCookie(await call())).toBeUndefined();
+    readEnrollmentToken.mockResolvedValue(null);
+    expect(credentialCookie(await call())).toBeUndefined();
+  });
+
+  it('応答本文に証明を出さない', async () => {
+    const res = await call();
+    const value = (credentialCookie(res) ?? '').split(';')[0]!.slice('kiosk_device='.length);
+    expect(value.length).toBeGreaterThan(10);
+    expect(await res.text()).not.toContain(value);
   });
 });
 
