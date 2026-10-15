@@ -45,7 +45,7 @@ open-reception に脆弱性を見つけた場合は、**公開の Issue・Pull R
 - 修正が利用可能になるまで、脆弱性の詳細は非公開のまま扱います。報告者にも、
   修正の公開まで詳細を公表しないようお願いします
 - 修正後、報告者と公開の時期・内容を調整したうえで、GitHub Security Advisory として
-  公開します（必要に応じて CVE を申請します）
+  公開する方針です（必要に応じて CVE を申請します）
 - 報告者の希望があれば、Advisory に謝辞として名前を記載します
 
 ---
@@ -69,5 +69,5 @@ acknowledge reports, share our assessment, and keep you updated in the private r
 thread.
 
 **Coordinated disclosure:** details stay private until a fix is available. After the fix,
-we coordinate timing and content with the reporter and publish a GitHub Security Advisory
+we coordinate timing and content with the reporter, and we intend to publish a GitHub Security Advisory
 (requesting a CVE when appropriate), crediting the reporter if they wish.
