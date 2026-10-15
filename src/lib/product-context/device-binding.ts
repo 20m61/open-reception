@@ -22,25 +22,48 @@ export type ResolvedDeviceBinding = {
   credentialGeneration: number;
 };
 
-/** 登録済みかつ有効な端末のみ束縛を返す。未登録・失効・ストア障害は null。 */
-export async function resolveDeviceBinding(
-  kioskId: string,
-): Promise<ResolvedDeviceBinding | null> {
-  const trimmed = kioskId.trim();
-  if (!trimmed) return null;
+/**
+ * 台帳を引いた結果。**ストア障害と未登録を分ける**（#1237 の follow-up）。
+ *
+ * どちらも束縛は返さない（fail-closed）。分けるのは、PIN の認可で担当者に出す案内を
+ * 変えるためだけ —— 障害時に「登録し直して」と案内すると、直らない作業をさせることになる。
+ */
+export type DeviceBindingLookup =
+  | { kind: 'enrolled'; binding: ResolvedDeviceBinding }
+  /** 台帳に無い・失効・id が空。 */
+  | { kind: 'not_enrolled' }
+  /** 台帳が読めなかった。登録の有無は**分からない**。 */
+  | { kind: 'unavailable' };
 
+/** 台帳を引き、登録済みかつ有効な端末なら束縛を返す。障害は `unavailable` として返す（throw しない）。 */
+export async function lookupDeviceBinding(kioskId: string): Promise<DeviceBindingLookup> {
+  const trimmed = kioskId.trim();
+  if (!trimmed) return { kind: 'not_enrolled' };
+
+  let device;
   try {
-    const device = await getTenantStore().devices.findDeviceById(asDeviceId(trimmed));
-    if (!device || device.status !== 'active') return null;
-    return {
+    device = await getTenantStore().devices.findDeviceById(asDeviceId(trimmed));
+  } catch {
+    return { kind: 'unavailable' };
+  }
+  if (!device || device.status !== 'active') return { kind: 'not_enrolled' };
+  return {
+    kind: 'enrolled',
+    binding: {
       tenantId: asTenantId(String(device.tenantId)),
       siteId: asSiteId(String(device.siteId)),
       kioskId: trimmed,
       credentialGeneration: credentialGenerationOf(device),
-    };
-  } catch {
-    return null;
-  }
+    },
+  };
+}
+
+/** 登録済みかつ有効な端末のみ束縛を返す。未登録・失効・ストア障害は null。 */
+export async function resolveDeviceBinding(
+  kioskId: string,
+): Promise<ResolvedDeviceBinding | null> {
+  const found = await lookupDeviceBinding(kioskId);
+  return found.kind === 'enrolled' ? found.binding : null;
 }
 
 /**

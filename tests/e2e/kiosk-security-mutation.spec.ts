@@ -176,7 +176,7 @@ test.describe("端末証明による PIN 再認可 (#1237)", () => {
   }) => {
     await loginAsAdmin(page);
     expect((await putSecurity(page, { pinRequired: true })).ok()).toBeTruthy();
-    const { kiosk, kp } = await enrolledKioskWithoutSession(browser);
+    const { kiosk, kp, credential } = await enrolledKioskWithoutSession(browser);
 
     // 誤った PIN は登録済みでも 401（登録は PIN を代替しない）。
     const wrong = await submitPin(kp, "9999");
@@ -186,7 +186,13 @@ test.describe("端末証明による PIN 再認可 (#1237)", () => {
     const res = await submitPin(kp, "0000");
     expect(res.status()).toBe(200);
     // ブラウザ側の応答は Set-Cookie を見せないので、発行は cookie ジャーで確かめる。
-    expect((await kiosk.cookies()).some((c) => c.name === "kiosk_session")).toBe(true);
+    const jar = await kiosk.cookies();
+    expect(jar.some((c) => c.name === "kiosk_session")).toBe(true);
+    // 🔴 PIN 認可は端末証明を発行しない（エンロールだけが発行する。#1237 follow-up）。
+    //    証明は値も期限もエンロール時のまま。
+    const after = jar.find((c) => c.name === "kiosk_device");
+    expect(after?.value).toBe(credential.value);
+    expect(after?.expires).toBe(credential.expires);
     // PIN 画面を抜けて受付の待機画面へ。
     await expect(kp.getByTestId("kiosk-pin")).toHaveCount(0, { timeout: 15_000 });
     await expect(kp.getByTestId("start-reception").first()).toBeVisible({ timeout: 15_000 });

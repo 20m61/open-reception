@@ -223,7 +223,7 @@ PIN 画面の失敗は `AuthorizeFailure`（`src/components/kiosk/authorize-outc
 | 403 かつ本文 `error=not_enrolled` | `not_enrolled` | **PIN を疑わせない**。担当者が管理発行の受付 URL / QR で端末を登録し直す |
 | 401 / その他の 403（IP 不許可・PIN 認可無効） | `wrong_pin` | PIN の打ち直し（従来どおり） |
 | 429 | `too_many_attempts` | 待ち時間（分かれば秒数）と担当者への声かけ |
-| 5xx | `unavailable` | 担当者への声かけ |
+| 5xx（台帳が読めない 503 を含む） | `unavailable` | 担当者への声かけ（登録し直しを案内しない） |
 | 応答なし | `unreachable` | 通信状態の確認 |
 
 - 🔴 **`not_enrolled` は「403 かつ error コード」の両方が揃ったときだけ。** 403 は IP 不許可・
@@ -241,7 +241,13 @@ PIN 画面の失敗は `AuthorizeFailure`（`src/components/kiosk/authorize-outc
   有効な端末のときだけ通る。PIN 認可では証明を発行も延長もしない（1 年たったら登録し直す）。
 - 🔴 **移行**: 証明はエンロールでしか発行しないので、**この変更より前に登録した端末は証明を
   持たない**。その端末は 30 日のセッションが切れた時点で従来どおり `not_enrolled` になる。
-  配備後、セッションが切れる前に管理発行の受付 URL / QR で登録し直すこと。
+  配備後、セッションが切れる前に管理発行の受付 URL / QR で登録し直すこと（owner 判断:
+  **配備から 30 日以内に全端末**。運用手順は `docs/operator-guide.md` 2.3.1、配備側は
+  `docs/deploy-aws.md` §8）。
+- 🔴 **台帳が読めないときは `not_enrolled` にしない（#1237 follow-up）**: 端末台帳のストア障害は
+  登録の有無が分からないだけなので、セッションは出さずに（fail-closed）503 `unavailable` を返す。
+  画面は `unavailable`（担当者への声かけ）になり、直らない「登録し直し」を案内しない。
+  一方の経路（証明・セッション）が読めず、もう一方で有効な端末が引けたときは従来どおり通す。
 - 🔴 **鍵**: 証明は `KIOSK_ENROLLMENT_SECRET` で署名する（role で取り違えを断つ）。この鍵を
   回すと、全端末の証明・未消費の受付 URL・試行予算の識別が同時に無効になる。回したあとに
   セッションが切れた端末は登録し直しになる。
