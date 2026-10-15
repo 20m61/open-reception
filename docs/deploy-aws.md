@@ -97,25 +97,24 @@ server Lambda にはデプロイ時に環境変数を渡す。`.env.example` の
   > **注意**: `ADMIN_PASSWORD` は `ADMIN_AUTH_PROVIDER=none`（既定）のデプロイで**必須**（#1021）。
   > 未設定だと管理ログインが fail-closed で **500**（401 ではない）になる。以前は公開既定値
   > `open-reception` で通っていた。Cognito / Entra を使うデプロイでは参照されない。
-  > 🔴 **これだけでは管理画面は守れない（#1124）。** `ADMIN_SESSION_SECRET` は依然
-  > warn-only なので、未設定のまま配ると**公開既定値で署名した `admin_session` cookie が
-  > 有効な管理セッションとして通る**（実測）。`ADMIN_PASSWORD` はパスワードという扉を、
-  > `ADMIN_SESSION_SECRET` はセッションという扉を閉じる —— **どちらも必要で、
-  > 片方を閉じてももう片方は開いたまま**である。両方与えること。
+  > 🔴 **`ADMIN_SESSION_SECRET` / `KIOSK_SESSION_SECRET` も実デプロイで必須（#1124）。**
+  > 未設定、または公開既定値（`dev-insecure-*`）と同じ値のままだと、`instrumentation.ts` の
+  > `register()` が**起動時に throw してサーバを動かさない**（方式 A / B どちらでも検査する）。
+  > 以前は warn-only で、**公開既定値で署名した cookie が有効なセッションとして通った**。
+  > `ADMIN_PASSWORD` はパスワードという扉を、`ADMIN_SESSION_SECRET` はセッションという扉を
+  > 閉じる —— **どちらも必要**である。provider が cognito / entra でも `ADMIN_SESSION_SECRET`
+  > は必須（`resolveAdminActorWithIdentity` が password セッションを優先して読むため）。
   >
-  > 🔴 **`ADMIN_SESSION_SECRET` には既知の窓がある（#1124）。** この鍵を読むのは
-  > **middleware（`src/proxy.ts`）**で、middleware は `instrumentation.ts` の `register()`
-  > より**先に走る**（上の「なぜ Lambda 環境変数に値が入るのか」/ #612 の実測）。
-  > 方式 B で供給した場合、**コールドインスタンスが最初に踏んだ admin 系リクエスト 1 本**は
-  > 未解決のまま公開既定値で検証される（admin 以外のパスは `passThrough` して Next サーバへ
-  > 届くので `register()` が走り、以後は解決される）。
+  > 🔴 **`ADMIN_SESSION_SECRET` の既知の窓は「通る」から「落ちる」へ変わった（#1124）。**
+  > この鍵を読むのは **middleware（`src/proxy.ts`）**で、middleware は `register()` より
+  > **先に走る**（#612）。方式 B で供給した場合、**コールドインスタンスが最初に踏んだ admin 系
+  > リクエスト**は鍵が未解決のまま届く。以前はそこで公開既定値で検証していたが、いまは
+  > 「セッション無し」として **API は 401、ページはログインへリダイレクト**する。ログイン画面は
+  > middleware を素通りして Next サーバへ届くので `register()` が走り、以後は解決される
+  > （管理者には「1 度ログインし直す」に見える）。
   >
-  > **供給経路はまだ決めていない。#1124 AC1 で決める。** `appEnv` へ移すのは一見簡単だが、
-  > このリポジトリは**同じ形を一度否定している** —— `infra/lib/stacks/web-stack.ts` は
-  > middleware が読む `ORIGIN_VERIFY*` を `appEnv` から**拒否**する（手で壊せる状態を
-  > 作れるため。#612）。origin-verify が採った **CFN 動的参照で Lambda env へ入れる**経路が
-  > 第一候補である。**それまでは方式 B に入れたままでよい**（上の窓は残るが、外すと
-  > 入れ忘れたときに全リクエストが公開既定値になり、**いまより悪い**）。
+  > **供給経路（CFN 動的参照で Lambda env へ入れる等）はまだ決めていない（#1124 AC1）。**
+  > 上の窓を消したいならそれが第一候補だが、本変更は窓を**安全側に倒す**ところまでで止めている。
 
 #### 方式 A: appEnv 平文注入（従来）
 
@@ -467,7 +466,8 @@ aws secretsmanager create-secret --name open-reception/dev/app-v2 --secret-strin
 | `KIOSK_ENROLLMENT_SECRET` | 端末エンロール（`/api/kiosk/enroll`）**＋ PIN による初回許可（`/api/kiosk/authorize`）** | `src/lib/auth/kiosk-enrollment.ts` / `src/lib/security/client-identity.ts` |
 | `ADMIN_PASSWORD` | 管理ログイン（`ADMIN_AUTH_PROVIDER=none` のときのみ） | `src/lib/auth/admin.ts` (#1021) |
 | `CALL_ANSWER_SECRET` | 担当者の応答/拒否（`/api/staff/calls/[id]/answer`・`/respond`） | `src/lib/call/answer-token.ts` (#1021) |
-| `ADMIN_SESSION_SECRET` | **落ちない（warn-only）**。未設定でも動くが、公開既定値で署名した cookie が通る（#1124） | `src/proxy.ts` / `src/lib/auth/admin.ts` |
+| `ADMIN_SESSION_SECRET` | **サーバが起動しない**（未設定・公開既定値。#1124）。middleware は鍵が未解決の間、管理セッションを無効として扱う | `src/lib/auth/session-secrets.ts` / `src/lib/auth/admin.ts` / `src/proxy.ts` |
+| `KIOSK_SESSION_SECRET` | **サーバが起動しない**（未設定・公開既定値。#1124） | `src/lib/auth/session-secrets.ts` / `src/lib/auth/kiosk.ts` |
 
 > 🔴 **この表は網羅ではない。手で書いたものである。** 実測で `serverSecret(..., { failClosed: true })`
 > の呼び出し元は **5 件**あり（#1021 で「6 件」と書いたのは `server-secret.ts` の doc コメントを
@@ -499,8 +499,10 @@ aws secretsmanager create-secret --name open-reception/dev/app-v2 --secret-strin
 > 「サーバー側の問題で通話に接続できませんでした」と出る（**リンクの話ではない**）。
 > サーバログには `[security] <ENV 名> is not set in a deployed environment` が
 > **プロセスにつき 1 度だけ**出る（拾う仕組みはまだ無い。アラーム化は #1131）。
-> 🔴 1 度だけなのは **fail-closed の鍵**（上の表）。`KIOSK_SESSION_SECRET` のように
-> warn-only の鍵は `[security] <ENV 名> unset in deploy` が**毎リクエスト**流れる（#1128）。
+> 🔴 1 度だけなのは **fail-closed の鍵**（上の表）。warn-only の鍵は
+> `[security] <ENV 名> unset in deploy` が**毎リクエスト**流れる（#1128）。
+> `ADMIN_SESSION_SECRET` / `KIOSK_SESSION_SECRET` は #1124 で fail-closed になり、
+> 欠けると起動そのものが止まる（`register()` の throw）。
 
 > **`CALL_ANSWER_SECRET` が欠けたデプロイは、未認証の誰からでも叩ける**（`/api/staff/**` は
 > middleware を `passThrough` するので、でっち上げのトークンで到達する）。#1123 で
