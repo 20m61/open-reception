@@ -11,7 +11,7 @@ vi.mock('@/lib/tenant/store', () => ({
   getTenantStore: () => ({ devices: { findDeviceById: (...a: unknown[]) => findDeviceById(...a) } }),
 }));
 
-import { deviceActorFor, resolveDeviceBinding } from './device-binding';
+import { deviceActorFor, lookupDeviceBinding, resolveDeviceBinding } from './device-binding';
 import { asSiteId, asTenantId } from '@/domain/tenant/types';
 
 const ACTIVE_DEVICE = {
@@ -33,6 +33,15 @@ describe('resolveDeviceBinding', () => {
       tenantId: asTenantId('tenant-a'),
       siteId: asSiteId('site-1'),
       kioskId: 'kiosk-1',
+      // 世代を持たない旧レコードは 0 (#1237)。
+      credentialGeneration: 0,
+    });
+  });
+
+  it('🔴 台帳の端末証明の世代を運ぶ（authorize が証明と突き合わせる, #1237）', async () => {
+    findDeviceById.mockResolvedValue({ ...ACTIVE_DEVICE, credentialGeneration: 5 });
+    await expect(resolveDeviceBinding('kiosk-1')).resolves.toMatchObject({
+      credentialGeneration: 5,
     });
   });
 
@@ -54,6 +63,28 @@ describe('resolveDeviceBinding', () => {
   it('ストア障害でも既定スコープへ落とさず null', async () => {
     findDeviceById.mockRejectedValue(new Error('store down'));
     await expect(resolveDeviceBinding('kiosk-1')).resolves.toBeNull();
+  });
+});
+
+describe('lookupDeviceBinding (#1237 follow-up: 障害と未登録を分ける)', () => {
+  it('🔴 ストア障害は unavailable（未登録と取り違えない）', async () => {
+    findDeviceById.mockRejectedValue(new Error('store down'));
+    await expect(lookupDeviceBinding('kiosk-1')).resolves.toEqual({ kind: 'unavailable' });
+  });
+
+  it('台帳に無い・失効・空の id は not_enrolled', async () => {
+    findDeviceById.mockResolvedValue(undefined);
+    await expect(lookupDeviceBinding('kiosk-x')).resolves.toEqual({ kind: 'not_enrolled' });
+    findDeviceById.mockResolvedValue({ ...ACTIVE_DEVICE, status: 'revoked' });
+    await expect(lookupDeviceBinding('kiosk-1')).resolves.toEqual({ kind: 'not_enrolled' });
+    await expect(lookupDeviceBinding('  ')).resolves.toEqual({ kind: 'not_enrolled' });
+  });
+
+  it('有効な端末は束縛を返す（下界）', async () => {
+    await expect(lookupDeviceBinding('kiosk-1')).resolves.toMatchObject({
+      kind: 'enrolled',
+      binding: { kioskId: 'kiosk-1', credentialGeneration: 0 },
+    });
   });
 });
 

@@ -1,20 +1,15 @@
 /**
  * checkin API のリクエスト解釈ヘルパ (issue #98, increment 1)。
  *
- * - kiosk セッションの検証（#23 readKioskSession を再利用）。管理 API ではなく端末からの
+ * - kiosk セッションの検証（共通ガード `@/lib/kiosk/session-guard` へ委譲。失効端末も拒否）。管理 API ではなく端末からの
  *   要求であることを担保する。
  * - 失敗理由 → HTTP ステータスの対応。
  */
-import { cookies } from 'next/headers';
 import { NextResponse } from 'next/server';
-import { KIOSK_COOKIE, readKioskSession } from '@/lib/auth/kiosk';
 import type { CheckinFailureReason } from '@/domain/checkin/types';
 
-/** 有効な kiosk セッションを要求する。無効なら null。 */
-export async function requireKioskSession(): Promise<{ kioskId: string } | null> {
-  const cookie = (await cookies()).get(KIOSK_COOKIE)?.value;
-  return readKioskSession(cookie);
-}
+/** 有効な kiosk セッションを要求する。無効（無し・失効・未登録）なら null。共通ガードへ委譲する。 */
+export { requireKioskSession } from '@/lib/kiosk/session-guard';
 
 /** 失敗理由ごとの HTTP ステータス。invalid/not_found は 400/404、状態起因は 409。 */
 const STATUS_BY_REASON: Record<CheckinFailureReason, number> = {

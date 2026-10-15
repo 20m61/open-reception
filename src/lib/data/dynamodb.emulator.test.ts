@@ -36,7 +36,12 @@
  * ときに空虚な緑になる。
  */
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
+import {
+  DynamoDBDocumentClient,
+  GetCommand,
+  PutCommand,
+  UpdateCommand,
+} from '@aws-sdk/lib-dynamodb';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { DataBackend } from './backend';
 
@@ -201,6 +206,77 @@ describe.skipIf(!ENABLED)('本番 DynamoDB バックエンド × 実エミュレ
       // 期待が合っていれば通る（上界）。
       expect(await col.updateIf('u1', { state: 'called' }, { state: 'waiting' })).toBe(true);
       expect((await col.get('u1'))?.state).toBe('called');
+    },
+    TIMEOUT,
+  );
+
+  it(
+    '🔴 updateIf の expected undefined を実エンジンが「属性が無い」として評価すること（#1270 N1）',
+    async () => {
+      // 世代を持たない旧レコードに対する CAS（consumeEnrollment / changeDeviceStatus）の形。
+      // fake の述語は `undefined === undefined` を読み違えうるので、実エンジンでも縛る。
+      const col = backend.collection<Visit>(`it-absent-${RUN}`, { indexedField: 'tenantId' });
+      await col.put({ id: 'bare', tenantId: `t-${RUN}`, state: 'waiting' });
+      await col.put({ id: 'noted', tenantId: `t-${RUN}`, state: 'waiting', note: 'x' });
+
+      // 上界: 属性が無ければ通る。
+      expect(await col.updateIf('bare', { state: 'called' }, { note: undefined })).toBe(true);
+      expect((await col.get('bare'))?.state).toBe('called');
+      // 下界: 属性が在れば通らない（条件を落とす・反転する実装を弾く）。
+      expect(await col.updateIf('noted', { state: 'called' }, { note: undefined })).toBe(false);
+      expect((await col.get('noted'))?.state, '拒否されたのに書き換わっている').toBe('waiting');
+      // 下界: 対象が無ければ通らない（upsert しない）。
+      expect(await col.updateIf('missing', { state: 'called' }, { note: undefined })).toBe(false);
+      expect(await col.get('missing')).toBeUndefined();
+    },
+    TIMEOUT,
+  );
+
+  it(
+    '🔴 未定義の値を参照する条件式を、実エンジンは条件不成立ではなく ValidationException で拒否すること（fake の前提, #1270 N1）',
+    async () => {
+      // fake-dynamo は「参照された値が無い・undefined なら ValidationException」を前提にしている。
+      // その前提を、本番と同じ removeUndefinedValues: true の DocumentClient で実エンジンに当てる。
+      // expected undefined を `#c = :c`（:c は undefined）へ化けさせた updateIf が送る形である。
+      const strict = DynamoDBDocumentClient.from(
+        new DynamoDBClient({
+          endpoint: ENDPOINT,
+          region: process.env.AWS_REGION ?? 'ap-northeast-1',
+          credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
+        }),
+        { marshallOptions: { removeUndefinedValues: true } },
+      );
+      const pk = `col#it-undef-${RUN}`;
+      const nameOf = async (p: Promise<unknown>) => {
+        try {
+          await p;
+          return 'resolved';
+        } catch (e) {
+          return (e as { name?: string }).name;
+        }
+      };
+      try {
+        await strict.send(new PutCommand({ TableName: TABLE, Item: { PK: pk, SK: 'u', state: 'waiting' } }));
+        const send = (values: Record<string, unknown>) =>
+          strict.send(
+            new UpdateCommand({
+              TableName: TABLE,
+              Key: { PK: pk, SK: 'u' },
+              UpdateExpression: 'SET #u0 = :u0',
+              ConditionExpression: 'attribute_exists(#pk) AND #c0 = :c0',
+              ExpressionAttributeNames: { '#pk': 'PK', '#u0': 'state', '#c0': 'note' },
+              ExpressionAttributeValues: values,
+            }),
+          );
+        expect(await nameOf(send({ ':u0': 'called', ':c0': undefined }))).toBe('ValidationException');
+        // 対照: 値が揃っていて一致しないだけなら、条件不成立（ここが同じ名前なら上の主張は空虚）。
+        expect(await nameOf(send({ ':u0': 'called', ':c0': 'zzz' }))).toBe(
+          'ConditionalCheckFailedException',
+        );
+        expect((await backend.collection<Visit>(`it-undef-${RUN}`).get('u'))?.state).toBe('waiting');
+      } finally {
+        strict.destroy();
+      }
     },
     TIMEOUT,
   );

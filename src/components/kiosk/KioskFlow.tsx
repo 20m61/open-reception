@@ -3,6 +3,7 @@
 import {
   authorizeFailureMessage,
   authorizeStateFromResponse,
+  readAuthorizeErrorCode,
   type AuthorizeState,
 } from './authorize-outcome';
 import { asCallResult, asCreatedReception } from '@/domain/reception/parse';
@@ -1565,8 +1566,8 @@ function KioskAuthorizeView({
       const res = await fetch('/api/kiosk/authorize', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        // 端末 ID は送らない (#419)。PIN 自己許可は端末 ID を持たない初回経路で、
-        // サーバが dev 既定へ倒す。以後の端末 ID はセッションが権威になる。
+        // 端末 ID は送らない (#419)。サーバは body の端末 ID を読まず、エンロールで得た
+        // 端末証明（HttpOnly cookie）かセッションから導出する（登録済みの端末に限る, #1237）。
         body: JSON.stringify({ pin }),
       });
       if (res.ok) {
@@ -1575,7 +1576,15 @@ function KioskAuthorizeView({
         // 🔴 **状態コードを見る。** 非 ok を一括で「PIN が違う」にしない (#1021 AC4)。
         //    判定は `authorizeStateFromResponse` の 1 式に寄せてある（#826 の教訓。
         //    配線を変異させられる形にしないと、保証が丸ごと落ちても緑のままになる）。
-        setState(authorizeStateFromResponse(res.status, res.headers.get('retry-after')));
+        //    403 `not_enrolled`（未登録の端末, #1237 journey B）は本文の error でしか
+        //    区別できないので、本文のコードも渡す（読めなければ null ＝ 従来の判定）。
+        setState(
+          authorizeStateFromResponse(
+            res.status,
+            res.headers.get('retry-after'),
+            await readAuthorizeErrorCode(res),
+          ),
+        );
       }
     } catch {
       // 応答が返らなかった。**届いたか分かっていない**ので、PIN のせいにしない。
