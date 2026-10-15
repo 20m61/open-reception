@@ -909,6 +909,33 @@ describe('管理操作とエンロールの消費が競合しても世代を巻�
     expect(after?.name).toBe('受付1改');
   });
 
+  it('🔴 状態切替の CAS に負け続けたら reject する（成功扱いにせず、device.disabled も残さない）', async () => {
+    const { store } = makeService();
+    const devices: typeof store.devices = Object.create(store.devices);
+    let attempts = 0;
+    // 毎回負ける CAS（読み直しのたびに別の書き込みが先行し続ける状況）。
+    devices.changeDeviceStatus = async () => {
+      attempts += 1;
+      return false;
+    };
+    const audits: AuditAction[] = [];
+    const svc = new DeviceService({
+      devices,
+      sites: store.sites,
+      appendAudit: vi.fn(async (action) => {
+        audits.push(action);
+      }),
+      now: () => NOW,
+    });
+
+    await expect(svc.setEnabled(tenantAdminA, T_A, D_A1, false)).rejects.toThrow();
+
+    // 下界: CAS を実際に試みている（試みずに throw しても空虚に通らないように）。
+    expect(attempts).toBeGreaterThan(1);
+    expect(audits).toEqual([]);
+    expect((await store.devices.getDevice(T_A, D_A1))?.status).toBe('active');
+  });
+
   it('update は location を空にすると欄を消す（部分更新でも put と同じ意味）', async () => {
     const { svc, store } = makeService();
     await svc.update(tenantAdminA, T_A, D_A1, { location: '1F' });

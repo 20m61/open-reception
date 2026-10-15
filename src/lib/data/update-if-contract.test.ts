@@ -66,6 +66,36 @@ for (const [label, make] of BACKENDS) {
       expect(await col.get('d1')).toMatchObject({ name: 'A', note: '旧メモ', version: 1 });
     });
 
+    /**
+     * 🔴 **expected の `undefined` は「その属性が無い」を意味する**（memory は `cur[key] !== undefined`、
+     * dynamo は `attribute_not_exists`）。端末証明の世代の CAS（`consumeEnrollment` /
+     * `changeDeviceStatus`, #1237）は、世代を持たない旧レコードをこれで条件にしている。
+     * 片方だけ「無条件」や「値が null」に化けると、本番だけ世代が巻き戻る。
+     */
+    it('expected に undefined を書いたキーは「属性が無い」ときだけ一致する', async () => {
+      const col = make().collection<Rec>('department');
+      await col.put({ id: 'absent', name: 'A', version: 1 });
+      await col.put({ id: 'present', name: 'A', note: '旧メモ', version: 1 });
+
+      expect(await col.updateIf('absent', { name: 'B', note: '新メモ' }, { note: undefined })).toBe(
+        true,
+      );
+      expect(await col.get('absent')).toMatchObject({ name: 'B', note: '新メモ' });
+
+      expect(await col.updateIf('present', { name: 'B', note: '新メモ' }, { note: undefined })).toBe(
+        false,
+      );
+      // 下界: 負けた側は何も書いていない。
+      expect(await col.get('present')).toMatchObject({ name: 'A', note: '旧メモ', version: 1 });
+    });
+
+    it('undefined を明示して消した属性は、expected undefined と一致する（「無い」は消した後も同じ）', async () => {
+      const col = await seeded();
+      expect(await col.updateIf('d1', { note: undefined }, { version: 1 })).toBe(true);
+      expect(await col.updateIf('d1', { version: 2 }, { note: undefined })).toBe(true);
+      expect(await col.get('d1')).toMatchObject({ name: 'A', version: 2 });
+    });
+
     it('対象が存在しなければ作成せず false', async () => {
       const col = await seeded();
       expect(await col.updateIf('missing', { name: 'X' }, {})).toBe(false);
