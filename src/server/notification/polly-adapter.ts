@@ -8,6 +8,7 @@
  */
 import type { AudioRef, VoiceSettings } from './types';
 import { awsClientConfig } from '@/lib/aws/client-config';
+import { resolveAwsRegion } from '@/domain/governance/aws-runtime';
 
 export interface PollyAdapter {
   synthesize(text: string, voice: VoiceSettings): Promise<AudioRef>;
@@ -60,7 +61,7 @@ export function createPollyAdapter(
   env: Record<string, string | undefined> = process.env,
 ): PollyAdapter {
   if (env.POLLY_ENABLED === 'true') {
-    return new AwsPollyAdapter(env.AWS_REGION ?? 'ap-northeast-1');
+    return new AwsPollyAdapter(resolveAwsRegion(env));
   }
   return new MockPollyAdapter();
 }
