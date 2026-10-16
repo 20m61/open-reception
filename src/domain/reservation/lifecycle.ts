@@ -12,7 +12,7 @@ import {
   type ReservationUsagePolicy,
   type VisitReservation,
 } from './types';
-import { isReservationRetainedAt } from './retention';
+import { isReservationRetainedAt, MAX_RESERVATION_RETENTION_DAYS } from './retention';
 
 export type ReservationError = {
   code: 'invalid_input' | 'invalid_state';
@@ -82,6 +82,17 @@ function requireRetainedAt(
     : err('invalid_input', 'retention period (visit end + retentionDays) must end in the future');
 }
 
+/**
+ * 入力の `retentionDays` が 1〜180 の整数か。上限を超える値は、計算できる（有限の期限になる）
+ * 値でも拒否する。上限は安全整数より十分小さいので、計算できない値（非有限・巨大・非整数）も
+ * ここで落ちる。
+ */
+function isAcceptableRetentionDays(days: number): boolean {
+  return Number.isInteger(days) && days >= 1 && days <= MAX_RESERVATION_RETENTION_DAYS;
+}
+
+const RETENTION_DAYS_MESSAGE = `retentionDays must be an integer between 1 and ${MAX_RESERVATION_RETENTION_DAYS}`;
+
 /** 予約作成入力の検証。PII は最小限・必須項目のみ強制する。 */
 export function validateCreateInput(
   input: CreateReservationInput,
@@ -97,8 +108,8 @@ export function validateCreateInput(
     return err('invalid_input', 'targetId is required');
   if (!USAGE_POLICIES.includes(input.usagePolicy))
     return err('invalid_input', 'usagePolicy is invalid');
-  if (!Number.isInteger(input.retentionDays) || input.retentionDays <= 0)
-    return err('invalid_input', 'retentionDays must be a positive integer');
+  if (!isAcceptableRetentionDays(input.retentionDays))
+    return err('invalid_input', RETENTION_DAYS_MESSAGE);
   if (Date.parse(input.expiresAt) < Date.parse(input.visitAt))
     return err('invalid_input', 'expiresAt must not be before visitAt');
   const retention = requireRetainedAt(input, now);
@@ -124,11 +135,8 @@ export function validateEditPatch(patch: EditReservationPatch): ReservationResul
     return err('invalid_input', 'targetId must not be empty');
   if (patch.usagePolicy !== undefined && !USAGE_POLICIES.includes(patch.usagePolicy))
     return err('invalid_input', 'usagePolicy is invalid');
-  if (
-    patch.retentionDays !== undefined &&
-    (!Number.isInteger(patch.retentionDays) || patch.retentionDays <= 0)
-  )
-    return err('invalid_input', 'retentionDays must be a positive integer');
+  if (patch.retentionDays !== undefined && !isAcceptableRetentionDays(patch.retentionDays))
+    return err('invalid_input', RETENTION_DAYS_MESSAGE);
   return { ok: true, value: patch };
 }
 
