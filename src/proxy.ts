@@ -181,6 +181,28 @@ function passThrough(req: NextRequest, csp: CspContext): NextResponse {
   return NextResponse.next({ request: { headers } });
 }
 
+/**
+ * 管理セッションの鍵を解決する。deploy 環境で未設定・公開既定値なら `null`（#1124）。
+ *
+ * 🔴 **throw を「セッション無し」として扱う。** middleware は `instrumentation.ts` の
+ * `register()` より先に走る（#612）ので、方式 B（Secrets Manager）で供給したコールド
+ * インスタンスでは、最初の admin 系リクエストの時点で鍵がまだ解決されていない。
+ * ここで uncaught にすると 500 になり、しかも middleware が応答した要求は Next サーバへ
+ * 届かず `register()` が走らない。401 / ログインへ倒せば、ログイン画面（PUBLIC_PATHS）が
+ * Next サーバへ届いて `register()` が走り、以後は解決される。以前はこの窓で
+ * **公開既定値で検証していた**。
+ *
+ * 🔴 **catch の射程は鍵の解決だけ**（`verifySession` を try に入れない。
+ * `src/lib/auth/secret-unavailable.ts` の規約と同じ理由）。
+ */
+function resolveAdminSecretOrNull(): string | null {
+  try {
+    return getAdminSecret();
+  } catch {
+    return null;
+  }
+}
+
 export async function proxy(req: NextRequest): Promise<NextResponse> {
   const nonce = createCspNonce();
   // 🔴 CSP のオプションは `cspOptionsFor`（pathname だけを受け取る）が決める。
@@ -253,7 +275,8 @@ async function route(req: NextRequest, csp: CspContext): Promise<NextResponse> {
 
   // --- 既存のパスワードセッション（provider=none。entra/cognito は上の SSO 分岐で処理済み） ---
   const token = req.cookies.get(ADMIN_COOKIE)?.value;
-  const session = await verifySession(token, getAdminSecret());
+  const secret = resolveAdminSecretOrNull();
+  const session = secret === null ? null : await verifySession(token, secret);
   if (session?.role === 'admin') return passThrough(req, csp);
 
   return denyApiOrRedirect(req, isAdminApi, 401);

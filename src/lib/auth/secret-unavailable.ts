@@ -106,9 +106,10 @@ export function __resetSecretUnavailableLog(): void {
  * 書いていたので切り出した。レビュー 5 周目の指摘。）
  *
  * 🔴 **ラッチが効くのはこのモジュールを通る経路だけで、「未認証面のログ量」は閉じていない。**
- * `serverSecret()` の **warn-only 分岐**（failClosed でない鍵。`KIOSK_SESSION_SECRET` 等）は
+ * `serverSecret()` の **warn-only 分岐**（failClosed でない鍵）は
  * ラッチを持たず **1 リクエスト 1 行**出る。壊れたデプロイでは `/api/kiosk/*` を叩くだけで
- * 未認証の相手が出力量を制御できる。根治は `serverSecret()` の中へラッチを移すことで、
+ * 未認証の相手が出力量を制御できる（`KIOSK_SESSION_SECRET` は #1124 で failClosed になり、
+ * 欠けたデプロイは起動しないのでこの面から外れた）。根治は `serverSecret()` の中へラッチを移すことで、
  * それは #1128 で扱う。
  */
 export function reportSecretUnavailable(envName: string): void {

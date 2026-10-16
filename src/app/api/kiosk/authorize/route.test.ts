@@ -500,6 +500,10 @@ describe('鍵の材料が無いデプロイ (#1021 AC4)', () => {
     );
     process.env.AWS_LAMBDA_FUNCTION_NAME = 'open-reception-server';
     delete process.env.KIOSK_ENROLLMENT_SECRET;
+    // 欠けているのは enrollment 鍵**だけ**の世界にする。セッション鍵まで欠けたデプロイは
+    // #1124 で起動時に止まる（register()）ので、route まで届く世界ではない。
+    vi.stubEnv('KIOSK_SESSION_SECRET', 'TEST-kiosk-session-secret');
+    kioskCookie = await sessionFor(ENROLLED);
     actual.__resetIdentitySalt();
     // 🔴 モックを外して本物を使う（ここが「本番と同じ世界」にする唯一の手）。
     assertIdentitySaltAvailable.mockImplementation(actual.assertIdentitySaltAvailable);
@@ -511,6 +515,7 @@ describe('鍵の材料が無いデプロイ (#1021 AC4)', () => {
       else process.env.AWS_LAMBDA_FUNCTION_NAME = savedMarker;
       if (savedSecret === undefined) delete process.env.KIOSK_ENROLLMENT_SECRET;
       else process.env.KIOSK_ENROLLMENT_SECRET = savedSecret;
+      vi.unstubAllEnvs();
       actual.__resetIdentitySalt();
     }
   });

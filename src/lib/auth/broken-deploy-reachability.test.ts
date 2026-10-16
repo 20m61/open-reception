@@ -194,11 +194,13 @@ describe('秘密を入れ忘れたデプロイの攻撃面 (#1021)', () => {
   });
 
   /**
-   * 🔴 **開いている面（#1124）。** 管理**セッション**の鍵は warn-only のままなので、
-   * 公開既定値で署名した cookie が middleware を通過する。ログイン API を塞いでも、
-   * 隣の窓が開いている。**これが閉じたら、この it は赤くなる**（そのときに反転させる）。
+   * ✅ **閉じた面（#1124）。** 管理**セッション**の鍵を fail-closed にしたので、公開既定値で
+   * 署名した cookie は middleware を通らない。鍵が解決できない間の middleware は
+   * 「セッション無し」として扱う（throw せず 401 / ログインへ倒す）。
+   *
+   * 🔴 **通過そのものを否定する。** 401 に固定するのは、500（uncaught）へ倒す変異も赤くするため。
    */
-  it('🔴 管理セッション: 公開既定値で署名した cookie が middleware を通過する（未解決 #1124）', async () => {
+  it('✅ 管理セッション: 公開既定値で署名した cookie は middleware を通らない（#1124）', async () => {
     const forged = await signSession(
       { role: 'admin', exp: Date.now() + 3600_000 },
       PUBLIC_ADMIN_SESSION_SECRET,
@@ -207,8 +209,56 @@ describe('秘密を入れ忘れたデプロイの攻撃面 (#1021)', () => {
     req.cookies.set('admin_session', forged);
     const res = await proxy(req);
 
-    // 🔴 「401 でない」ではなく**通過そのもの**を見る（403 / redirect へ倒す変異に
-    // slack を残さない）。middleware の pass-through は 200 ＋ x-middleware-next: 1。
+    expect(res.status).toBe(401);
+    expect(res.headers.get('x-middleware-next')).toBeNull();
+  });
+
+  /**
+   * ✅ **公開既定値を「明示的に設定した」デプロイも同じ（#1124）。**
+   * `.env.example` や手順書の例をそのまま入れた形。未設定と同じく拒否する。
+   */
+  it('✅ 管理セッション: 鍵に公開既定値そのものを入れたデプロイでも偽造 cookie は通らない（#1124）', async () => {
+    vi.stubEnv('ADMIN_SESSION_SECRET', PUBLIC_ADMIN_SESSION_SECRET);
+    const forged = await signSession(
+      { role: 'admin', exp: Date.now() + 3600_000 },
+      PUBLIC_ADMIN_SESSION_SECRET,
+    );
+    const req = new NextRequest('http://127.0.0.1:3000/api/admin/receptions');
+    req.cookies.set('admin_session', forged);
+    expect((await proxy(req)).status).toBe(401);
+  });
+
+  /**
+   * 🔴 **鍵が未解決の間、管理ページはログインへ倒れる（500 にしない, #1124）。**
+   * middleware は `register()` より先に走るので、方式 B のコールドインスタンスでは鍵が
+   * まだ無い。ここで uncaught にすると、Next サーバへ届かず `register()` も走らない。
+   * ログイン画面は PUBLIC_PATHS なので Next サーバへ届き、`register()` が鍵を解決する。
+   */
+  it('✅ 管理ページ: 鍵が未解決ならログインへリダイレクトし、ログイン画面は middleware を通る（#1124）', async () => {
+    const forged = await signSession(
+      { role: 'admin', exp: Date.now() + 3600_000 },
+      PUBLIC_ADMIN_SESSION_SECRET,
+    );
+    const page = new NextRequest('http://127.0.0.1:3000/admin');
+    page.cookies.set('admin_session', forged);
+    const res = await proxy(page);
+    expect(res.status).toBe(307);
+    expect(new URL(res.headers.get('location')!).pathname).toBe('/admin/login');
+
+    const login = await proxy(new NextRequest('http://127.0.0.1:3000/admin/login'));
+    expect(login.headers.get('x-middleware-next')).toBe('1');
+  });
+
+  /**
+   * 🔴 **下界（鍵が在るデプロイ）。** 上の 2 本は「何を付けても 401」の世界でも満たせる。
+   * 正しい鍵で署名した cookie は通ること ＝ fail-closed は**鍵が無いときだけ**効く。
+   */
+  it('管理セッション: 鍵が在るデプロイでは、その鍵で署名した cookie は通る', async () => {
+    vi.stubEnv('ADMIN_SESSION_SECRET', 'TEST-admin-session-secret');
+    const valid = await signSession({ role: 'admin', exp: Date.now() + 3600_000 }, 'TEST-admin-session-secret');
+    const req = new NextRequest('http://127.0.0.1:3000/api/admin/receptions');
+    req.cookies.set('admin_session', valid);
+    const res = await proxy(req);
     expect(res.status).toBe(200);
     expect(res.headers.get('x-middleware-next')).toBe('1');
   });
@@ -225,22 +275,40 @@ describe('秘密を入れ忘れたデプロイの攻撃面 (#1021)', () => {
   });
 
   /**
-   * 🔴 **開いている面（#1124）。** 受付端末**セッション**の鍵も warn-only なので、
-   * 公開既定値で署名した cookie が `readKioskSession` を通る。`KIOSK_ENROLLMENT_SECRET`
-   * を failClosed にした意味が、ここで迂回される —— **enroll ゲートを通らずに
-   * セッションを鋳造できる**。到達先は `/api/kiosk/*`（flow / config / receptions /
-   * heartbeat / voice）で、来訪者導線の作成と音声系（AWS 費用）まで開く。
+   * ✅ **閉じた面（#1124）。** 受付端末**セッション**の鍵も fail-closed にしたので、公開既定値で
+   * 署名した cookie で `readKioskSession` を通ることはできない（鍵の解決で throw する。
+   * 起動時の自己検査があるので、本番ではそもそもこの状態でサーバが動かない）。
    */
-  it('🔴 受付端末セッション: 公開既定値で署名した cookie が通る（未解決 #1124）', async () => {
+  it('✅ 受付端末セッション: 公開既定値で署名した cookie は通らない（#1124）', async () => {
     const forged = await signSession(
       { role: 'kiosk', kioskId: 'attacker-kiosk', exp: Date.now() + 3600_000 },
       PUBLIC_KIOSK_SESSION_SECRET,
     );
-    await expect(readKioskSession(forged)).resolves.toEqual({ kioskId: 'attacker-kiosk' });
+    await expect(readKioskSession(forged)).rejects.toThrow(/KIOSK_SESSION_SECRET/);
+  });
+
+  it('✅ 受付端末セッション: 鍵に公開既定値そのものを入れたデプロイでも通らない（#1124）', async () => {
+    vi.stubEnv('KIOSK_SESSION_SECRET', PUBLIC_KIOSK_SESSION_SECRET);
+    const forged = await signSession(
+      { role: 'kiosk', kioskId: 'attacker-kiosk', exp: Date.now() + 3600_000 },
+      PUBLIC_KIOSK_SESSION_SECRET,
+    );
+    await expect(readKioskSession(forged)).rejects.toThrow(/KIOSK_SESSION_SECRET/);
+  });
+
+  /** 下界（鍵が在るデプロイ）。その鍵で署名した cookie は通る。 */
+  it('受付端末セッション: 鍵が在るデプロイでは、その鍵で署名した cookie は通る', async () => {
+    vi.stubEnv('KIOSK_SESSION_SECRET', 'TEST-kiosk-session-secret');
+    const valid = await signSession(
+      { role: 'kiosk', kioskId: 'kiosk-1', exp: Date.now() + 3600_000 },
+      'TEST-kiosk-session-secret',
+    );
+    await expect(readKioskSession(valid)).resolves.toEqual({ kioskId: 'kiosk-1' });
   });
 
   /** 下界。署名が違えば通らない（検証自体は生きている）。 */
   it('受付端末セッション: 署名が違う cookie は通らない', async () => {
+    vi.stubEnv('KIOSK_SESSION_SECRET', 'TEST-kiosk-session-secret');
     const wrong = await signSession(
       { role: 'kiosk', kioskId: 'attacker-kiosk', exp: Date.now() + 3600_000 },
       'not-the-key',

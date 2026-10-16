@@ -15,8 +15,20 @@ export const ENTRA_STATE_COOKIE = 'admin_entra_state';
 /** 管理セッションの有効期間（8 時間）。 */
 export const ADMIN_SESSION_TTL_MS = 1000 * 60 * 60 * 8;
 
+/**
+ * 管理セッションの署名鍵。**deploy 環境で未設定・公開既定値なら throw する** (#1124)。
+ *
+ * 以前は warn-only で、鍵を入れ忘れたデプロイでは公開既定値で署名した `admin_session`
+ * cookie が有効な管理セッションとして通った（provider が cognito / entra でも、
+ * `resolveAdminActorWithIdentity` は password セッションを優先するので同じ）。
+ *
+ * 🔴 **middleware（`src/proxy.ts`）は `register()` より先に走る**（#612）。方式 B で
+ * 供給したコールドインスタンスでは、最初の admin 系リクエストの時点でまだ解決されていない。
+ * proxy はこの throw を「セッション無し」として扱い、401 / ログインへ倒す
+ * （以前はこの窓で**公開既定値で検証していた**）。起動時の検査は `session-secrets.ts`。
+ */
 export function getAdminSecret(): string {
-  return serverSecret('ADMIN_SESSION_SECRET', 'dev-insecure-admin-secret');
+  return serverSecret('ADMIN_SESSION_SECRET', 'dev-insecure-admin-secret', { failClosed: true });
 }
 
 /**
@@ -36,13 +48,10 @@ export function getAdminSecret(): string {
  * 場合に限られる。ログインは壊れるが、**公開されている既知のパスワードを受け入れるより良い**
  * —— 運用者は落ちたことに気づいて secret を入れられる。
  *
- * 🔴 **これで上の脅威が閉じたわけではない（#1124）。** 閉じたのは**パスワードという扉**
- * だけである。同じ「秘密を入れ忘れたデプロイ」では `getAdminSecret()` が warn-only の
- * ままなので、**公開既定値 `dev-insecure-admin-secret` で署名した `admin_session` cookie
- * が有効な管理セッションとして受理される**（2026-09-16 実測。`src/proxy.ts` の
- * `verifySession(token, getAdminSecret())` が通る）。攻撃者はログイン API を叩く必要すら
- * ない。`getAdminSecret()` / `getKioskSecret()` の failClosed 化は既存デプロイの後方互換に
- * 触れる secret 方針変更なので、人間承認つきで #1124 として分けた。
+ * 🔴 **これだけでは上の脅威は閉じなかった。** 閉じたのは**パスワードという扉**だけで、
+ * 同じ「秘密を入れ忘れたデプロイ」では公開既定値で署名した `admin_session` cookie が
+ * 通っていた（2026-09-16 実測）。セッションという扉は #1124 で `getAdminSecret()` を
+ * fail-closed にして閉じた。**どちらの鍵も必要**である。
  */
 export function getAdminPassword(): string {
   return serverSecret('ADMIN_PASSWORD', 'open-reception', { failClosed: true });
