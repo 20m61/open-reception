@@ -153,7 +153,10 @@ route（`src/app/api/admin/reservations/**`）は薄く保つ。
     **保持しない側**に倒す: 読み取りから外し、TTL を付けず、リポジトリは書き込みを拒否する
     （書けば「読めず物理削除もされない PII」になるため）。`retentionDays` の**欠落**だけは
     既定 30 日で補う（旧レコード互換）。値があって不正なら補わない（既定は入力より長いことがある）。
-    `retentionDays` の上限（保存期間の値そのもの）は未決のポリシー判断で、この規則とは独立。
+  - `retentionDays` の上限は **180 日**（owner 決定）。作成・編集の**入力**で 1〜180 の整数だけを
+    受け付け、181 以上は計算できる値でも `invalid_input`（400）で拒否する
+    （`MAX_RESERVATION_RETENTION_DAYS`）。保存済みの値の読み取り・期限・TTL には掛けない
+    （上限より前に書かれた予約を読み取りから外すと、ポリシー変更が既存データの消失になる）。
 - 監査ログに来訪者 PII を残さない（`docs/audit-logging.md` / `docs/security-checklist.md` V7/V8）。
 - secret（管理セッション）は server-only。client へ流出させない。
 

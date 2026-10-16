@@ -11,6 +11,7 @@ import {
   revokeReservation,
   validateCreateInput,
 } from './lifecycle';
+import { MAX_RESERVATION_RETENTION_DAYS } from './retention';
 import {
   asReservationId,
   asReservationTokenHash,
@@ -389,5 +390,83 @@ describe('再発行: expiresAt を省くと保存済みの値を正規化して�
       const r = applyReissue(reservation({ status: 'revoked' }), asReservationTokenHash('n'), v, now);
       expect(r.ok, v).toBe(false);
     }
+  });
+});
+
+/**
+ * `retentionDays` の上限 180 日（owner 決定）。**入力の検証だけ**に掛ける。
+ *
+ * 不変条件（作成・編集の 2 経路に同じものを当てる。期限はどの日数でも未来に残る形にする）:
+ *   - 受理 ⟺ 1 ≤ retentionDays ≤ 180 の整数
+ *   - 下界: 上限ちょうど（180）は受理する（全部拒否で空虚に満たさない）
+ * 保存済みの値には掛けない（上限より前に書かれた予約の編集・再発行を壊さない）。
+ */
+describe('retentionDays の上限 (180 日)', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const now = new Date('2026-08-01T00:00:00.000Z');
+  const at = (ms: number) => new Date(ms).toISOString();
+  // 来訪の終わりが now の 1 日後なので、正の日数なら期限は必ず未来に残る。
+  const visitAt = at(now.getTime());
+  const expiresAt = at(now.getTime() + DAY);
+  const current = () => reservation({ visitAt, expiresAt, retentionDays: 30 });
+
+  type Path = (days: number) => { ok: true } | { ok: false; error: { code: string; message: string } };
+  const paths: [string, Path][] = [
+    ['create', (days) => validateCreateInput(input({ visitAt, expiresAt, retentionDays: days }), now)],
+    ['edit', (days) => applyEdit(current(), { retentionDays: days }, now)],
+  ];
+
+  it('上限は 180 日', () => {
+    expect(MAX_RESERVATION_RETENTION_DAYS).toBe(180);
+  });
+
+  for (const [name, run] of paths) {
+    it(`${name}: 受理 ⟺ 1 ≤ retentionDays ≤ 180（1〜400 日を総当たり）`, () => {
+      for (let days = 1; days <= 400; days++) {
+        const r = run(days);
+        expect(r.ok, `${name} retentionDays=${days}`).toBe(days <= 180);
+        if (!r.ok) expect(r.error.code).toBe('invalid_input');
+      }
+    });
+
+    it(`${name}: 上限を超える・計算できない値は拒否する（fail-closed を弱めない）`, () => {
+      for (const bad of [
+        181,
+        365,
+        10_000,
+        2 ** 53,
+        Number.MAX_SAFE_INTEGER,
+        1e308,
+        Number.MAX_VALUE,
+        Number.POSITIVE_INFINITY,
+        Number.NEGATIVE_INFINITY,
+        Number.NaN,
+        180.5,
+        179.999,
+        0,
+        -1,
+        -180,
+      ]) {
+        const r = run(bad);
+        expect(r.ok, `${name} retentionDays=${bad}`).toBe(false);
+        if (!r.ok) {
+          expect(r.error.code).toBe('invalid_input');
+          // 後段（保存期限の計算不能）に飲み込まれず、日数の検査そのものが拒否していること。
+          expect(r.error.message, `${name} retentionDays=${bad}`).toBe(
+            'retentionDays must be an integer between 1 and 180',
+          );
+        }
+      }
+    });
+  }
+
+  it('保存済みの値には掛けない: 上限より長い既存予約も、日数を変えない編集・再発行は通る', () => {
+    const legacy = reservation({ visitAt, expiresAt, retentionDays: 365 });
+    expect(applyEdit(legacy, { visitorName: '鈴木花子' }, now).ok).toBe(true);
+    expect(
+      applyReissue(reservation({ status: 'expired', visitAt, retentionDays: 365 }), asReservationTokenHash('new'), expiresAt, now).ok,
+    ).toBe(true);
+    // 日数そのものを入力し直すなら上限が掛かる。
+    expect(applyEdit(legacy, { retentionDays: 365 }, now).ok).toBe(false);
   });
 });
