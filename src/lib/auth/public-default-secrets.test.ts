@@ -127,7 +127,7 @@ describe('fail-closed 鍵の棚卸し', () => {
     const call = /serverSecret\(\s*'([A-Z0-9_]+)'\s*,\s*'[^']*'\s*,\s*\{\s*failClosed:\s*true\s*,?\s*\}\s*,?\s*\)/g;
     for (const file of walk(src)) {
       const text = readFileSync(file, 'utf8');
-      for (const m of text.matchAll(call)) found.set(m[1], relative(src, file));
+      for (const m of text.matchAll(call)) if (m[1]) found.set(m[1], relative(src, file));
     }
     for (const [env, file] of found) {
       expect([...SESSION_KEYS, ...CHECKED], `${env}（${file}）が起動時検査に載っていない`).toContain(env);
