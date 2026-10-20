@@ -233,3 +233,65 @@ describe('instrumentation register() — セッション鍵の起動時検査 (#
     await expect(register()).resolves.toBeUndefined();
   });
 });
+
+/**
+ * 🔴 **残りの fail-closed 鍵も、公開既定値を貼ったら起動時に止める（PR #1273 レビュー important）。**
+ * 以前はセッション鍵 2 つしか起動時に検査しておらず、`ADMIN_PASSWORD=open-reception` のような
+ * デプロイは起動したうえで、**使った時点で**落ちた（ログインが 500）。
+ * 未設定は止めない（機能・provider によって不要な鍵があるため。`public-default-secrets.ts`）。
+ */
+describe('instrumentation register() — 公開既定値の起動時検査', () => {
+  const savedEnv = { ...process.env };
+  const OTHER_KEYS = [
+    'ADMIN_PASSWORD',
+    'KIOSK_ENROLLMENT_SECRET',
+    'CALL_ANSWER_SECRET',
+    'PLATFORM_ELEVATION_SECRET',
+    'VOICE_TRANSPORT_TOKEN_SECRET',
+  ];
+
+  beforeEach(() => {
+    sendMock.mockReset();
+    delete process.env.APP_SECRETS_ARN;
+    delete process.env.NEXT_RUNTIME;
+    for (const k of OTHER_KEYS) delete process.env[k];
+    process.env.AWS_LAMBDA_FUNCTION_NAME = 'open-reception-server';
+    process.env.ADMIN_SESSION_SECRET = 'TEST-admin-session-secret';
+    process.env.KIOSK_SESSION_SECRET = 'TEST-kiosk-session-secret';
+  });
+
+  afterEach(() => {
+    process.env = { ...savedEnv };
+  });
+
+  it('🔴 方式 A で ADMIN_PASSWORD が公開既定値なら起動を止める', async () => {
+    process.env.ADMIN_PASSWORD = 'open-reception';
+    await expect(register()).rejects.toThrow(/ADMIN_PASSWORD/);
+  });
+
+  it('🔴 方式 B で Secrets Manager の CALL_ANSWER_SECRET が公開既定値なら起動を止める', async () => {
+    process.env.APP_SECRETS_ARN = 'arn:secret';
+    sendMock.mockResolvedValue({
+      SecretString: JSON.stringify({ CALL_ANSWER_SECRET: 'dev-insecure-answer-secret' }),
+    });
+    await expect(register()).rejects.toThrow(/CALL_ANSWER_SECRET/);
+  });
+
+  /** 下界。セッション鍵だけ入れて他を入れないデプロイは、いままでどおり起動する。 */
+  it('未設定の鍵があっても起動する（使った時点で getter が fail-closed）', async () => {
+    await expect(register()).resolves.toBeUndefined();
+  });
+
+  /** 下界。独自の値なら起動する。 */
+  it('独自の値なら起動する', async () => {
+    for (const k of OTHER_KEYS) process.env[k] = `TEST-${k}`;
+    await expect(register()).resolves.toBeUndefined();
+  });
+
+  /** 下界。ローカル `next start` / e2e は既定値で起動する。 */
+  it('非 Lambda では公開既定値でも起動する', async () => {
+    delete process.env.AWS_LAMBDA_FUNCTION_NAME;
+    process.env.ADMIN_PASSWORD = 'open-reception';
+    await expect(register()).resolves.toBeUndefined();
+  });
+});
