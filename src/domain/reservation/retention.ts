@@ -36,6 +36,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** `retentionDays` を持たない旧レコード向けの既定値（作成リクエストの既定と同じ）。 */
 export const DEFAULT_RESERVATION_RETENTION_DAYS = 30;
 
+/**
+ * 入力として受け付ける `retentionDays` の上限（owner 決定・180 日）。
+ * **入力の検証だけ**に使う（`lifecycle.ts`）。保存済みの値の読み取り・期限・TTL には掛けない ——
+ * 上限より前に書かれた予約を読み取りから外すと、PII ポリシーの変更が既存データの消失になる。
+ */
+export const MAX_RESERVATION_RETENTION_DAYS = 180;
+
 type RetentionFields = Pick<VisitReservation, 'visitAt' | 'expiresAt' | 'retentionDays'>;
 
 /** 欠落は既定値、正の安全整数はそのまま、それ以外は NaN（期限を計算できない）。 */

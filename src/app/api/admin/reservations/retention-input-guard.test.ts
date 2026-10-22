@@ -235,4 +235,28 @@ describe('予約 API — 保存期限が過去・計算不能になる書き込�
     expect(after.visitorName).toBe('TEST-改名');
     expect([after.visitAt, after.expiresAt]).toEqual(['2099-06-20T10:00:00', '2099-06-31T10:00:00Z']);
   });
+
+  // retentionDays の上限 180 日（owner 決定）。入力の検証だけに掛ける。
+  it.each([181, 365, 2 ** 53, 1e308])('POST 作成: retentionDays %s（上限超過）→ 400・何も保存しない', async (days) => {
+    const res = await CREATE_POST(jsonReq(BASE, createBody({ retentionDays: days })));
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error?: string }).error).toBe('invalid_input');
+    expect(await listIds()).toEqual([]);
+  });
+
+  it('POST 作成: retentionDays 180（上限ちょうど）は受理する（下界）', async () => {
+    const id = await createOk({ retentionDays: 180 });
+    expect((await getItem(id)).retentionDays).toBe(180);
+  });
+
+  it('PATCH 編集: retentionDays 181 → 400・予約は変わらず、180 は受理する', async () => {
+    const id = await createOk();
+    const before = await getItem(id);
+    const over = await ITEM_PATCH(jsonReq(`${BASE}/${id}`, { tenantId: TENANT, siteId: SITE, retentionDays: 181 }, 'PATCH'), params(id));
+    expect(over.status).toBe(400);
+    expect(await getItem(id)).toEqual(before);
+    const cap = await ITEM_PATCH(jsonReq(`${BASE}/${id}`, { tenantId: TENANT, siteId: SITE, retentionDays: 180 }, 'PATCH'), params(id));
+    expect(cap.status).toBe(200);
+    expect((await getItem(id)).retentionDays).toBe(180);
+  });
 });
