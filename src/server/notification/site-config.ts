@@ -8,6 +8,7 @@
  */
 import type { SiteConfig } from './types';
 import { awsClientConfig } from '@/lib/aws/client-config';
+import { resolveAwsRegion } from '@/domain/governance/aws-runtime';
 
 const DEFAULT_VOICE = { voiceId: 'Mizuki', languageCode: 'ja-JP', engine: 'neural' as const };
 
@@ -79,7 +80,7 @@ export function createSiteConfigLoader(
 ): SiteConfigLoader {
   if (env.SSM_ENABLED === 'true') {
     return new SsmSiteConfigLoader(
-      env.AWS_REGION ?? 'ap-northeast-1',
+      resolveAwsRegion(env),
       env.SITE_CONFIG_PREFIX ?? '/open-reception/sites',
     );
   }

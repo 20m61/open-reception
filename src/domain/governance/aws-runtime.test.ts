@@ -10,6 +10,7 @@ import {
   checkAwsRuntimeSafety,
   resolveAwsRuntime,
   resolveAwsRuntimeConfig,
+  resolveAwsRegion,
 } from './aws-runtime';
 
 /** 実資格情報に見える sentinel。**本物ではない**（形だけ似せてある）。 */
@@ -126,6 +127,16 @@ describe('checkAwsRuntimeSafety: 実 AWS を選んだとき', () => {
 
   it('資格情報が無ければ opt-in を要求しない（synth / typecheck を壊さない）', () => {
     expect(codes({ AWS_RUNTIME: 'aws' })).toEqual([]);
+  });
+});
+
+describe('resolveAwsRegion', () => {
+  it('AWS_REGION > AWS_DEFAULT_REGION > canonical default の順で解決する', () => {
+    expect(resolveAwsRegion({ AWS_REGION: 'eu-west-1', AWS_DEFAULT_REGION: 'us-east-1' })).toBe(
+      'eu-west-1',
+    );
+    expect(resolveAwsRegion({ AWS_DEFAULT_REGION: 'us-east-1' })).toBe('us-east-1');
+    expect(resolveAwsRegion({})).toBe('ap-northeast-1');
   });
 });
 
