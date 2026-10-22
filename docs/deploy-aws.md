@@ -27,7 +27,10 @@ OpenNext が `.open-next/` に生成する成果物を、CDK の `WebStack` が�
 
 - Node.js 22 以上
 - AWS アカウントと認証情報（`aws configure` 済み、または環境変数）
-- リージョン: 既定 `ap-northeast-1`（`CDK_DEFAULT_REGION` で変更可）
+- リージョン: `ap-northeast-1` 固定（`OpenReception-CfMon-*` のみ us-east-1）。
+  `CDK_DEFAULT_REGION`（CDK CLI が `AWS_REGION` / プロファイルから埋める）が別リージョンだと
+  synth は黙って移さずに止まる（#1221。`infra/lib/config/stack-region.ts`）。
+  `AWS_REGION=ap-northeast-1` を明示すること
 - 初回のみ CDK ブートストラップ済みであること
 
 ## 手順
@@ -54,7 +57,7 @@ npm install
 ```bash
 cd infra
 export CDK_DEFAULT_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
-export CDK_DEFAULT_REGION=ap-northeast-1
+export AWS_REGION=ap-northeast-1  # CDK_DEFAULT_REGION は CLI が上書きするので AWS_REGION で指定する（#1221）
 npx cdk bootstrap
 ```
 
