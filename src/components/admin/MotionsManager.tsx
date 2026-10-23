@@ -96,6 +96,12 @@ export function MotionsManager() {
         モーションは「アセット管理」で登録してください。
       </p>
 
+      <p>
+        <a href="/admin/motions/lab" data-testid="motion-lab-link">
+          Motion Labで収録モーションを検査・レビューする →
+        </a>
+      </p>
+
       <div style={{ marginBottom: 12 }}>
         <SaveFeedback feedback={feedback} successTestId="motion-saved" errorTestId="motion-save-error" />
       </div>
