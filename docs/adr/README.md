@@ -17,6 +17,7 @@
 | [0008](0008-qr-checkin-state-machine.md) | QR 受付の状態機械を今は統合しない（並存コスト＝修正が伝播しないこと。実害 1 件を是正） | 承認（統合の見送りまで。**統合の是非は要ユーザー確認**） | #98 / #422 |
 | [0009](0009-claude-cloud-aws-dev-deploy-boundary.md) | Claude Cloud から AWS dev への安全境界（qualifier 分離・スタック ARN 主境界・短命 STS 窓・IAM 記録のみ） | 承認（設計 + スクリプト/ポリシーのみ。**IAM 未適用・デプロイ未実施**） | #680 |
 | [0010](0010-swappable-aws-emulator.md) | ローカル AWS エミュレータを交換可能にする（`AWS_RUNTIME`・誤接続 guard・Docker 非必須） | **提案**（実装済み。既定エミュレータの切替はユーザー承認待ち） | #1103 |
+| [0011](0011-voice-visitor-name-confirmation.md) | 音声で聞き取った来訪者の氏名を、復唱の確認を経て確定できるようにする（ADR 0007 の境界のうち `SUBMIT_VISITOR_INFO` だけを置き換える。`CONFIRM` は音声に開けない）。プライバシー通知・STT の下限・キーボードの経路を併せて決める | **提案**（owner の承認待ち。承認まで本番へ配線しない） | #1057 / #1077 / #1088 / #1090 |
 
 ## 書くとき
 

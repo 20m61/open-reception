@@ -2,6 +2,9 @@
 
 - ステータス: 採用（**統合の却下**まで。差分 C が指摘していた等価性ギャップは
   **別の理由で実在する**ため、差分 C' として残す。詳細は「訂正」節）
+- 置き換えの提案: [ADR 0011](0011-voice-visitor-name-confirmation.md)（**提案中**）が、下の「音声が dispatch するのは `SELECT_TARGET` のみ」という境界のうち、
+  来訪者の氏名の確定（`SUBMIT_VISITOR_INFO`）だけを置き換えることを提案している。`CONFIRM` を音声に開けないことと、
+  確認を統合しないことは維持する。ADR 0011 が承認されるまでは、本 ADR の境界が有効である。
 - 関連: issue #422（ExperienceShell）、#361（会話 UX）、#364（音声基盤）、#418（親 Epic）
 - 関連ドキュメント: `docs/experience/state-mapping.md` §5 C、`docs/experience/README.md`
 - 現物: `src/domain/reception/state.ts`、`src/domain/reception/ui-contract.ts`、
