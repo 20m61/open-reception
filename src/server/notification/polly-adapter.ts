@@ -7,6 +7,7 @@
  * 実 AWS SDK 呼び出しは AwsPollyAdapter に閉じ込め、テストは MockPollyAdapter を使う。
  */
 import type { AudioRef, VoiceSettings } from './types';
+import { awsClientConfig } from '@/lib/aws/client-config';
 
 export interface PollyAdapter {
   synthesize(text: string, voice: VoiceSettings): Promise<AudioRef>;
@@ -33,7 +34,7 @@ export class AwsPollyAdapter implements PollyAdapter {
 
   async synthesize(text: string, voice: VoiceSettings): Promise<AudioRef> {
     const { PollyClient, SynthesizeSpeechCommand } = await import('@aws-sdk/client-polly');
-    const client = new PollyClient({ region: this.region });
+    const client = new PollyClient(awsClientConfig(undefined, { region: this.region }));
     const res = await client.send(
       new SynthesizeSpeechCommand({
         Text: text,

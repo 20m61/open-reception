@@ -84,11 +84,55 @@ server Lambda にはデプロイ時に環境変数を渡す。`.env.example` の
   ```
 
 - **機密**（`ADMIN_PASSWORD` / `ADMIN_SESSION_SECRET` / `KIOSK_SESSION_SECRET` /
-  `KIOSK_ENROLLMENT_SECRET` / `ENTRA_*` / `VONAGE_*`）は平文でコミット・履歴に残さないこと。
-  次の **方式 B（推奨）** か方式 A を使う。
+  `KIOSK_ENROLLMENT_SECRET` / `CALL_ANSWER_SECRET` / `ENTRA_*` / `VONAGE_*`）は平文でコミット・
+  履歴に残さないこと。次の **方式 B（推奨）** か方式 A を使う。
   > **注意**: `KIOSK_ENROLLMENT_SECRET`（受付URL/QR の署名鍵）は実デプロイ（Lambda）で**必須**。
-  > 未設定だと未認証 `/api/kiosk/enroll` が fail-closed で 500 になり、発行/エンロールが機能しない
+  > 未設定だと発行（管理側）が fail-closed で 500、未認証 `/api/kiosk/enroll` が **503**（#1123）になり、
+  > 発行/エンロールが機能しない
   > （`docs/reception-issuance-design.md`）。Secrets/appEnv の JSON に必ず含める。
+  > **注意**: `CALL_ANSWER_SECRET`（担当者応答リンクの署名鍵）も実デプロイで**必須**（#1021）。
+  > 未設定だと `/api/staff/calls/[id]/answer` と `/respond` が fail-closed で **503**（#1123）になる。
+  > 以前は `KIOSK_SESSION_SECRET` へフォールバックしていたが、受付端末と担当者応答で
+  > 信頼境界を共有しないために撤去した。**独立した値を必ず与える**。
+  > **注意**: `ADMIN_PASSWORD` は `ADMIN_AUTH_PROVIDER=none`（既定）のデプロイで**必須**（#1021）。
+  > 未設定だと管理ログインが fail-closed で **500**（401 ではない）になる。以前は公開既定値
+  > `open-reception` で通っていた。Cognito / Entra を使うデプロイでは参照されない。
+  > 🔴 **`ADMIN_SESSION_SECRET` / `KIOSK_SESSION_SECRET` も実デプロイで必須（#1124）。**
+  > 未設定、または公開既定値（`dev-insecure-*`）と同じ値のままだと、`instrumentation.ts` の
+  > `register()` が**起動時に throw してサーバを動かさない**（方式 A / B どちらでも検査する）。
+  > 以前は warn-only で、**公開既定値で署名した cookie が有効なセッションとして通った**。
+  > `ADMIN_PASSWORD` はパスワードという扉を、`ADMIN_SESSION_SECRET` はセッションという扉を
+  > 閉じる —— **どちらも必要**である。provider が cognito / entra でも `ADMIN_SESSION_SECRET`
+  > は必須（`resolveAdminActorWithIdentity` が password セッションを優先して読むため）。
+  >
+  > 🔴 **`ADMIN_SESSION_SECRET` の既知の窓は「通る」から「落ちる」へ変わった（#1124）。**
+  > この鍵を読むのは **middleware（`src/proxy.ts`）**で、middleware は `register()` より
+  > **先に走る**（#612）。方式 B で供給した場合、**コールドインスタンスが最初に踏んだ admin 系
+  > リクエスト**は鍵が未解決のまま届く。以前はそこで公開既定値で検証していたが、いまは
+  > 「セッション無し」として **API は 401、ページはログインへリダイレクト**する。ログイン画面は
+  > middleware を素通りして Next サーバへ届くので `register()` が走り、以後は解決される
+  > （管理者には「1 度ログインし直す」に見える）。
+  >
+  > **供給経路（CFN 動的参照で Lambda env へ入れる等）はまだ決めていない（#1124 AC1）。**
+  > 上の窓を消したいならそれが第一候補だが、本変更は窓を**安全側に倒す**ところまでで止めている。
+  >
+  > 🔴 **デプロイ前の確認: 公開既定値を貼っていないか（fail-closed の全 7 鍵）。**
+  > deploy 環境では `serverSecret()` が「公開既定値と同じ値」を未設定として扱う。
+  > `.env.example` や手順書の例をそのまま貼る形で起こるので、配る前に次の鍵の値が
+  > リポジトリに載っている既定値（`open-reception` / `dev-insecure-*`）**でない**ことを確かめる:
+  > `ADMIN_SESSION_SECRET` / `KIOSK_SESSION_SECRET` / `ADMIN_PASSWORD` /
+  > `KIOSK_ENROLLMENT_SECRET` / `CALL_ANSWER_SECRET` / `PLATFORM_ELEVATION_SECRET` /
+  > `VOICE_TRANSPORT_TOKEN_SECRET`。
+  > 起動時の自己検査（`register()`）は、セッション鍵 2 つは**未設定・空・公開既定値**で、
+  > 残り 5 つは**公開既定値を貼ったとき**に止める（`src/lib/auth/public-default-secrets.ts`）。
+  > 残り 5 つの**未設定**は起動時には止めない —— 機能・provider によって不要なことがあるため
+  > （`ADMIN_PASSWORD` は provider=none のときだけ使う）。未設定は従来どおり**使った時点で**
+  > 落ちる（下の「どれが欠けると何が落ちるか」の表）。
+  > 🔴 **「起動を止める」の見え方**: Next は失敗した `register()` を memo 化するので、Lambda の
+  > init は落ちず、**Next サーバを通るリクエストがすべて 500** のままになる。ログには
+  > `An error occurred while loading instrumentation hook: <ENV 名> is not set (or equals the
+  > public dev fallback) ...` が出る（値は出ない）。admin 系は middleware が先に走るので
+  > 401 / ログインへのリダイレクトに見えることがある。直したら関数を更新して実行環境を入れ替える。
 
 #### 方式 A: appEnv 平文注入（従来）
 
@@ -105,7 +149,7 @@ AWS Secrets Manager / SSM に保存した値を、デプロイ運用者がデプ
 ```bash
 # 1) シークレットを作成（JSON オブジェクト。キーは env 名に一致させる）
 aws secretsmanager create-secret --name open-reception/prod/app \
-  --secret-string '{"ADMIN_PASSWORD":"...","ADMIN_SESSION_SECRET":"...","KIOSK_SESSION_SECRET":"..."}'
+  --secret-string '{"ADMIN_PASSWORD":"...","ADMIN_SESSION_SECRET":"...","KIOSK_SESSION_SECRET":"...","KIOSK_ENROLLMENT_SECRET":"...","CALL_ANSWER_SECRET":"..."}'
 
 # 2) デプロイ時に名前を渡す（appEnv には非機密のみ）
 npx cdk deploy OpenReception-Web-prod -c env=prod \
@@ -135,14 +179,14 @@ CloudFront 越しに **POST/フォーム/受付発行が機能する**ために�
    **内部 Lambda Function URL（…lambda-url…on.aws）**になり、配布した QR を開くと 403 になる。
 
 > 機密 `KIOSK_ENROLLMENT_SECRET`（受付URL署名鍵）も忘れず secret JSON に含める（手順 5 参照。
-> 未設定だと未認証 `/api/kiosk/enroll` が fail-closed で 500）。
+> 未設定だと未認証 `/api/kiosk/enroll` が fail-closed で **503** になる #1123）。
 
 #### origin-verify シークレットの供給 (#612)
 
 | | context | CFN テンプレート | Lambda 環境変数 | 使う環境 |
 | --- | --- | --- | --- | --- |
-| 生値 | `-c originVerifySecret=<値>` | **平文** | 解決済みの値 | **dev のみ** |
-| Secrets Manager | `-c originVerifySecretName=<シークレット名>` | 動的参照 | 解決済みの値 | dev 以外は必須 |
+| Secrets Manager | `-c originVerifySecretName=<シークレット名>` | 動的参照 | 解決済みの値 | **全環境の正本** |
+| 旧: 生値 | `-c originVerifySecret=<値>` | 平文 | 平文 | **#1148 で全環境禁止** |
 
 Secrets Manager 方式では、シークレット JSON の **`ORIGIN_VERIFY_SECRET` キー**を参照する。
 `appSecretsName` と同じシークレットで良い（手順 5 の JSON にキーを 1 つ足すだけ）。
@@ -156,8 +200,9 @@ Secrets Manager 方式では、シークレット JSON の **`ORIGIN_VERIFY_SECR
 - 両モードとも `ORIGIN_VERIFY_REQUIRED=1`（非機密）を渡す。**検証の ON/OFF はこのフラグだけが
   決める**（シークレットの有無では決めない）。これが立っていて値が未解決なら `proxy.ts` は
   **503 を返す**（`mismatch` の 403 とは別。前者は配備側の障害、後者は直叩き）。
-- **dev 以外で `-c originVerifySecret=<生値>` を渡すと `cdk synth` が失敗する**（WebStack が拒否）。
-  併用も、**空文字も**不可（`-c originVerifySecret=$UNSET_VAR` を黙って無効化に落とさないため）。
+- **`-c originVerifySecret=<生値>` は dev を含む全環境で `cdk synth` が失敗する**（#1148）。
+  coding-agent / CodeBuild / CDK argv / CFN template に secret 値を戻さないための境界。
+- `originVerifySecretName` の**空文字も不可**（黙って origin-verify 無効へ倒さないため）。
 - `ORIGIN_VERIFY_*` を `appEnv` から渡すことはできない（synth で拒否）。「検証を要求するが値が無い」
   状態を手で作れてしまい、全リクエストが恒久 503 になるため。
 - `ORIGIN_VERIFY_REQUIRED` で**偽になるのは `0` と空文字だけ**。`false` は真（曖昧な値は
@@ -239,14 +284,38 @@ Secrets Manager の値を差し替えてもテンプレートに差分は出な�
 
 ### 6. デプロイ
 
+🔴 **以下は方式 A（`appEnv` 平文注入）を選んだ場合の手順である。** 推奨は方式 B（§「方式 B:
+Secrets Manager から runtime 取得」）で、方式 A は**秘密が CloudFormation テンプレートと
+`-c appEnv="$APP_ENV"` の argv（`ps` から見える）に載る**。方式 B を使うなら `appEnv` には
+非機密のみを入れ、下の必須チェックの対象も非機密に読み替えること。
+
 ```bash
 cd infra
-# 機密値を JSON にまとめて 1 つの appEnv context で渡す（jq でエスケープすると安全）。
+# 🔴 **未 export の変数を黙って空文字で渡さない (#1021)。** `"$VAR"` は未設定でも `""` に
+# 展開され、`jq --arg` はそれをキーごと出力する。Lambda に `ADMIN_PASSWORD=""` が載ると
+# `serverSecret()` は「未設定」と読んで fail-closed で throw し、**管理コンソールへ誰も
+# 入れなくなる**（方式 B を併用していても `instrumentation.ts` は空文字を上書きしない）。
+# 先に必須チェックを通し、値が無いなら**キーごと JSON から外す**こと。
+# 🔴 **`&&` で繋ぐ。** `${VAR:?}` が shell を落とすのは**非対話シェルだけ**で、手元の
+# 端末へこのブロックを貼ると**エラーを 1 行吐いたあと deploy がそのまま走る**（実測）。
+# 機密値は JSON にまとめて 1 つの appEnv context で渡す（jq でエスケープすると安全）。
+: "${ADMIN_PASSWORD:?未設定。空文字を渡すと fail-closed で締め出される}" \
+  "${ADMIN_SESSION_SECRET:?未設定}" \
+  "${KIOSK_SESSION_SECRET:?未設定}" \
+  "${KIOSK_ENROLLMENT_SECRET:?未設定}" \
+  "${CALL_ANSWER_SECRET:?未設定}" &&
 APP_ENV=$(jq -nc \
   --arg p "$ADMIN_PASSWORD" --arg a "$ADMIN_SESSION_SECRET" --arg k "$KIOSK_SESSION_SECRET" \
-  '{ADMIN_PASSWORD:$p, ADMIN_SESSION_SECRET:$a, KIOSK_SESSION_SECRET:$k}')
+  --arg e "$KIOSK_ENROLLMENT_SECRET" --arg c "$CALL_ANSWER_SECRET" \
+  '{ADMIN_PASSWORD:$p, ADMIN_SESSION_SECRET:$a, KIOSK_SESSION_SECRET:$k,
+    KIOSK_ENROLLMENT_SECRET:$e, CALL_ANSWER_SECRET:$c}') &&
 npx cdk deploy OpenReception-Web-prod -c env=prod -c appEnv="$APP_ENV"
 ```
+
+> 🔴 散文での統制には限界がある。**appEnv に空値のキーが載ったら synth で落とす**のが
+> 本来の塞ぎ方で、`infra/lib/stacks/web-stack.ts` には `ORIGIN_VERIFY*` を appEnv から
+> 拒否する先例がある。禁止の列挙ではなく「空値を持つ appEnv キーを拒否」へ裏返せば
+> 族ごと閉じる（#1125）。
 
 完了後、出力（Outputs）に表示される:
 - `DistributionDomainName` … 公開 URL（`https://<domain>/kiosk`, `/admin`）
@@ -364,6 +433,21 @@ cd infra && npx cdk deploy OpenReception-Web-prod -c env=prod -c appEnv.<...>
 静的アセットは immutable（ハッシュ付き）。動的レスポンスは CloudFront でキャッシュ無効
 （`CACHING_DISABLED`）のため、ページ更新の即時反映に手動 invalidation は不要。
 
+#### 端末証明（#1237）を含む版を初めて配備したとき: 全端末の再登録
+
+PIN 画面からの再認可に使う端末証明（`kiosk_device` cookie）は**エンロールでしか発行しない**。
+この版より前に登録した端末は証明を持たず、kiosk セッションが切れた時点で
+PIN 画面が `not_enrolled`（登録し直しの案内）になる。kiosk セッションは**発行から固定 30 日**
+（延長しない。発行するのは enroll と authorize だけ）なので、配備前に発行されたセッションは
+**配備から 30 日より早く**切れる。
+
+- 🔴 **配備後なるべく早く、遅くとも配備から 30 日以内に、すべての受付端末を管理発行の
+  受付 URL / QR で登録し直す**（owner 判断。手順は `docs/operator-guide.md` 2.3 / 2.3.1）。
+  配備の完了報告に「再登録はなるべく早く。最終期限は配備日 + 30 日（それより前に止まる
+  端末がある）」と書き、運用者へ渡す。
+- `KIOSK_ENROLLMENT_SECRET` を回したときも同じ扱いになる（全端末の証明が無効になる）。
+- 根拠と状態の写像は `docs/experience/state-mapping.md`（authorize の節）。
+
 ## dev をゼロから立ち上げる手順（2026-08-04 実測）
 
 **この節は実際に一度通した記録。** 抜けると必ず詰まる箇所が 4 つあり、いずれも
@@ -384,41 +468,160 @@ npm run build:open-next
 ### 2. アプリシークレットを Secrets Manager に置く
 
 ```sh
-# ADMIN_SESSION_SECRET / KIOSK_SESSION_SECRET / KIOSK_ENROLLMENT_SECRET を含む JSON
+# ADMIN_PASSWORD / ADMIN_SESSION_SECRET / KIOSK_SESSION_SECRET /
+# KIOSK_ENROLLMENT_SECRET / CALL_ANSWER_SECRET / ORIGIN_VERIFY_SECRET を含む JSON
+# （ORIGIN_VERIFY_SECRET は #1148 から dev でも必須。CloudFront ヘッダと Lambda env へ
+#   CFN dynamic reference で渡る。値は `openssl rand -base64 32` などで生成する）
 aws secretsmanager create-secret --name open-reception/dev/app-v2 --secret-string file://secrets.json
 ```
 
-未設定だと**端末エンロールが 500 で失敗する**。アプリが
-「開発用の既定シークレットを deployed 環境で使うことを拒否」して安全側に倒れるため
-（`src/lib/auth/kiosk-enrollment.ts`）。**これは正しい挙動**なので、シークレットを与える。
+未設定だと deployed 環境でそれぞれ失敗する（**staff 応答と kiosk enroll は 503、管理ログインは
+500**。#1123）。アプリが「開発用の既定シークレットを deployed 環境で使うことを拒否」して
+安全側に倒れるため。**これは正しい挙動**なので、シークレットを与える。どれが欠けると何が落ちるか:
 
-### 3. デプロイ（context 2 つが必須）
+| 鍵 | 欠けたときに落ちるもの | 実装 |
+| --- | --- | --- |
+| `KIOSK_ENROLLMENT_SECRET` | 端末エンロール（`/api/kiosk/enroll`）**＋ PIN による初回許可（`/api/kiosk/authorize`）** | `src/lib/auth/kiosk-enrollment.ts` / `src/lib/security/client-identity.ts` |
+| `ADMIN_PASSWORD` | 管理ログイン（`ADMIN_AUTH_PROVIDER=none` のときのみ） | `src/lib/auth/admin.ts` (#1021) |
+| `CALL_ANSWER_SECRET` | 担当者の応答/拒否（`/api/staff/calls/[id]/answer`・`/respond`） | `src/lib/call/answer-token.ts` (#1021) |
+| `ADMIN_SESSION_SECRET` | **サーバが起動しない**（未設定・公開既定値。#1124）。middleware は鍵が未解決の間、管理セッションを無効として扱う | `src/lib/auth/session-secrets.ts` / `src/lib/auth/admin.ts` / `src/proxy.ts` |
+| `KIOSK_SESSION_SECRET` | **サーバが起動しない**（未設定・公開既定値。#1124） | `src/lib/auth/session-secrets.ts` / `src/lib/auth/kiosk.ts` |
+
+> 🔴 **公開既定値を貼った場合は表の行と症状が違う。** 上の 5 鍵（セッション鍵以外）と
+> `PLATFORM_ELEVATION_SECRET` / `VOICE_TRANSPORT_TOKEN_SECRET` は、未設定なら使った時点で
+> 落ちるが、**公開既定値と同じ値**なら起動時に止まる（全リクエスト 500。
+> `src/lib/auth/public-default-secrets.ts`）。`serverSecret(..., { failClosed: true })` の鍵が
+> 起動時検査のどちらかに載っていることは `public-default-secrets.test.ts` が棚卸しで縛る
+> （この表と `.env.example` の網羅は縛っていない。#1122）。
+
+> 🔴 **この表は網羅ではない。手で書いたものである。** 実測で `serverSecret(..., { failClosed: true })`
+> の呼び出し元は **5 件**あり（#1021 で「6 件」と書いたのは `server-secret.ts` の doc コメントを
+> 数えた誤り。#1123 のレビューで判明）、`PLATFORM_ELEVATION_SECRET`（platform の昇格 / break-glass）と
+> `VOICE_TRANSPORT_TOKEN_SECRET`（受付端末の音声トークン）は**この表にも `.env.example` にも
+> 載っていない**。一覧を手で伸ばすと必ずずれるので、**`serverSecret(` の呼び出し元から導く
+> 検査**を #1122 で入れる。それまでは、新規構築時に**この表の行だけ**を入れると
+> platform 昇格と音声トークンが落ちることに注意。
+
+> 🔴 **症状から鍵を引くとき (#1123 で文言を直した後)**:
+> `CALL_ANSWER_SECRET` が欠けると担当者の画面は「**サーバー側の問題で通話に接続できませんでした**」、
+> `KIOSK_ENROLLMENT_SECRET` が欠けると受付端末は「**サーバー側の問題で登録できません**」と出る。
+> 🔴 **`KIOSK_ENROLLMENT_SECRET` は #1021 AC4 で受付の主経路にも効くようになった。**
+> 欠けると PIN 画面が「**サーバー側の問題で受付を開始できませんでした。担当者へお声がけください。**」
+> （`kiosk.authorize.unavailable`）を出す。**エンロールと PIN 認可は代替関係**（PIN 不要運用の
+> 端末は管理発行 URL/QR で入れる）なので、この鍵が欠けると**両方の入口が同時に死ぬ** ——
+> 受付が新規に開けなくなる。稼働中の端末は 30 日 cookie で動き続ける。
+> 試行予算の鍵ハッシュの salt をこの秘密から HKDF で導出しているため
+> （`src/lib/security/client-identity.ts`）。**ローテーションすると全端末の一次窓が
+> 作り直される**（予算がその瞬間だけ倍になり、TTL 2 時間で収まる。総量の上界を持つ
+> global cap は固定鍵なので影響を受けない）。
+> どちらも「リンクの有効期限切れ」とは言わない（言っていたら**別の原因**）。
+> 🔴 **「リンクの有効期限切れ」＝リンクの問題、とは限らない。** 担当者側は**アプリが返す 4xx**も
+> 同じ文言にする —— とくに `POST /api/staff/calls/:id/answer` は**テナントに Vonage 資格情報が
+> 無い**と 409 を返し（未設定が既定状態）、担当者には「リンクの有効期限切れ」と出る。
+> `CALL_ANSWER_SECRET` を疑う前に、**Vonage 設定と受付の `vonageSessionId`** を見ること
+> （4xx 側を揃えるかは #1127、この経路の実配線は #1132）。
+> 逆に **subscriber トークンの発行失敗は 502** なので、こちらは #1123 以降
+> 「サーバー側の問題で通話に接続できませんでした」と出る（**リンクの話ではない**）。
+> サーバログには `[security] <ENV 名> is not set in a deployed environment` が
+> **プロセスにつき 1 度だけ**出る（拾う仕組みはまだ無い。アラーム化は #1131）。
+> 🔴 1 度だけなのは **fail-closed の鍵**（上の表）。warn-only の鍵は
+> `[security] <ENV 名> unset in deploy` が**毎リクエスト**流れる（#1128）。
+> `ADMIN_SESSION_SECRET` / `KIOSK_SESSION_SECRET` は #1124 で fail-closed になり、
+> 欠けると起動そのものが止まる（`register()` の throw）。
+
+> **`CALL_ANSWER_SECRET` が欠けたデプロイは、未認証の誰からでも叩ける**（`/api/staff/**` は
+> middleware を `passThrough` するので、でっち上げのトークンで到達する）。#1123 で
+> uncaught 例外は解消し、応答は 503・ログはプロセス 1 回に揃えた。
+> **正常時の 403 との差は残る**ので、1 回叩けば「この環境は鍵を持っていない」は読める（#1127）。
+>
+> 🔴 **切り分けの前提**: 応答リンクを**発行する**経路は現在も未配線（`issueAnswerToken` の
+> 本番呼び出し元はゼロ。走査 2 通りで確認）。したがって**担当者が実際にこの症状を見ることは無い** ——
+> 上の症状表で担当者側を待っても出てこないので、この鍵は API を直接叩いて確かめること。
+
+> 🔴 **provider によって必須の鍵が変わる**: 本書の方式 A の手順（「### 6. デプロイ」の
+> `: "${ADMIN_PASSWORD:?…}"` ブロック。**この節より前**にある）は `ADMIN_PASSWORD` を
+> 無条件に要求する。`ADMIN_AUTH_PROVIDER=cognito|entra` のデプロイでは参照されないので、
+> その場合はチェックから `ADMIN_PASSWORD` を外すこと（ダミー値を入れて Lambda env に
+> 無意味な秘密を載せない）。**この「dev をゼロから立ち上げる手順」は方式 B のみで、
+> 必須チェックを含まない** —— cognito/entra でこの runbook を辿る場合は、上の
+> 「機密」節の一覧を自分で確認すること。
+
+> 🔴 **既にデプロイ済みの環境を更新する場合**: `ADMIN_PASSWORD` と `CALL_ANSWER_SECRET` は
+> #1021 で fail-closed になった。**新しいビルドを配る前に**この 2 鍵をシークレットへ追加する
+> こと。先に配ると管理ログインが 500 になり、**管理画面から直せなくなる**。
+>
+> 🔴 **先に配ってしまった場合の復旧順序**: シークレットへ 2 鍵を足すだけでは直らない。
+> `src/instrumentation.ts` の `register()` は**プロセスにつき 1 回**しか走らないので、
+> 温まっている Lambda は古い env のまま 500 を返し続ける。鍵を足したあと
+> **関数を更新して実行環境を入れ替える**こと（再デプロイ、または環境変数の更新）。
+>
+> 🔴 **空文字で埋めない。** `instrumentation.ts` の上書き判定は `=== undefined` なので、
+> `appEnv` に `"CALL_ANSWER_SECRET": ""` が載っていると Secrets Manager の値で**上書きされず**、
+> `serverSecret()` は空文字を「未設定」と読んで throw する。値が無いなら**キーごと外す**。
+
+### 3. デプロイ（secret 名を2つの用途へ渡す）
 
 ```sh
 cd infra
 npx cdk deploy OpenReception-Web-dev --require-approval never \
-  -c originVerifySecret=<高エントロピー値> \
-  -c appSecretsName=open-reception/dev/app-v2
+  -c appSecretsName=open-reception/dev/app-v2 \
+  -c originVerifySecretName=open-reception/dev/app-v2
 ```
 
-**`originVerifySecret` を省くと POST が全滅する。** CloudFront OAC は Lambda Function URL への
-リクエスト**ボディを署名しない**ため、Function URL の SigV4 検証が必ず失敗する
-（GET は通り、POST/PUT/PATCH/DELETE だけ 403）。指定すると Function URL が `NONE` になり、
-CloudFront が `x-origin-verify` を付与、`src/proxy.ts` が照合して直叩きを拒否する。
+同じ Secrets Manager secret の `ORIGIN_VERIFY_SECRET` キーを CFN dynamic reference で
+CloudFront custom header と server Lambda env の両方へ渡す。生secretはCDKへ渡さない。
 
-**prod では生値ではなく `-c originVerifySecretName=<シークレット名>`**（同じシークレットの
-`ORIGIN_VERIFY_SECRET` キー）。生値は prod では `cdk synth` が拒否する。
+通常はこのコマンドを手で組み立てず、`scripts/aws-cloud-deploy.sh` を使う。
+wrapper は `OR_APP_SECRETS_NAME` 1つから `appSecretsName` と
+`originVerifySecretName` の両 context を決定論的に生成する（#1148）。
+
+**どちらの context も必要**だが、運用入力は1つの secret 名なので不一致を作らない。
 詳細は上の「origin-verify シークレットの供給 (#612)」。
-
-**どちらの context も次回デプロイで指定を忘れると壊れる。** 指定を省いた `cdk deploy` は
-成功するが、POST が 403 に戻り、エンロールが 500 に戻る。
 
 ### 4. 管理者を作る
 
 ```sh
+bash scripts/admin-user-provision.sh
+```
+
+メールアドレスとパスワードを**対話で聞き取り**、グループ作成 → ユーザー作成（既存なら属性更新）
+→ 恒久パスワード設定 → グループ付与 → **検証**まで通す。何度流しても同じ状態になる（冪等）。
+`--user-pool-id` / `--region` / `--group` / `--username` で上書きできる。
+
+🔴 **`--username` にメールアドレスを渡さないこと。** プールは
+`signInAliases: { username: true, email: true }` ＝ **email はエイリアス**なので、username 自体が
+メール形式だと AWS が弾く:
+
+```
+InvalidParameterException: Username cannot be of email format,
+since user pool is configured for email alias.
+```
+
+**メールアドレスでログインさせたいなら「username は非メール形式 ＋ email 属性を
+`email_verified=true` で付ける」が正しい形**で、スクリプトはそれをやる（username は
+メールアドレスから導出し、導出結果が必ず妥当であることは
+`src/domain/auth/admin-user-provisioning.test.ts` が総当たりで縛っている）。
+2026-09-09 に dev でこの手順を手で流して実際に踏んだので、述語として固定してある。
+
+🔴 **クラウドセッションからは実行できない。** デプロイ用の資格情報は
+`claude-deploy-entry.json` の `DenyEverythingElseOutsideTheChain` により
+`sts:AssumeRole` / `sts:GetCallerIdentity` / `cloudformation:Describe{Stacks,ChangeSet}` の
+4 つ以外がすべて明示 Deny で、Cognito は読み取りすら通らない（CLAUDE.md の停止境界
+「Cognito・認可の境界変更」の機械強制）。**Admin 資格情報を持つ人が手元で流す。**
+
+パスワードは `read -rs` で受け取り、`--cli-input-json` に stdin 経由で渡すので
+**argv（`ps` から見える）にもディスクにも出ない**。パスワードポリシーは
+`ADMIN_PASSWORD_POLICY`（`src/domain/auth/admin-user-provisioning.ts`）が唯一の定義で、
+CDK 側も同じ定数を使う。一致は `infra/test/web-stack.test.ts` が合成テンプレートに対して縛る。
+
+手で流す場合は上記の制約を自分で守ること:
+
+```sh
 POOL=<AdminUserPoolId>   # スタック出力
 aws cognito-idp create-group --user-pool-id $POOL --group-name Admin
-aws cognito-idp admin-create-user --user-pool-id $POOL --username admin --message-action SUPPRESS
+aws cognito-idp admin-create-user --user-pool-id $POOL --username admin \
+  --user-attributes Name=email,Value=<メールアドレス> Name=email_verified,Value=true \
+  --message-action SUPPRESS
 aws cognito-idp admin-set-user-password --user-pool-id $POOL --username admin --password <値> --permanent
 aws cognito-idp admin-add-user-to-group --user-pool-id $POOL --username admin --group-name Admin
 ```
@@ -492,6 +695,57 @@ npx cdk deploy OpenReception-Web-prod -c env=prod -c appEnv="$APP_ENV" \
 
 紐付け後、Outputs の `CustomDomainUrl` が公開 URL になる。`createDnsRecord:false` の場合は
 DNS 側で当該 FQDN を `DistributionDomainName` 宛の CNAME/ALIAS に向ける。
+
+### クラウド経由でデプロイする場合: `OR_CUSTOM_DOMAIN`
+
+`scripts/aws-cloud-deploy.sh` からは **`OR_CUSTOM_DOMAIN`**（JSON 文字列）で渡す。
+未設定なら CDK 生成ドメインのみで、既存の挙動は変わらない。
+
+```
+OR_CUSTOM_DOMAIN={"domainName":"open-reception.example.com","certificateArn":"arn:aws:acm:us-east-1:<acct>:certificate/<id>"}
+```
+
+窓を開けるときの貼り付けブロック（`aws-issue-credentials.sh`。context の同梱は**既定 ON** で、
+`--no-context` を付けたときだけ外れる）にも載る。
+**環境ダイアログへ入れ忘れると、黙って CDK 生成ドメインのままデプロイされる**ので、
+`resolveDeployContextEnvBlock` が設定済みの値を一緒に運ぶ。
+
+🔴 **環境ダイアログへ後から足しても、既に動いているセッションには届かない。** env は
+コンテナ起動時に焼き込まれる。2026-09-14 の初回適用では、他 9 変数が SET なのに
+`OR_CUSTOM_DOMAIN` だけが UNSET だった。**セッションを作り直さなくてよい** ―― `domainName` も
+`certificateArn` も秘密ではないので、コマンドへ前置すれば足りる（窓を消費しない）:
+
+```bash
+OR_CUSTOM_DOMAIN='{"domainName":"…","certificateArn":"…"}' \
+OR_PUBLIC_ORIGIN_OVERRIDE='https://…' \
+  ./scripts/aws-cloud-deploy.sh diff
+```
+
+🔴 **証明書が `ISSUED` でも、公開ドメインが解決するとは限らない。** ACM の**検証用 CNAME**
+（`_xxxx.<domain> → acm-validations.aws`）と、distribution へ向ける **alias/A** は別物である。
+後者が無いまま `OR_PUBLIC_ORIGIN_OVERRIDE` を切り替えると、**発行される QR / エンロール URL が
+解決しないドメインを指す**。確かめるときは CDK 生成ドメインを**対照に置く**（サンドボックスに
+resolver が無い場合と区別できないため）。
+
+🔴 **`OR_PUBLIC_ORIGIN_OVERRIDE` も独自ドメインへ変える。** 片方だけ変えると、画面は
+新ドメインで開けるのに**発行される QR / エンロール URL が旧ドメインを指す**。どちらも
+`https://<独自ドメイン>` に揃える。
+
+#### このデプロイ経路では出来ないこと（IAM で機械強制）
+
+| 出来ないこと | 理由 | 代わりに |
+| --- | --- | --- |
+| **証明書の発行** | `acm:*` が明示 Deny（`claude-boundary.json` の `DenySharedDnsAndCertificates` / `claude-cfn-exec.json` の `DenyDnsAndPrincipals`） | 人が **us-east-1** で先に発行する。ゾーンが Route53 にあれば DNS 検証はコンソールから 1 クリック |
+| **`createDnsRecord: true`** | `route53:*` が同じく明示 Deny | `false`（既定）にして紐付けだけ行い、alias / CNAME はゾーン管理者が作る |
+
+Deny は「**共有**の DNS と証明書を触らせない」という意図で、同一アカウントには他プロジェクトが
+同居している。**緩めずに人の作業として分ける。**
+
+`createDnsRecord:true` を渡すと `resolveCustomDomainContext`
+（`src/domain/governance/custom-domain-context.ts`）が**窓を消費する前に**理由付きで落とす。
+通してしまうと synth の `HostedZone.fromLookup` か deploy 途中で AccessDenied になり、
+原因が DNS 権限だと読み取れない。同じ理由で、us-east-1 以外の証明書 ARN と、
+上の例の `<acct>` / `<id>` を残したままの値も落とす（#995 と同じ型）。
 
 ## 環境別設定
 

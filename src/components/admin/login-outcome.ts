@@ -20,16 +20,29 @@
 
 /** ログイン送信の失敗。**原因が違えば運用者にできることも違う**ので、同じ値にしない。 */
 export type LoginFailure =
-  /** サーバが「その資格情報では通せない」と答えた（401 等）。押し直しても同じ。 */
+  /** サーバが**パスワードを検査したうえで**拒否した（401）。押し直しても同じ。 */
   | 'rejected'
   /** 応答が返らなかった／解釈できなかった。**パスワードの正否は分かっていない**。 */
-  | 'unreachable';
+  | 'unreachable'
+  /**
+   * サーバは応答したが、**パスワードを検査する前に**失敗した（5xx / 409 等）。
+   *
+   * 🔴 これは #1021 で**新しく起こりうるようになった**。`ADMIN_PASSWORD` を入れ忘れた
+   * デプロイでは `serverSecret()` が fail-closed で throw するので、route は 401 ではなく
+   * **500** を返す。運用者にできることは「パスワードを打ち直す」ではなく
+   * 「サーバーの設定を直す」なので、`rejected` と同じ値にしてはいけない。
+   */
+  | 'server_error';
 
 /**
  * 画面と読み上げに出す文言。
  *
  * 🔴 **`unreachable` で原因を断定しない。** 「サーバが落ちています」と書くと、実際には
  * 端末側がオフラインのときに嘘になる。分かっているのは「届かなかった」ことだけである。
+ *
+ * 🔴 **`server_error` で具体的な env 名を出さない。** ログイン画面は未認証で誰でも見える。
+ * 「どの秘密が入っていないか」は攻撃者への情報になる。原因の特定はサーバログ側の仕事で、
+ * `serverSecret()` が env 名つきで throw する。
  */
 export function loginFailureMessage(failure: LoginFailure): string {
   switch (failure) {
@@ -37,5 +50,23 @@ export function loginFailureMessage(failure: LoginFailure): string {
       return 'パスワードが正しくありません。';
     case 'unreachable':
       return 'サーバーに接続できませんでした。通信状態を確かめて、もう一度お試しください。';
+    case 'server_error':
+      return 'サーバーがログインを処理できませんでした。パスワードの正否は確認されていません。時間をおいても直らない場合は、サーバーの設定を確認してください。';
   }
+}
+
+/**
+ * HTTP 応答の状態コードを失敗の種類へ写す。
+ *
+ * 🔴 **ここがこの写像の本体である。** 縛る不変条件は 1 つ:
+ *
+ * > 「パスワードが正しくありません」と出してよいのは、**サーバがパスワードを検査した
+ * > うえで拒否したとき（401）だけ**である。
+ *
+ * 状態コードを見ずに「非 ok ならすべて `rejected`」にすると、#973 が塞いだ嘘を
+ * **別の入口（5xx）から踏み直す**ことになる —— #1021 で実際に踏んだ。`ADMIN_PASSWORD`
+ * を入れ忘れたデプロイで、画面に出るのは「パスワードが正しくありません。」だけだった。
+ */
+export function loginFailureForStatus(status: number): LoginFailure {
+  return status === 401 ? 'rejected' : 'server_error';
 }

@@ -1,0 +1,151 @@
+{
+  "/OpenReception-CfMon-dev": [
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:157:32)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    },
+    {
+      "type": "aws:cdk:stack-tags",
+      "data": [
+        {
+          "key": "Component",
+          "value": "cloudfront-monitoring"
+        },
+        {
+          "key": "Environment",
+          "value": "dev"
+        },
+        {
+          "key": "ManagedBy",
+          "value": "cdk"
+        },
+        {
+          "key": "Owner",
+          "value": "open-reception-team"
+        },
+        {
+          "key": "Project",
+          "value": "open-reception"
+        }
+      ]
+    }
+  ],
+  "/OpenReception-CfMon-dev/Custom::CrossRegionExportReaderCustomResourceProvider": [
+    {
+      "type": "aws:cdk:is-custom-resource-handler-customResourceProvider",
+      "data": true
+    }
+  ],
+  "/OpenReception-CfMon-dev/BootstrapVersion": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "BootstrapVersion"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...aws-cdk-lib...",
+        "(no user code in 10 frames, use --stack-trace-limit to capture more)"
+      ]
+    }
+  ],
+  "/OpenReception-CfMon-dev/CheckBootstrapVersion": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "CheckBootstrapVersion"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...aws-cdk-lib...",
+        "(no user code in 10 frames, use --stack-trace-limit to capture more)"
+      ]
+    }
+  ],
+  "/OpenReception-CfMon-dev/AlarmTopic/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "AlarmTopicD01E77F9"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new Topic2 in aws-cdk-lib...",
+        "new CloudFrontMonitoringStack (/home/user/open-reception/infra/lib/stacks/cloudfront-monitoring-stack.ts:59:18)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:157:32)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-CfMon-dev/CloudFront5xxErrorRate/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "CloudFront5xxErrorRate5DE4FA4E"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...Metric.createAlarm in aws-cdk-lib...",
+        "new CloudFrontMonitoringStack (/home/user/open-reception/infra/lib/stacks/cloudfront-monitoring-stack.ts:74:41)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:157:32)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-CfMon-dev/CDKMetadata/Default": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "CDKMetadata"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...App.synth in aws-cdk-lib...",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:219:5)",
+        "...node internals..."
+      ]
+    }
+  ],
+  "/OpenReception-CfMon-dev/Custom::CrossRegionExportReaderCustomResourceProvider/Role": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "CustomCrossRegionExportReaderCustomResourceProviderRole10531BBD"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...aws-cdk-lib...",
+        "(no user code in 10 frames, use --stack-trace-limit to capture more)"
+      ]
+    }
+  ],
+  "/OpenReception-CfMon-dev/Custom::CrossRegionExportReaderCustomResourceProvider/Handler": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "CustomCrossRegionExportReaderCustomResourceProviderHandler46647B68"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...aws-cdk-lib...",
+        "(no user code in 10 frames, use --stack-trace-limit to capture more)"
+      ]
+    }
+  ],
+  "/OpenReception-CfMon-dev/ExportsReader/Resource/Default": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ExportsReader8B249524"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...aws-cdk-lib...",
+        "(no user code in 10 frames, use --stack-trace-limit to capture more)"
+      ]
+    }
+  ]
+}

@@ -21,6 +21,10 @@ vi.mock('@/lib/auth/kiosk', () => ({
   KIOSK_COOKIE: 'kiosk_session',
   readKioskSession: (...a: unknown[]) => readKioskSession(...a),
 }));
+// 共通ガードは端末台帳で失効を確かめる。ここでは台帳上「有効な端末」として固定する。
+vi.mock('@/lib/product-context/device-binding', () => ({
+  resolveDeviceBinding: async (kioskId: string) => ({ kioskId, tenantId: 'internal', siteId: 'default-site' }),
+}));
 vi.mock('@/lib/data-stores/reception-store', () => ({
   getReception: (...a: unknown[]) => getReception(...a),
   getReceptionVisitorStatus: (...a: unknown[]) => getReceptionVisitorStatus(...a),

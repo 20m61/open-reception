@@ -31,12 +31,10 @@ export async function POST(request: Request, { params }: Ctx): Promise<NextRespo
 
   const svc = getReservationService();
   const o = (body ?? {}) as Record<string, unknown>;
-  let expiresAt = typeof o.expiresAt === 'string' ? o.expiresAt : undefined;
-  if (!expiresAt) {
-    const current = await svc.get(actor, scope.tenantId, scope.siteId, reservationId);
-    if (!current.ok) return serviceResponse(current);
-    expiresAt = current.value.expiresAt;
-  }
+  // 省略（空文字を含む）は「現状の有効期限を維持」。保存済みの値を読んでここから渡し直すと、
+  // 入力として厳しい形の検証に掛かり、検証を厳しくする前に保存された予約が再発行できなくなる
+  // (#1022 review2 MINOR-1)。引き継ぎは domain（`applyReissue`）が保存値として正規化する。
+  const expiresAt = typeof o.expiresAt === 'string' && o.expiresAt !== '' ? o.expiresAt : undefined;
   const result = await svc.reissueToken(
     actor,
     scope.tenantId,
