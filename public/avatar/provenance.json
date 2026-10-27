@@ -1,19 +1,33 @@
 {
   "asset": "public/avatar/default.vrm",
-  "modelName": "AvatarSample_A",
-  "publisher": "VRoid Project / pixiv",
-  "sourceModelUrl": "https://hub.vroid.com/characters/2843975675147313744/models/5644550979324015604",
-  "licenseTermsUrl": "https://vroid.pixiv.help/hc/ja/articles/4402394424089-AvatarSample-A-Z",
-  "licenseSummary": {
-    "cc0": false,
-    "corporateUse": true,
-    "commercialUse": true,
-    "redistribution": true,
-    "modification": true,
-    "creditRequired": false
+  "modelName": "receptiom",
+  "author": "20m61",
+  "createdWith": "VRoid Studio 2.11.0",
+  "vrmSpecVersion": "0.0",
+  "sourceModelUrl": null,
+  "embeddedMeta": {
+    "title": "receptiom",
+    "author": "20m61",
+    "allowedUserName": "OnlyAuthor",
+    "commercialUssageName": "Disallow",
+    "licenseName": "Redistribution_Prohibited",
+    "sexualUssageName": "Disallow",
+    "violentUssageName": "Disallow"
   },
-  "acquiredAt": null,
-  "sha256": null,
-  "verificationStatus": "pending-official-download-and-hash",
-  "notes": "Update acquiredAt and sha256 after obtaining AvatarSample_A through the official VRoid distribution flow. Verify the embedded VRM metadata before release."
+  "acquiredAt": "2026-10-05",
+  "sha256": "925b2fcbaa815dd5e352a7dbefcef9a73041c9be58f78472e8987d7955017a5f",
+  "sizeBytes": 12425848,
+  "verificationStatus": "owner-authored-embedded-meta-mismatch-accepted",
+  "ownerDecision": {
+    "date": "2026-10-05",
+    "summary": "The model's author (repository owner 20m61) chose to commit it as the default model with the embedded metadata unchanged, in a public repository, for commercial reception use.",
+    "knownMismatch": "Embedded VRM meta says OnlyAuthor / commercial Disallow / Redistribution_Prohibited, while this public repository redistributes the file and the product uses it commercially. Third parties must not treat the public file as licensed to them."
+  },
+  "supersedes": {
+    "modelName": "Rose",
+    "publisher": "Polygonal Mind",
+    "license": "CC0",
+    "sha256OfPreviousDefault": "8e44e5638ffdf935e5d6fa990aa6cba428269f342f2db024c2961ee286a41e5f"
+  },
+  "notes": "Replaces the AvatarSample_A plan of #399 (owner decision 2026-10-05). Head world Y (humanoid head bone, rest pose) = 1.4046m."
 }

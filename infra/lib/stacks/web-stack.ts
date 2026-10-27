@@ -716,27 +716,16 @@ export class WebStack extends Stack {
       serverFn.addEnvironment('NEXT_PUBLIC_APP_URL', publicOrigin);
     }
 
-    // CloudFront OAC → Lambda Function URL の invoke 権限 (issue #192)。OAC 方式のときのみ必要。
-    // `FunctionUrlOrigin.withOriginAccessControl` は `lambda:InvokeFunctionUrl` のみを付与するが、
-    // 2025-10 以降 AWS は OAC 経由の呼び出しに **`lambda:InvokeFunction` も必須**としており、
-    // これが無いと CloudFront → Function URL が 403（AccessDeniedException）になる。
-    // 参照: aws-samples/remote-swe-agents#361。両 Lambda（server/image）へ明示的に付与する。
-    // origin-verify 方式（authType=NONE）では server の Function URL が公開のため invoke 権限は不要。
-    // **image は常に OAC なので、方式に関わらず必要** (issue #631)。
-    const cloudfrontPrincipal = new iam.ServicePrincipal('cloudfront.amazonaws.com');
-    const distributionArn = `arn:aws:cloudfront::${this.account}:distribution/${distribution.distributionId}`;
-    if (!originVerifyEnabled) {
-      serverFn.addPermission('CloudFrontOacInvokeFunction', {
-        principal: cloudfrontPrincipal,
-        action: 'lambda:InvokeFunction',
-        sourceArn: distributionArn,
-      });
-    }
-    imageFn.addPermission('CloudFrontOacInvokeFunction', {
-      principal: cloudfrontPrincipal,
-      action: 'lambda:InvokeFunction',
-      sourceArn: distributionArn,
-    });
+    // CloudFront OAC → Lambda Function URL の invoke 権限 (issue #192 / #631)。
+    // 2025-10 以降 AWS は OAC 経由の呼び出しに `lambda:InvokeFunctionUrl` に加えて
+    // **`lambda:InvokeFunction` も必須**としている（無いと CloudFront → Function URL が 403）。
+    // aws-cdk-lib 2.273.0 以降は `FunctionUrlOrigin.withOriginAccessControl` が両方を自動付与する
+    // （`InvokeFunctionFromCloudFrontFor<originId>`: principal=cloudfront.amazonaws.com、
+    // SourceArn=この Distribution、`InvokedViaFunctionUrl: true`）。以前ここで手動付与していた
+    // `CloudFrontOacInvokeFunction` は同じ principal / SourceArn で `InvokedViaFunctionUrl` 条件が
+    // 無い（= より広い）重複だったため削除した。CDK 版は Function URL 経由の呼び出しに限定される。
+    // OAC の origin（image は常に、server は origin-verify 未使用時のみ）にだけ付く。
+    // 付与の有無と形は `test/web-stack.test.ts` で固定している。
 
     // Route53 管理下なら alias A/AAAA を作成して FQDN を Distribution に向ける (issue #189)。
     // 管理外・手動管理の場合は createDnsRecord=false にして、CloudFront 側の紐付けだけ行う。

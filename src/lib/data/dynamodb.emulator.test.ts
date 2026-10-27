@@ -36,7 +36,12 @@
  * ときに空虚な緑になる。
  */
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
+import {
+  DynamoDBDocumentClient,
+  GetCommand,
+  PutCommand,
+  UpdateCommand,
+} from '@aws-sdk/lib-dynamodb';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { DataBackend } from './backend';
 
@@ -206,6 +211,77 @@ describe.skipIf(!ENABLED)('本番 DynamoDB バックエンド × 実エミュレ
   );
 
   it(
+    '🔴 updateIf の expected undefined を実エンジンが「属性が無い」として評価すること（#1270 N1）',
+    async () => {
+      // 世代を持たない旧レコードに対する CAS（consumeEnrollment / changeDeviceStatus）の形。
+      // fake の述語は `undefined === undefined` を読み違えうるので、実エンジンでも縛る。
+      const col = backend.collection<Visit>(`it-absent-${RUN}`, { indexedField: 'tenantId' });
+      await col.put({ id: 'bare', tenantId: `t-${RUN}`, state: 'waiting' });
+      await col.put({ id: 'noted', tenantId: `t-${RUN}`, state: 'waiting', note: 'x' });
+
+      // 上界: 属性が無ければ通る。
+      expect(await col.updateIf('bare', { state: 'called' }, { note: undefined })).toBe(true);
+      expect((await col.get('bare'))?.state).toBe('called');
+      // 下界: 属性が在れば通らない（条件を落とす・反転する実装を弾く）。
+      expect(await col.updateIf('noted', { state: 'called' }, { note: undefined })).toBe(false);
+      expect((await col.get('noted'))?.state, '拒否されたのに書き換わっている').toBe('waiting');
+      // 下界: 対象が無ければ通らない（upsert しない）。
+      expect(await col.updateIf('missing', { state: 'called' }, { note: undefined })).toBe(false);
+      expect(await col.get('missing')).toBeUndefined();
+    },
+    TIMEOUT,
+  );
+
+  it(
+    '🔴 未定義の値を参照する条件式を、実エンジンは条件不成立ではなく ValidationException で拒否すること（fake の前提, #1270 N1）',
+    async () => {
+      // fake-dynamo は「参照された値が無い・undefined なら ValidationException」を前提にしている。
+      // その前提を、本番と同じ removeUndefinedValues: true の DocumentClient で実エンジンに当てる。
+      // expected undefined を `#c = :c`（:c は undefined）へ化けさせた updateIf が送る形である。
+      const strict = DynamoDBDocumentClient.from(
+        new DynamoDBClient({
+          endpoint: ENDPOINT,
+          region: process.env.AWS_REGION ?? 'ap-northeast-1',
+          credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
+        }),
+        { marshallOptions: { removeUndefinedValues: true } },
+      );
+      const pk = `col#it-undef-${RUN}`;
+      const nameOf = async (p: Promise<unknown>) => {
+        try {
+          await p;
+          return 'resolved';
+        } catch (e) {
+          return (e as { name?: string }).name;
+        }
+      };
+      try {
+        await strict.send(new PutCommand({ TableName: TABLE, Item: { PK: pk, SK: 'u', state: 'waiting' } }));
+        const send = (values: Record<string, unknown>) =>
+          strict.send(
+            new UpdateCommand({
+              TableName: TABLE,
+              Key: { PK: pk, SK: 'u' },
+              UpdateExpression: 'SET #u0 = :u0',
+              ConditionExpression: 'attribute_exists(#pk) AND #c0 = :c0',
+              ExpressionAttributeNames: { '#pk': 'PK', '#u0': 'state', '#c0': 'note' },
+              ExpressionAttributeValues: values,
+            }),
+          );
+        expect(await nameOf(send({ ':u0': 'called', ':c0': undefined }))).toBe('ValidationException');
+        // 対照: 値が揃っていて一致しないだけなら、条件不成立（ここが同じ名前なら上の主張は空虚）。
+        expect(await nameOf(send({ ':u0': 'called', ':c0': 'zzz' }))).toBe(
+          'ConditionalCheckFailedException',
+        );
+        expect((await backend.collection<Visit>(`it-undef-${RUN}`).get('u'))?.state).toBe('waiting');
+      } finally {
+        strict.destroy();
+      }
+    },
+    TIMEOUT,
+  );
+
+  it(
     '🔴 TTL が epoch 秒で実際に載ること（受付セッションの失効機構）',
     async () => {
       const ttlSeconds = 300;
@@ -225,6 +301,55 @@ describe.skipIf(!ENABLED)('本番 DynamoDB バックエンド × 実エミュレ
       // 🔴 境界のすぐ内側を踏む: 近似ではなく窓で縛る。
       expect(ttl).toBeGreaterThanOrEqual(before + ttlSeconds);
       expect(ttl).toBeLessThanOrEqual(after + ttlSeconds);
+    },
+    TIMEOUT,
+  );
+
+  it(
+    '🔴 予約の保存期間（#1022）: item 自身の ttl が TTL 属性として載り、期限後は読めない',
+    async () => {
+      // 予約は collection 共通の ttlSeconds ではなく、レコードごとの期限（来訪の終わり +
+      // retentionDays）を item の `ttl` で渡す。実エンジンがそれを数値属性として保存し、
+      // 読み取りでは剥がされることを縛る。期限後の不可視は repository の読み取り判定。
+      const { DataBackedReservationRepository, RESERVATION_COLLECTION } = await import(
+        '@/lib/reservation/data-backed-repository'
+      );
+      const { reservationTtlSeconds } = await import('@/domain/reservation/retention');
+      const DAY = 24 * 60 * 60 * 1000;
+      let now = new Date();
+      const repo = new DataBackedReservationRepository({ backend: () => backend, now: () => now });
+      const r = {
+        id: `rsv-${RUN}`,
+        tenantId: `t-${RUN}`,
+        siteId: 's-1',
+        visitorName: 'TEST-来客',
+        visitAt: new Date(Date.now() + DAY).toISOString(),
+        expiresAt: new Date(Date.now() + 2 * DAY).toISOString(),
+        targetType: 'staff',
+        targetId: 'staff-1',
+        tokenHash: `hash-${RUN}`,
+        usagePolicy: 'single_use',
+        status: 'active',
+        retentionDays: 3,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      } as unknown as Parameters<typeof repo.create>[0];
+      expect((await repo.create(r)).ok).toBe(true);
+
+      const rawItem = await raw.send(
+        new GetCommand({ TableName: TABLE, Key: { PK: `col#${RESERVATION_COLLECTION}`, SK: r.id } }),
+      );
+      expect(rawItem.Item?.ttl).toBe(reservationTtlSeconds(r));
+
+      const deadline = Date.parse(r.expiresAt) + 3 * DAY;
+      now = new Date(deadline - 1);
+      const inside = await repo.get(r.tenantId, r.siteId, r.id);
+      expect(inside?.id).toBe(r.id);
+      expect(inside).not.toHaveProperty('ttl');
+      expect(await repo.findByTokenHash(r.tenantId, r.siteId, r.tokenHash)).toBeDefined();
+      now = new Date(deadline);
+      expect(await repo.get(r.tenantId, r.siteId, r.id)).toBeUndefined();
+      expect(await repo.findByTokenHash(r.tenantId, r.siteId, r.tokenHash)).toBeUndefined();
     },
     TIMEOUT,
   );

@@ -17,6 +17,21 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3assets from 'aws-cdk-lib/aws-s3-assets';
 import { BROKER_STACK_DEPLOY_ROLE_ARN_PATTERN } from '../config/broker-bootstrap';
+import { VALIDATION_NODE_OPTIONS_COMMAND } from '../config/validation-build-resources';
+import {
+  FILE_SHA256_CHECK_SCRIPT,
+  GITLEAKS_ARCHIVE_PATH,
+  GITLEAKS_LINUX_X64_SHA256,
+  GITLEAKS_URL,
+  SEMGREP_VENV,
+  SEMGREP_WHEEL_PATH,
+  SEMGREP_WHEEL_SHA256,
+  SEMGREP_WHEEL_URL,
+  VALIDATION_INFRA_TEST_COMMAND,
+  VALIDATION_SOURCE_BIND_SCRIPT,
+  VALIDATION_TOOL_BIN,
+  VALIDATION_UNIT_TEST_COMMAND,
+} from '../config/validation-gate-env';
 
 export const DEV_DEPLOY_PROMOTION_BRANCH = 'dev-deploy';
 
@@ -76,6 +91,12 @@ export const SPARSE_LEDGER_PROTECTED_WRITES = [
  * disable deletion protection, and so on. Denied to every principal except the human override
  * issuer and the human stack-deploy (CloudFormation execution) role, which needs them to update
  * this stack.
+ *
+ * Every entry must be one DynamoDB accepts in a table policy
+ * (`config/dynamodb-resource-policy-actions.ts`; a bad name fails the whole table at create).
+ * `RestoreTableFromBackup` is not one: it acts on the backup and writes a *new* table, so this
+ * policy could never govern it, and it cannot touch the ledger (an existing table name is refused,
+ * and DeleteTable is denied here and blocked by deletion protection).
  */
 export const SPARSE_LEDGER_PROTECTED_CONTROL = [
   'dynamodb:UpdateTimeToLive',
@@ -84,7 +105,6 @@ export const SPARSE_LEDGER_PROTECTED_CONTROL = [
   'dynamodb:UpdateTable',
   'dynamodb:DeleteTable',
   'dynamodb:UpdateContinuousBackups',
-  'dynamodb:RestoreTableFromBackup',
   'dynamodb:RestoreTableToPointInTime',
   'dynamodb:UpdateKinesisStreamingDestination',
   'dynamodb:EnableKinesisStreamingDestination',
@@ -257,7 +277,7 @@ export const ARTIFACT_HISTORY_WRITES = [
   's3:PutBucketObjectLockConfiguration',
 ] as const;
 
-/** Read-only APIs the provenance check calls (and nothing else). */
+/** Read-only APIs the provenance check calls (and nothing else). `validationBuild` also reads the broker's own build. */
 export const PROVENANCE_READ_ACTIONS = {
   pipeline: ['codepipeline:ListPipelineExecutions', 'codepipeline:ListActionExecutions'],
   validationBuild: ['codebuild:BatchGetBuilds'],
@@ -795,7 +815,9 @@ export class DevDeployBrokerStack extends cdk.Stack {
       queuedTimeout: cdk.Duration.minutes(5),
       environment: {
         buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
-        computeType: codebuild.ComputeType.SMALL,
+        // MEDIUM: the cheapest compute type that fits the measured build with a 1 GiB reserve
+        // (SMALL left ~0.6 GiB at the build:open-next peak). See validation-build-resources.ts.
+        computeType: codebuild.ComputeType.MEDIUM,
         privileged: false,
         environmentVariables: {
           OR_BROKER_TARGET_ACCOUNT: { value: DEV_DEPLOY_TARGET_ACCOUNT },
@@ -819,22 +841,48 @@ export class DevDeployBrokerStack extends cdk.Stack {
               // preserves the MiniStack/Moto hermeticity contract.
               'unset AWS_SESSION_TOKEN AWS_PROFILE AWS_CREDENTIAL_EXPIRATION AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE AWS_CONTAINER_CREDENTIALS_RELATIVE_URI AWS_CONTAINER_CREDENTIALS_FULL_URI AWS_CONTAINER_AUTHORIZATION_TOKEN AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
               'export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_EC2_METADATA_DISABLED=true',
+              // Node's default heap follows machine memory (~1.5 GiB on SMALL, ~2 GiB on MEDIUM), not
+              // the build: typecheck OOMed on SMALL in runbook 7.5 (2026-10-06). Set it explicitly.
+              VALIDATION_NODE_OPTIONS_COMMAND,
+              // Before any candidate code runs: make the source archive a repository bound to the
+              // trusted CommitId (the unit lane reads git history like the quality gate does). No
+              // connection credential: anonymous fetch of the public repo, checked against the
+              // archive file by file. Only verifies: the revision still comes from CodePipeline.
+              // See validation-gate-env.ts.
+              nodeEval(VALIDATION_SOURCE_BIND_SCRIPT),
+              // The gate's tools, version-pinned and SHA-256 verified, in a directory of their own
+              // with node/npm/npx (the image keeps node next to `aws` in /usr/local/bin).
+              `mkdir -p ${VALIDATION_TOOL_BIN}`,
+              `curl -sSfL ${GITLEAKS_URL} -o ${GITLEAKS_ARCHIVE_PATH}`,
+              nodeEval(FILE_SHA256_CHECK_SCRIPT, GITLEAKS_ARCHIVE_PATH, GITLEAKS_LINUX_X64_SHA256),
+              `tar -xzf ${GITLEAKS_ARCHIVE_PATH} -C ${VALIDATION_TOOL_BIN} gitleaks`,
+              `curl -sSfL ${SEMGREP_WHEEL_URL} -o ${SEMGREP_WHEEL_PATH}`,
+              nodeEval(FILE_SHA256_CHECK_SCRIPT, SEMGREP_WHEEL_PATH, SEMGREP_WHEEL_SHA256),
+              `python3 -m venv ${SEMGREP_VENV}`,
+              `${SEMGREP_VENV}/bin/pip install --quiet ${SEMGREP_WHEEL_PATH}`,
+              `ln -s ${SEMGREP_VENV}/bin/semgrep ${VALIDATION_TOOL_BIN}/semgrep`,
+              `for b in node npm npx; do ln -s "$(command -v $b)" ${VALIDATION_TOOL_BIN}/$b; done`,
+              `${VALIDATION_TOOL_BIN}/gitleaks version`,
+              `${VALIDATION_TOOL_BIN}/semgrep --version`,
               'npm ci',
               'npm --prefix infra ci',
             ],
           },
           build: {
             commands: [
-              // CodePipeline source archives do not provide a trustworthy local git history.
               // Promotion is intentionally rare, so run the full suite instead of a diff-optimized
               // PR gate. The inexpensive inner loop remains local Claude + MiniStack/Moto.
               'npm run typecheck',
               'npm run lint',
-              'npm test',
+              // The install phase's `unset` does not reach this phase (7.5, 2026-10-08: the role's
+              // AWS_CONTAINER_CREDENTIALS_RELATIVE_URI was visible to the unit lane), so the scrub
+              // is on this command line. Later steps keep their environment.
+              VALIDATION_UNIT_TEST_COMMAND,
               'npm run build:open-next',
               'npm run aws:local:test',
               'npm --prefix infra run typecheck',
-              'npm --prefix infra test',
+              // Instrumented (#1146 efa5f85f): prints what saturates; the verdict stays the suite's.
+              VALIDATION_INFRA_TEST_COMMAND,
               // Only the three stacks already admitted by ADR 0009 are synthesized (and written to
               // the assembly: promotionStacksOnly), with the ADR 0009 bootstrap qualifier the trusted
               // policy requires (blocker 7).
@@ -1125,7 +1173,9 @@ export class DevDeployBrokerStack extends cdk.Stack {
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         actions: [...PROVENANCE_READ_ACTIONS.validationBuild],
-        resources: [validationProject.projectArn],
+        // The validation build, and this broker build's own record (`initiator`: started by this
+        // pipeline). Read only; exactly these two projects, never a wildcard.
+        resources: [validationProject.projectArn, brokerProject.projectArn],
       }),
     );
 

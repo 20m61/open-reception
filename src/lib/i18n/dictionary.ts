@@ -232,6 +232,7 @@ export type MessageKey =
   | 'checkout.error.throttled'
   // 受付端末の PIN 許可の失敗 (#1021 AC4)。試行回数制限が来訪者に見える面。
   | 'kiosk.authorize.wrongPin'
+  | 'kiosk.authorize.notEnrolled'
   | 'kiosk.authorize.tooManyAttempts'
   | 'kiosk.authorize.tooManyAttemptsLater'
   | 'kiosk.authorize.unavailable'
@@ -578,6 +579,7 @@ const ja: DefaultDictionary = {
   'checkout.error.expired': '退館コードの有効期限が切れています。受付にお問い合わせください。',
   'checkout.error.throttled': '退館コードの試行が続いたため、しばらく受け付けを制限しています。少し時間をおくか、退館 QR をご利用いただくか、受付にお問い合わせください。',
   'kiosk.authorize.wrongPin': 'PIN が正しくありません。もう一度入力してください。',
+  'kiosk.authorize.notEnrolled': 'この端末は受付端末として登録されていないため、PIN では開始できません。担当者が管理画面で発行する受付 URL / QR コードから、端末を登録し直してください。',
   'kiosk.authorize.tooManyAttempts': '入力の試行が続いたため、一時的に受付の開始を制限しています。約 {seconds} 秒後にもう一度お試しください。お急ぎの場合は担当者へお声がけください。',
   'kiosk.authorize.tooManyAttemptsLater': '入力の試行が続いたため、一時的に受付の開始を制限しています。しばらくしてからもう一度お試しください。お急ぎの場合は担当者へお声がけください。',
   'kiosk.authorize.unavailable': 'サーバー側の問題で受付を開始できませんでした。担当者へお声がけください。',
@@ -905,6 +907,7 @@ const en: LocaleDictionary = {
   'checkout.error.expired': 'This checkout code has expired. Please ask reception for help.',
   'checkout.error.throttled': 'Too many checkout code attempts. Please wait a moment, use your checkout QR, or ask reception for help.',
   'kiosk.authorize.wrongPin': 'Incorrect PIN. Please try again.',
+  'kiosk.authorize.notEnrolled': 'This device is not registered as a reception terminal, so it cannot be started with a PIN. Please ask a staff member to register it again using the reception URL / QR code issued from the admin screen.',
   'kiosk.authorize.tooManyAttempts': 'There have been too many attempts, so starting reception is temporarily limited. Please try again in about {seconds} seconds. If you are in a hurry, please ask a staff member.',
   'kiosk.authorize.tooManyAttemptsLater': 'There have been too many attempts, so starting reception is temporarily limited. Please try again in a little while. If you are in a hurry, please ask a staff member.',
   'kiosk.authorize.unavailable': 'Reception could not be started because of a server problem. Please ask a staff member.',
@@ -1229,6 +1232,7 @@ const ko: LocaleDictionary = {
   'checkout.error.expired': '퇴실 코드의 유효 기간이 지났습니다. 접수처에 문의해 주세요.',
   'checkout.error.throttled': '퇴실 코드 시도가 많아 잠시 접수를 제한하고 있습니다. 잠시 후 다시 시도하거나 퇴실 QR을 이용하거나 접수처에 문의해 주세요.',
   'kiosk.authorize.wrongPin': 'PIN이 올바르지 않습니다. 다시 입력해 주세요.',
+  'kiosk.authorize.notEnrolled': '이 단말기는 접수 단말기로 등록되어 있지 않아 PIN으로 시작할 수 없습니다. 담당자가 관리 화면에서 발급한 접수 URL / QR 코드로 단말기를 다시 등록해 주세요.',
   'kiosk.authorize.tooManyAttempts': '입력 시도가 많아 접수 시작을 일시적으로 제한하고 있습니다. 약 {seconds}초 후에 다시 시도해 주세요. 급하신 경우 담당자에게 말씀해 주세요.',
   'kiosk.authorize.tooManyAttemptsLater': '입력 시도가 많아 접수 시작을 일시적으로 제한하고 있습니다. 잠시 후 다시 시도해 주세요. 급하신 경우 담당자에게 말씀해 주세요.',
   'kiosk.authorize.unavailable': '서버 문제로 접수를 시작할 수 없습니다. 담당자에게 말씀해 주세요.',
@@ -1550,6 +1554,7 @@ const zh: LocaleDictionary = {
   'checkout.error.expired': '退馆码已过期，请联系前台。',
   'checkout.error.throttled': '退馆码尝试次数过多，暂时限制受理。请稍后再试，或使用退馆二维码，或联系前台。',
   'kiosk.authorize.wrongPin': 'PIN 码不正确。请重新输入。',
+  'kiosk.authorize.notEnrolled': '此终端未登记为接待终端，因此无法通过 PIN 开始。请由工作人员使用管理页面发放的接待 URL / 二维码（QR）重新登记此终端。',
   'kiosk.authorize.tooManyAttempts': '输入尝试次数过多，暂时限制开始受理。请约 {seconds} 秒后再试。如有急事，请告知工作人员。',
   'kiosk.authorize.tooManyAttemptsLater': '输入尝试次数过多，暂时限制开始受理。请稍后再试。如有急事，请告知工作人员。',
   'kiosk.authorize.unavailable': '由于服务器问题，无法开始受理。请告知工作人员。',

@@ -38,7 +38,7 @@ function authorizeSubmitSource(): string {
 
 describe('PIN 画面の配線 (#1021 AC4)', () => {
   it('🔴 応答から状態を作るのは authorizeStateFromResponse である', () => {
-    expect(authorizeSubmitSource()).toContain('authorizeStateFromResponse(res.status');
+    expect(authorizeSubmitSource()).toMatch(/authorizeStateFromResponse\(\s*res\.status/);
   });
 
   /**
@@ -47,6 +47,18 @@ describe('PIN 画面の配線 (#1021 AC4)', () => {
    */
   it('🔴 Retry-After ヘッダを渡している', () => {
     expect(authorizeSubmitSource()).toContain("res.headers.get('retry-after')");
+  });
+
+  /**
+   * 🔴 **本文の error コードを渡している（#1237 journey B）。** 渡さないと 403
+   * `not_enrolled` が `wrong_pin` へ戻り、未登録の端末で「PIN が正しくありません」と出る。
+   * `authorizeStateFromResponse` の第 3 引数は省略不可にしてあるので、`null` の決め打ちを見る。
+   */
+  it('🔴 本文の error コードを readAuthorizeErrorCode で読んで渡している', () => {
+    const src = authorizeSubmitSource();
+    expect(src).toMatch(
+      /authorizeStateFromResponse\(\s*res\.status,\s*res\.headers\.get\('retry-after'\),\s*await readAuthorizeErrorCode\(res\),?\s*\)/,
+    );
   });
 
   /**

@@ -68,6 +68,18 @@ import {
   trustedPolicySha256,
 } from '../lib/stacks/dev-deploy-broker-stack';
 import { BROKER_BOOTSTRAP_QUALIFIER } from '../lib/config/broker-bootstrap';
+import {
+  CODEBUILD_LINUX_COMPUTE,
+  VALIDATION_HEAP_HEADROOM,
+  VALIDATION_MEASURED_RUNS,
+  VALIDATION_MIN_HEAP_MIB,
+  VALIDATION_OS_RESERVE_MIB,
+} from '../lib/config/validation-build-resources';
+import { VALIDATION_SOURCE_BIND_SCRIPT } from '../lib/config/validation-gate-env';
+import {
+  DYNAMODB_TABLE_RESOURCE_POLICY_ACTIONS,
+  DYNAMODB_TABLE_RESOURCE_POLICY_REJECTED,
+} from '../lib/config/dynamodb-resource-policy-actions';
 
 /**
  * Adversarial Phase 1 invariants for the dev deploy broker (#1146).
@@ -231,11 +243,12 @@ const isProvenanceStatement = (s: Statement): boolean => {
   const res = JSON.stringify(s.Resource);
   const same = (xs: readonly string[]) => acts === JSON.stringify(xs.map((a) => a.toLowerCase()).sort());
   const validationProjectId = PROJECTS.find(([, r]) => r.Properties.Name === VALIDATION_PROJECT)?.[0];
+  const brokerProjectId = PROJECTS.find(([, r]) => r.Properties.Name === BROKER_PROJECT)?.[0];
   return (
     s.Effect === 'Allow' &&
     s.Condition === undefined &&
     ((same(PROVENANCE_READ_ACTIONS.pipeline) && res === JSON.stringify({ 'Fn::Join': ['', ['arn:', { Ref: 'AWS::Partition' }, ':codepipeline:ap-northeast-1:822063948773:', { Ref: PIPELINES[0] }]] })) ||
-      (same(PROVENANCE_READ_ACTIONS.validationBuild) && res === JSON.stringify({ 'Fn::GetAtt': [validationProjectId, 'Arn'] })) ||
+      (same(PROVENANCE_READ_ACTIONS.validationBuild) && res === JSON.stringify([{ 'Fn::GetAtt': [validationProjectId, 'Arn'] }, { 'Fn::GetAtt': [brokerProjectId, 'Arn'] }])) ||
       (same(PROVENANCE_READ_ACTIONS.artifactBucket) && res === JSON.stringify({ 'Fn::GetAtt': [ARTIFACT_BUCKET[0], 'Arn'] })))
   );
 };
@@ -372,6 +385,122 @@ describe('dev deploy broker invariants: build environment allowlist', () => {
   });
 });
 
+/**
+ * Commands of a buildspec in execution order: phases in CodeBuild's order, each phase's `finally`
+ * right after its commands (a `finally` runs before the next phase starts).
+ */
+const PHASE_ORDER = ['install', 'pre_build', 'build', 'post_build'] as const;
+const orderedCommands = (name: string): string[] => {
+  const phases = buildSpec(name).phases as Record<string, { commands?: string[]; finally?: string[] } | undefined>;
+  return PHASE_ORDER.flatMap((p) => [...(phases[p]?.commands ?? []), ...(phases[p]?.finally ?? [])]);
+};
+const runsNode = (command: string): boolean => /(^|[\s;&|(])(npm|npx|node)(\s|$)/.test(command);
+const HEAP_COMMAND = /^export NODE_OPTIONS=--max-old-space-size=([1-9][0-9]*)$/;
+const touchesHeap = (c: string): boolean => c.includes('NODE_OPTIONS') || c.includes('max-old-space-size');
+
+const computeOf = (computeType: unknown) => CODEBUILD_LINUX_COMPUTE.find((c) => c.type === computeType);
+const runFor = (c: (typeof CODEBUILD_LINUX_COMPUTE)[number]) => VALIDATION_MEASURED_RUNS.find((r) => r.vcpus === c.vcpus);
+/**
+ * Does the measured build fit the compute type with `heapMiB` per Node process, within the project
+ * timeout? Only a replay on the same number of vCPUs counts (more vCPUs mean more test workers, so a
+ * smaller machine's measurement does not carry over; no measurement = not known to fit):
+ * - memory: its anon peak, plus the extra heap if the configured heap is larger than the measured
+ *   one, plus the OS reserve;
+ * - time: no test exceeded its own timeout, and the build phase used at most half of the project
+ *   timeout (npm ci, aws:local:test and provisioning are not in the replay).
+ */
+const fits = (c: (typeof CODEBUILD_LINUX_COMPUTE)[number], heapMiB: number, timeoutMinutes: number): boolean => {
+  const run = runFor(c);
+  if (!run) return false;
+  const memory = run.anonPeakMiB + Math.max(0, heapMiB - run.heapMiB) + VALIDATION_OS_RESERVE_MIB <= c.memoryGiB * 1024;
+  const time = run.testTimeoutsExceeded === 0 && run.buildPhaseSeconds <= (timeoutMinutes * 60) / 2;
+  return memory && time;
+};
+const validationTimeout = (): number => project(VALIDATION_PROJECT).TimeoutInMinutes as number;
+
+/** The single heap the Validation buildspec gives Node (and where), asserting there is exactly one. */
+const validationHeap = (): { heapMiB: number; index: number } => {
+  const mentions = orderedCommands(VALIDATION_PROJECT)
+    .map((c, i) => [c, i] as const)
+    .filter(([c]) => touchesHeap(c));
+  // allCommands also covers phases outside PHASE_ORDER: nothing anywhere may touch the heap twice.
+  expect(allCommands(VALIDATION_PROJECT).filter(touchesHeap), 'exactly one command may touch NODE_OPTIONS / the heap').toHaveLength(1);
+  expect(mentions).toHaveLength(1);
+  const [command, index] = mentions[0]!;
+  const m = HEAP_COMMAND.exec(command);
+  expect(m, `${command} must only set --max-old-space-size (no other Node flags)`).not.toBeNull();
+  return { heapMiB: Number(m![1]), index };
+};
+
+describe('dev deploy broker invariants: validation build memory (7.5 OOM, 2026-10-06)', () => {
+  it('the measurements are self-consistent (guards the inputs of the checks below)', () => {
+    // Node's default heap on a 3 GiB machine (1584 MiB, measured; what SMALL behaved like in 7.5) is
+    // below the requirement: that is the failure being fixed. If this stops holding, re-measure.
+    expect(VALIDATION_MIN_HEAP_MIB).toBeGreaterThan(1584);
+    for (const run of VALIDATION_MEASURED_RUNS) {
+      // A replay that ran with less heap than the minimum could not have passed: a typo, not data.
+      expect(run.heapMiB).toBeGreaterThanOrEqual(VALIDATION_MIN_HEAP_MIB);
+      expect(run.anonPeakMiB).toBeGreaterThan(0);
+      expect(run.buildPhaseSeconds).toBeGreaterThan(0);
+    }
+    const memories = CODEBUILD_LINUX_COMPUTE.map((c) => c.memoryGiB);
+    expect([...memories].sort((x, y) => x - y)).toEqual(memories);
+  });
+
+  it('the chosen compute type and every cheaper one were measured ("cheapest" is backed by data)', () => {
+    const chosen = CODEBUILD_LINUX_COMPUTE.findIndex((c) => c.type === (project(VALIDATION_PROJECT).Environment as Json).ComputeType);
+    expect(chosen, 'known compute type').toBeGreaterThanOrEqual(0);
+    for (const c of CODEBUILD_LINUX_COMPUTE.slice(0, chosen + 1)) {
+      expect(runFor(c), `no replay measured on ${c.vcpus} vCPUs (${c.type})`).toBeDefined();
+    }
+  });
+
+  it('sets the heap once, before the first npm / node command, and nothing unsets it afterwards', () => {
+    const { index } = validationHeap();
+    const firstNode = orderedCommands(VALIDATION_PROJECT).findIndex(runsNode);
+    expect(firstNode, 'the validation buildspec runs npm').toBeGreaterThanOrEqual(0);
+    expect(index).toBeLessThan(firstNode);
+  });
+
+  it('the heap covers the measured minimum with head-room', () => {
+    const { heapMiB } = validationHeap();
+    expect(heapMiB).toBeGreaterThanOrEqual(Math.ceil(VALIDATION_MIN_HEAP_MIB * VALIDATION_HEAP_HEADROOM));
+  });
+
+  it('the heap is at most half of the machine memory (the rest of the measured tree needs the other half)', () => {
+    const c = computeOf((project(VALIDATION_PROJECT).Environment as Json).ComputeType);
+    expect(c, 'known compute type').toBeDefined();
+    expect(validationHeap().heapMiB).toBeLessThanOrEqual((c!.memoryGiB * 1024) / 2);
+  });
+
+  it('the compute type fits the measured build: memory with that heap, and time within the project timeout', () => {
+    const c = computeOf((project(VALIDATION_PROJECT).Environment as Json).ComputeType);
+    expect(c, 'known compute type').toBeDefined();
+    expect(fits(c!, validationHeap().heapMiB, validationTimeout())).toBe(true);
+  });
+
+  it('the compute type is the cheapest one that fits (cost: no over-provisioning)', () => {
+    const { heapMiB } = validationHeap();
+    const cheapest = CODEBUILD_LINUX_COMPUTE.find((c) => fits(c, heapMiB, validationTimeout()));
+    expect(cheapest, 'some listed compute type must fit').toBeDefined();
+    expect((project(VALIDATION_PROJECT).Environment as Json).ComputeType).toBe(cheapest!.type);
+  });
+
+  it('NODE_OPTIONS reaches the build only through that buildspec command (not project / action env)', () => {
+    expect(projectEnvNames(VALIDATION_PROJECT)).not.toContain('NODE_OPTIONS');
+    const actionEnv = JSON.stringify(pipelineResource().Properties.Stages ?? []);
+    expect(actionEnv).not.toContain('NODE_OPTIONS');
+  });
+
+  it('the trusted broker build is untouched: no NODE_OPTIONS / heap flags, still SMALL', () => {
+    for (const c of allCommands(BROKER_PROJECT)) {
+      expect(c.includes('NODE_OPTIONS') || c.includes('max-old-space-size'), c).toBe(false);
+    }
+    expect(projectEnvNames(BROKER_PROJECT)).not.toContain('NODE_OPTIONS');
+    expect((project(BROKER_PROJECT).Environment as Json).ComputeType).toBe('BUILD_GENERAL1_SMALL');
+  });
+});
+
 describe('dev deploy broker invariants: validation role (candidate code executes here)', () => {
   it('holds no AssumeRole / PassRole / CloudFormation / connection-token / secret authority', () => {
     const actions = allowedActions(VALIDATION_ROLE);
@@ -405,7 +534,6 @@ describe('dev deploy broker invariants: validation role (candidate code executes
     expect(p.QueuedTimeoutInMinutes).toBe(5);
     const env = p.Environment as Json;
     expect(env.PrivilegedMode).toBe(false);
-    expect(env.ComputeType).toBe('BUILD_GENERAL1_SMALL');
   });
 
   it('synthesizes only the three reviewed -dev stacks with env=dev', () => {
@@ -611,6 +739,40 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
     expect(allowedActions(VALIDATION_ROLE).some((a) => a.startsWith('dynamodb:'))).toBe(false);
   });
 
+  // DynamoDB rejects the whole table when its resource policy names an action it does not accept
+  // there (2026-10-06: `RestoreTableFromBackup` failed the first create). The emulators do not
+  // check this, so every action of every table / stream policy must be on the documented list.
+  it('every action in a DynamoDB resource policy is one DynamoDB accepts there (allowlist, not a hand-written set)', () => {
+    const allowed = new Set(DYNAMODB_TABLE_RESOURCE_POLICY_ACTIONS.map((a) => a.toLowerCase()));
+    const policies = byType('AWS::DynamoDB::Table').flatMap(([id, r]) => {
+      const stream = r.Properties.StreamSpecification as { ResourcePolicy?: unknown } | undefined;
+      return [
+        [id, r.Properties.ResourcePolicy],
+        [`${id}/stream`, stream?.ResourcePolicy],
+      ].filter(([, p]) => p !== undefined) as Array<[string, { PolicyDocument: unknown }]>;
+    });
+    // Lower bound: the ledger policy is really inspected (an empty scan would pass vacuously).
+    expect(policies.map(([id]) => id)).toEqual(LEDGER_TABLES);
+    for (const [id, policy] of policies) {
+      const statements = documentStatements(policy.PolicyDocument);
+      expect(statements.length, id).toBeGreaterThan(0);
+      for (const statement of statements) {
+        // NotAction would expand to actions DynamoDB may reject; only explicit names are checkable.
+        expect(statement.NotAction, id).toBeUndefined();
+        const actions = actionsOf(statement);
+        expect(actions.length, id).toBeGreaterThan(0);
+        expect(actions.filter((a) => !allowed.has(a)), `${id} ${statement.Effect}`).toEqual([]);
+      }
+    }
+  });
+
+  it('the allowlist excludes every action AWS was observed to reject in a table policy', () => {
+    const allowed = DYNAMODB_TABLE_RESOURCE_POLICY_ACTIONS.map((a) => a.toLowerCase());
+    for (const rejected of DYNAMODB_TABLE_RESOURCE_POLICY_REJECTED) {
+      expect(allowed).not.toContain(rejected.toLowerCase());
+    }
+  });
+
   it('the table resource policy denies every write except from the broker role and the human issuer role', () => {
     const table = resources[LEDGER_TABLES[0]!]!;
     const doc = (table.Properties.ResourcePolicy as { PolicyDocument: unknown }).PolicyDocument;
@@ -627,7 +789,6 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
         'dynamodb:updatetable',
         'dynamodb:deletetable',
         'dynamodb:updatecontinuousbackups',
-        'dynamodb:restoretablefrombackup',
         'dynamodb:restoretabletopointintime',
         'dynamodb:updatekinesisstreamingdestination',
         'dynamodb:enablekinesisstreamingdestination',
@@ -861,9 +1022,23 @@ describe('dev deploy broker invariants: trusted source revision', () => {
     for (const name of [VALIDATION_PROJECT, BROKER_PROJECT]) {
       const text = buildSpecText(name);
       expect(text).not.toContain('CODEBUILD_RESOLVED_SOURCE_VERSION');
-      expect(text).not.toContain('rev-parse');
-      expect(text).not.toMatch(/\bgit\b/);
     }
+    // The broker never reads git metadata.
+    expect(buildSpecText(BROKER_PROJECT)).not.toContain('rev-parse');
+    expect(buildSpecText(BROKER_PROJECT)).not.toMatch(/\bgit\b/);
+    // Validation runs git in exactly one command (7.5, 2026-10-08: the unit lane needs the history),
+    // and that command only checks the checkout against the trusted revision: it takes the revision
+    // from OR_TRUSTED_SOURCE_REVISION alone and writes no file, so the evidence (VALIDATION_EVIDENCE_SCRIPT)
+    // still carries CodePipeline's CommitId, never one read from git.
+    const bindCommand = nodeEval(VALIDATION_SOURCE_BIND_SCRIPT);
+    const validationCommands = allCommands(VALIDATION_PROJECT);
+    expect(validationCommands.filter((c) => c === bindCommand)).toHaveLength(1);
+    const others = JSON.stringify(validationCommands.filter((c) => c !== bindCommand));
+    expect(others).not.toContain('rev-parse');
+    expect(others).not.toMatch(/\bgit\b/);
+    expect(VALIDATION_SOURCE_BIND_SCRIPT.match(/\bsha=/g)).toEqual(['sha=']);
+    expect(VALIDATION_SOURCE_BIND_SCRIPT).toContain('const sha=process.env.OR_TRUSTED_SOURCE_REVISION;');
+    expect(VALIDATION_SOURCE_BIND_SCRIPT).not.toMatch(/writeFile|appendFile|createWriteStream|console\.|process\.stdout/);
   });
 
   it('the synthesized commands are exactly the exported, tested scripts', () => {
@@ -1355,6 +1530,24 @@ describe('execution provenance (pre-arming blockers 2 and 4)', () => {
     for (const a of [...PROVENANCE_READ_ACTIONS.pipeline, ...PROVENANCE_READ_ACTIONS.validationBuild, 's3:listbucketversions']) {
       expect(validation, a).not.toContain(a.toLowerCase());
     }
+  });
+
+  it('BatchGetBuilds is granted on exactly the validation and broker project ARNs (its own record, no wildcard)', () => {
+    const projectId = (name: string) => PROJECTS.find(([, r]) => r.Properties.Name === name)?.[0];
+    // IAM glob semantics: `codebuild:BatchGet*`, `codebuild:*Builds`, `*` all grant BatchGetBuilds.
+    const grantsAction = (pattern: string, action: string) =>
+      new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')}$`).test(action);
+    const grants = statementsFor(roleLogicalId(BROKER_ROLE)).filter((s) => s.Effect === 'Allow' && (s.NotAction !== undefined || actionsOf(s).some((a) => grantsAction(a, 'codebuild:batchgetbuilds'))));
+    expect(grants).toHaveLength(1);
+    expect(actionsOf(grants[0]!)).toEqual(['codebuild:batchgetbuilds']);
+    expect(grants[0]!.Resource).toEqual([{ 'Fn::GetAtt': [projectId(VALIDATION_PROJECT), 'Arn'] }, { 'Fn::GetAtt': [projectId(BROKER_PROJECT), 'Arn'] }]);
+    expect(JSON.stringify(grants[0]!.Resource)).not.toContain('*');
+  });
+
+  it('the module binds the same broker project name as the stack (the module is pinned, the env is not read)', async () => {
+    const m = (await import(pathToFileURL(PROVENANCE_SOURCE_PATH).href)) as { BROKER_PROJECT_NAME: string };
+    expect(m.BROKER_PROJECT_NAME).toBe(BROKER_PROJECT);
+    expect(PROJECTS.filter(([, r]) => r.Properties.Name === BROKER_PROJECT)).toHaveLength(1);
   });
 
   it('runs the pinned module right after the account check, before any candidate file is read', () => {

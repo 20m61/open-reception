@@ -12,6 +12,7 @@ import {
   type ReservationUsagePolicy,
   type VisitReservation,
 } from './types';
+import { isReservationRetainedAt } from './retention';
 
 export type ReservationError = {
   code: 'invalid_input' | 'invalid_state';
@@ -25,14 +26,67 @@ function err(code: ReservationError['code'], message: string): ReservationResult
 
 const USAGE_POLICIES: readonly ReservationUsagePolicy[] = ['single_use', 'same_day'];
 
+/**
+ * 日付のみ（`YYYY-MM-DD`）か、**オフセット付き**の日時（`Z` / `±hh:mm`）。
+ *
+ * オフセットの無い日時（`2026-10-07T10:00`）は `Date.parse` が**処理系のローカル TZ** で解釈する
+ * ので、書き込みと読み取りで TZ が違えば同じ文字列が別の時刻になる（保存期限が数時間ずれる）。
+ * 日付のみの形は ECMAScript が UTC と定めているので曖昧さが無い。管理 UI は `toISOString()`
+ * （`Z` 付き）で送るので、拒否されるのは API を直接叩いてオフセットを省いた場合だけ。
+ */
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2}))?$/;
+
 function isIsoDate(value: string): boolean {
-  if (typeof value !== 'string' || value.trim() === '') return false;
+  if (typeof value !== 'string' || !ISO_DATE_RE.test(value)) return false;
+  return Number.isFinite(Date.parse(value)) && isCalendarDay(value);
+}
+
+/**
+ * 先頭の `YYYY-MM-DD` が暦に実在する日か (#1022 NIT-2)。`Date.parse` は `2026-02-31` を 3/3 へ
+ * 繰り上げて受理するので、保存される文字列と期限が最大 3 日ずれる。オフセットで UTC の日付が
+ * 変わっても、検査するのは**書かれた**日付そのもの。
+ */
+function isCalendarDay(value: string): boolean {
+  const y = Number(value.slice(0, 4));
+  const m = Number(value.slice(5, 7));
+  const d = Number(value.slice(8, 10));
+  // 月 00・13 以上、日 00 は `Date.parse` が NaN を返すので、ここでは月末の超過だけを見る。
+  return d <= new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+
+/**
+ * **保存済み**の日時を、読み取り側と同じ解釈（`Date.parse`）で正規形（`toISOString()`）へ直す
+ * (#1022 review2 MINOR-1)。解釈できなければ undefined。
+ *
+ * 保存済みの値は検証を厳しくする前（N3 / NIT-2）に書かれたものでありうる。それを `isIsoDate` へ
+ * 戻すと、読めて受付にも使える予約が書き戻しだけ拒否される。読み取り・保存期限・TTL はすでに
+ * `Date.parse` で解釈しているので、正規化しても期限の意味は変わらない。
+ * 🔴 **呼び出し側が渡した入力にはこれを使わない**（入力は `isIsoDate` で厳しく検証する）。
+ */
+function canonicalStoredInstant(value: string): string | undefined {
   const t = Date.parse(value);
-  return Number.isFinite(t);
+  return Number.isFinite(t) ? new Date(t).toISOString() : undefined;
+}
+
+/**
+ * 保存期限（来訪の終わり + retentionDays・#1022）が `now` より後か。過ぎていれば、作成・編集・
+ * 再発行は成功した直後に読み取りから外れ、予約が消えたように見える（使えない QR が発行される／
+ * 入力ミスの編集で予約が失われる）。期限を計算できない入力も同じく拒否する（fail-closed）。
+ */
+function requireRetainedAt(
+  r: Pick<VisitReservation, 'visitAt' | 'expiresAt' | 'retentionDays'>,
+  now: Date,
+): ReservationResult<never> | undefined {
+  return isReservationRetainedAt(r, now)
+    ? undefined
+    : err('invalid_input', 'retention period (visit end + retentionDays) must end in the future');
 }
 
 /** 予約作成入力の検証。PII は最小限・必須項目のみ強制する。 */
-export function validateCreateInput(input: CreateReservationInput): ReservationResult<CreateReservationInput> {
+export function validateCreateInput(
+  input: CreateReservationInput,
+  now: Date,
+): ReservationResult<CreateReservationInput> {
   if (!input.visitorName || input.visitorName.trim() === '')
     return err('invalid_input', 'visitorName is required');
   if (!isIsoDate(input.visitAt)) return err('invalid_input', 'visitAt must be an ISO date');
@@ -47,6 +101,8 @@ export function validateCreateInput(input: CreateReservationInput): ReservationR
     return err('invalid_input', 'retentionDays must be a positive integer');
   if (Date.parse(input.expiresAt) < Date.parse(input.visitAt))
     return err('invalid_input', 'expiresAt must not be before visitAt');
+  const retention = requireRetainedAt(input, now);
+  if (retention) return retention;
   return { ok: true, value: input };
 }
 
@@ -179,27 +235,39 @@ export function markUsed(
  * 新しいトークン hash・有効期限を適用した「再発行後の新予約」を作る純関数。
  * 旧予約は呼び出し側で revoke する（旧トークン失効）。生 token は保存せず、呼び出し側が
  * 新 token を発行して hash を渡す（生値は発行応答でのみ返す・#375）。
+ *
+ * `newExpiresAt` が undefined なら保存済みの有効期限を引き継ぐ（管理 UI の再発行は常に省く）。
+ * 引き継ぐ値は入力ではなく保存値なので、厳しい形の検証ではなく正規化を通す
+ * （`canonicalStoredInstant`）。
  */
 export function applyReissue(
   reservation: VisitReservation,
   newTokenHash: VisitReservation['tokenHash'],
-  newExpiresAt: string,
+  newExpiresAt: string | undefined,
   now: Date,
 ): ReservationResult<VisitReservation> {
   if (isTerminal(reservation.status) && reservation.status !== 'expired' && reservation.status !== 'revoked')
     return err('invalid_state', `cannot reissue a ${reservation.status} reservation`);
-  if (!isIsoDate(newExpiresAt)) return err('invalid_input', 'newExpiresAt must be an ISO date');
-  return {
-    ok: true,
-    value: {
-      ...reservation,
-      tokenHash: newTokenHash,
-      expiresAt: newExpiresAt,
-      status: 'active',
-      usedAt: undefined,
-      updatedAt: now.toISOString(),
-    },
+  let expiresAt: string;
+  if (newExpiresAt === undefined) {
+    const kept = canonicalStoredInstant(reservation.expiresAt);
+    if (kept === undefined) return err('invalid_input', 'stored expiresAt cannot be interpreted; specify expiresAt');
+    expiresAt = kept;
+  } else {
+    if (!isIsoDate(newExpiresAt)) return err('invalid_input', 'newExpiresAt must be an ISO date');
+    expiresAt = newExpiresAt;
+  }
+  const next: VisitReservation = {
+    ...reservation,
+    tokenHash: newTokenHash,
+    expiresAt,
+    status: 'active',
+    usedAt: undefined,
+    updatedAt: now.toISOString(),
   };
+  const retention = requireRetainedAt(next, now);
+  if (retention) return retention;
+  return { ok: true, value: next };
 }
 
 /** 編集パッチを適用する（active のみ編集可）。 */
@@ -219,6 +287,8 @@ export function applyEdit(
   };
   if (Date.parse(next.expiresAt) < Date.parse(next.visitAt))
     return err('invalid_input', 'expiresAt must not be before visitAt');
+  const retention = requireRetainedAt(next, now);
+  if (retention) return retention;
   return { ok: true, value: next };
 }
 
