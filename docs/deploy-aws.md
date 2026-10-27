@@ -115,6 +115,24 @@ server Lambda にはデプロイ時に環境変数を渡す。`.env.example` の
   >
   > **供給経路（CFN 動的参照で Lambda env へ入れる等）はまだ決めていない（#1124 AC1）。**
   > 上の窓を消したいならそれが第一候補だが、本変更は窓を**安全側に倒す**ところまでで止めている。
+  >
+  > 🔴 **デプロイ前の確認: 公開既定値を貼っていないか（fail-closed の全 7 鍵）。**
+  > deploy 環境では `serverSecret()` が「公開既定値と同じ値」を未設定として扱う。
+  > `.env.example` や手順書の例をそのまま貼る形で起こるので、配る前に次の鍵の値が
+  > リポジトリに載っている既定値（`open-reception` / `dev-insecure-*`）**でない**ことを確かめる:
+  > `ADMIN_SESSION_SECRET` / `KIOSK_SESSION_SECRET` / `ADMIN_PASSWORD` /
+  > `KIOSK_ENROLLMENT_SECRET` / `CALL_ANSWER_SECRET` / `PLATFORM_ELEVATION_SECRET` /
+  > `VOICE_TRANSPORT_TOKEN_SECRET`。
+  > 起動時の自己検査（`register()`）は、セッション鍵 2 つは**未設定・空・公開既定値**で、
+  > 残り 5 つは**公開既定値を貼ったとき**に止める（`src/lib/auth/public-default-secrets.ts`）。
+  > 残り 5 つの**未設定**は起動時には止めない —— 機能・provider によって不要なことがあるため
+  > （`ADMIN_PASSWORD` は provider=none のときだけ使う）。未設定は従来どおり**使った時点で**
+  > 落ちる（下の「どれが欠けると何が落ちるか」の表）。
+  > 🔴 **「起動を止める」の見え方**: Next は失敗した `register()` を memo 化するので、Lambda の
+  > init は落ちず、**Next サーバを通るリクエストがすべて 500** のままになる。ログには
+  > `An error occurred while loading instrumentation hook: <ENV 名> is not set (or equals the
+  > public dev fallback) ...` が出る（値は出ない）。admin 系は middleware が先に走るので
+  > 401 / ログインへのリダイレクトに見えることがある。直したら関数を更新して実行環境を入れ替える。
 
 #### 方式 A: appEnv 平文注入（従来）
 
@@ -468,6 +486,13 @@ aws secretsmanager create-secret --name open-reception/dev/app-v2 --secret-strin
 | `CALL_ANSWER_SECRET` | 担当者の応答/拒否（`/api/staff/calls/[id]/answer`・`/respond`） | `src/lib/call/answer-token.ts` (#1021) |
 | `ADMIN_SESSION_SECRET` | **サーバが起動しない**（未設定・公開既定値。#1124）。middleware は鍵が未解決の間、管理セッションを無効として扱う | `src/lib/auth/session-secrets.ts` / `src/lib/auth/admin.ts` / `src/proxy.ts` |
 | `KIOSK_SESSION_SECRET` | **サーバが起動しない**（未設定・公開既定値。#1124） | `src/lib/auth/session-secrets.ts` / `src/lib/auth/kiosk.ts` |
+
+> 🔴 **公開既定値を貼った場合は表の行と症状が違う。** 上の 5 鍵（セッション鍵以外）と
+> `PLATFORM_ELEVATION_SECRET` / `VOICE_TRANSPORT_TOKEN_SECRET` は、未設定なら使った時点で
+> 落ちるが、**公開既定値と同じ値**なら起動時に止まる（全リクエスト 500。
+> `src/lib/auth/public-default-secrets.ts`）。`serverSecret(..., { failClosed: true })` の鍵が
+> 起動時検査のどちらかに載っていることは `public-default-secrets.test.ts` が棚卸しで縛る
+> （この表と `.env.example` の網羅は縛っていない。#1122）。
 
 > 🔴 **この表は網羅ではない。手で書いたものである。** 実測で `serverSecret(..., { failClosed: true })`
 > の呼び出し元は **5 件**あり（#1021 で「6 件」と書いたのは `server-secret.ts` の doc コメントを
