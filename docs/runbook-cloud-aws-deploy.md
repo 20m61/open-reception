@@ -168,6 +168,8 @@ boundary を重ねても実効的な差が無い。
 
 ```bash
 cd infra
+# cdk bootstrap も cdk.json の app（bin/open-reception.ts）を synth する。app は ap-northeast-1 以外を拒否する（#1221）
+export AWS_REGION=ap-northeast-1
 npx cdk bootstrap aws://<DEV_ACCOUNT_ID>/ap-northeast-1 aws://<DEV_ACCOUNT_ID>/us-east-1 \
   --qualifier orcloud01 \
   --toolkit-stack-name CDKToolkit-orcloud01 \
