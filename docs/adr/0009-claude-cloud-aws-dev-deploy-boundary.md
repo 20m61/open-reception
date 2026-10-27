@@ -20,7 +20,7 @@ Claude Code on the cloud（クラウドセッション / cron routine）から A
 技術的にはキーをクラウドへ渡せば今日でも動く。**やってはいけないのは、それが
 `AdministratorAccess` の長期キーだからであって、SSO だからではない。**
 
-対象の AWS アカウント `822063948773` は open-reception 専有ではない。実測（2026-08-12）で
+対象の AWS アカウント `<DEV_ACCOUNT_ID>` は open-reception 専有ではない。実測（2026-08-12）で
 **22 スタック・4 プロジェクト**（open-reception / nodi / salon-loop / Kiaff）が同居しており、
 既定 bootstrap（qualifier `hnb659fds`）の CloudFormation 実行ロールは
 `AdministratorAccess` を持ち、全ロールに Permissions Boundary が設定されていない。
@@ -88,9 +88,9 @@ stack 名を埋め込まないため、`DescribeChangeSet` / `ExecuteChangeSet` 
 ARN ではない**（denial message は原文のまま記録する。これが唯一の証拠である）:
 
 ```
-AccessDenied: User: arn:aws:sts::822063948773:assumed-role/OpenReceptionClaudeDeploy-dev/claude-cloud-20260814-0352
+AccessDenied: User: arn:aws:sts::<DEV_ACCOUNT_ID>:assumed-role/OpenReceptionClaudeDeploy-dev/claude-cloud-20260814-0352
 is not authorized to perform: cloudformation:DescribeChangeSet
-on resource: arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/f9c7aab0-8f6f-11f1-be9b-0a2cf2440d9f
+on resource: arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-Web-dev/f9c7aab0-8f6f-11f1-be9b-0a2cf2440d9f
 because no identity-based policy allows the cloudformation:DescribeChangeSet action
 ```
 
@@ -290,7 +290,7 @@ HEAD が push 済みか）と negative security test 8 本が**まるごと省�
 `claude-cfn-exec.json` / `claude-boundary.json` の `iam:PassRole` を
 `Resource: "*"` の無条件 Allow から、次の条件付き Allow へ変更する。
 
-- 渡し先が `arn:aws:iam::822063948773:role/OpenReception-*-dev-*` であること
+- 渡し先が `arn:aws:iam::<DEV_ACCOUNT_ID>:role/OpenReception-*-dev-*` であること
 - `iam:PassedToService` = `lambda.amazonaws.com`
 
 | 案 | Pros | Cons | 採否 |
@@ -368,7 +368,7 @@ synth での実測（`infra/test/claude-deploy-boundary.test.ts`）:
 このままだと初回デプロイは `iam:CreateRole` の AccessDenied → rollback →
 rollback の `iam:DeleteRole` がタグ条件 Deny に当たって **`ROLLBACK_FAILED`** になる。
 
-**決定**: `arn:aws:iam::822063948773:role/OpenReception-*-dev-Custom*` を carve-out する。
+**決定**: `arn:aws:iam::<DEV_ACCOUNT_ID>:role/OpenReception-*-dev-Custom*` を carve-out する。
 `iam:CreateRole` / `PutRolePolicy` / `AttachRolePolicy` の boundary 条件なし Allow、
 `iam:PassRole`（`lambda.amazonaws.com` 縛りは維持、タグ条件のみ外す）、そして
 **Deny が Allow に勝つ**ため `DenyRoleCreationWithoutBoundary` /

@@ -131,7 +131,7 @@ export class ReservationService {
   ): Promise<ServiceResult<IssuedReservation>> {
     const auth = this.authorize(actor, input.tenantId, input.siteId, 'write');
     if (!auth.ok) return auth;
-    const validated = validateCreateInput(input);
+    const validated = validateCreateInput(input, this.now());
     if (!validated.ok) return fail(validated.error.code, validated.error.message);
 
     const nowIso = this.now().toISOString();
@@ -219,7 +219,8 @@ export class ReservationService {
     tenantId: TenantId,
     siteId: SiteId,
     id: ReservationId,
-    newExpiresAt: string,
+    /** 省略（undefined）なら保存済みの有効期限を引き継ぐ（`applyReissue`）。 */
+    newExpiresAt: string | undefined,
   ): Promise<ServiceResult<IssuedReservation>> {
     const current = await this.loadForWrite(actor, tenantId, siteId, id);
     if (!current.ok) return current;

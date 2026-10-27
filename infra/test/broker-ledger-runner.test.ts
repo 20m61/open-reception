@@ -19,6 +19,8 @@ type Runner = {
   runDeny: (o: J) => Promise<J>;
   runReserve: (o: J) => Promise<{ exitCode: number; line: J }>;
   runOutcome: (o: J) => Promise<{ exitCode: number; line: J }>;
+  readAccessRestriction: (o: J) => { state: string; reason?: string };
+  ACCESS_RESTRICTION_PATH: string;
   GATE_RULES: readonly string[];
   mayHaveCommitted: (status: number | undefined, stderr: string) => boolean;
   resolveTool: (name: string, pathValue?: string) => string;
@@ -316,6 +318,95 @@ describe('ambiguity, local record failure and invocation (review F1 / F5 / F6)',
   });
 });
 
+describe('reserve: the access profile comes only from the broker-derived access-restriction decision (D-5)', () => {
+  const EXEC = '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0';
+  const decisionFile = (d: unknown) => {
+    const file = join(scratch(), 'access-restriction.json');
+    writeFileSync(file, typeof d === 'string' ? d : JSON.stringify(d));
+    return file;
+  };
+  const good = (state: string, over: J = {}) => ({ version: 1, result: 'allowed', rule: null, reason: null, accessRestriction: { state }, executionId: EXEC, revision: REV, ...over });
+  const read = (file: string, extra: J = {}) => R.readAccessRestriction({ env: env('b:ar', undefined, { OR_PIPELINE_EXECUTION_ID: EXEC, ...extra }), accessRestrictionPath: file });
+
+  it('the default decision path is the access-restriction module output in the broker-owned dir', () => {
+    expect(R.ACCESS_RESTRICTION_PATH).toBe('/tmp/open-reception-broker-out/access-restriction.json');
+  });
+
+  it('a matching allowed decision passes its state through', () => {
+    expect(read(decisionFile(good('verified')))).toEqual({ state: 'verified' });
+    expect(read(decisionFile(good('absent')))).toEqual({ state: 'absent' });
+  });
+
+  it.each([
+    ['missing file', null],
+    ['not JSON', '{not json'],
+    ['an array', [good('verified')]],
+    ['null', 'null'],
+    ['another execution', good('verified', { executionId: 'other' })],
+    ['no execution id', good('verified', { executionId: undefined })],
+    ['another revision', good('verified', { revision: 'f'.repeat(40) })],
+    ['a denial', good('verified', { result: 'denied', rule: 'ACCESS_RESTRICTION_WEAKENED' })],
+    ['allowed with a rule', good('verified', { rule: 'X' })],
+    ['state unverifiable', good('unverifiable')],
+    ['state cased differently', good('VERIFIED')],
+    ['no state', good('verified', { accessRestriction: {} })],
+  ])('anything else is unverifiable: %s', (_l, d) => {
+    const file = d === null ? join(scratch(), 'absent.json') : decisionFile(d);
+    expect(read(file).state).toBe('unverifiable');
+  });
+
+  it('a decision is not trusted when the broker has no execution id or a malformed revision', () => {
+    const file = decisionFile(good('verified', { executionId: undefined }));
+    expect(R.readAccessRestriction({ env: env('b:ar'), accessRestrictionPath: file }).state).toBe('unverifiable');
+    const file2 = decisionFile(good('verified', { revision: 'abc' }));
+    expect(read(file2, { OR_TRUSTED_SOURCE_REVISION: 'abc' }).state).toBe('unverifiable');
+  });
+
+  /** Ledger: 3 reservations today, the last one succeeded long ago. Only the restricted ceiling (5) allows a 4th. */
+  const ledgerWithThreeToday = (now: Date) => {
+    const day = L.ledgerDay(now) as string;
+    const lastAt = new Date(now.getTime() - 3 * 3600 * 1000);
+    const last = 'OpenReceptionTrustedDevDeployBroker:prev';
+    const genesis = { PK: { S: 'PROJECT#open-reception' }, SK: { S: 'META#genesis' }, ledgerId: { S: 'ledger-test-0001' }, timezone: { S: 'Asia/Tokyo' }, totalAttempts: { N: '3' }, lastDay: { S: day }, lastDayAttempts: { N: '3' }, lastAttemptId: { S: last }, lastReservedAt: { S: lastAt.toISOString() }, lastRevision: { S: 'e'.repeat(40) }, lastCooldownWaived: { BOOL: false } };
+    const dayItem = { PK: { S: 'PROJECT#open-reception' }, SK: { S: `DAY#${day}` }, timezone: { S: 'Asia/Tokyo' }, day: { S: day }, attemptCount: { N: '3' }, successCount: { N: '3' }, failureCount: { N: '0' } };
+    const prev = { PK: { S: 'PROJECT#open-reception' }, SK: { S: `ATTEMPT#${last}` }, attemptId: { S: last }, revision: { S: 'e'.repeat(40) }, reservedAt: { S: lastAt.toISOString() }, status: { S: 'succeeded' }, cooldownWaived: { BOOL: false } };
+    const writes: J[] = [];
+    return {
+      writes,
+      client: {
+        transactGetItems: (r: J) => (r.TransactItems.length === 2 ? { Responses: [{ Item: genesis }, { Item: prev }] } : { Responses: [{ Item: genesis }, { Item: dayItem }, {}, {}] }),
+        putItem: () => ({}),
+        transactWriteItems: (r: J) => (writes.push(r), {}),
+      },
+    };
+  };
+
+  it.each([
+    ['verified', 0, 'access_restricted'],
+    ['absent', 44, 'not_access_restricted'],
+    ['unverifiable', 44, 'not_access_restricted'],
+  ])('a %s decision gives exit %d with the %s profile', async (state, exitCode, profile) => {
+    const now = new Date(Date.UTC(2031, 0, 22, 3));
+    const { client, writes } = ledgerWithThreeToday(now);
+    const dir = scratch();
+    const r = await R.runReserve({ client, env: env('b:profile', undefined, { OR_PIPELINE_EXECUTION_ID: EXEC }), now, reservationPath: join(dir, 'r.json'), reserveStartedPath: join(dir, 's'), accessRestrictionPath: decisionFile(good(state)) });
+    expect(r.exitCode).toBe(exitCode);
+    expect(r.line.accessRestriction).toBe(state);
+    expect(r.line.accessProfile).toBe(profile);
+    expect(writes).toHaveLength(exitCode === 0 ? 1 : 0);
+    if (exitCode !== 0) expect(r.line.rule).toBe('SPARSE_DAILY_ATTEMPT_CEILING');
+    else expect(JSON.parse(readFileSync(join(dir, 'r.json'), 'utf8'))).toMatchObject({ accessProfile: 'access_restricted', accessRestriction: 'verified', softCeiling: 5, cooldownWaived: false, attemptNumber: 4 });
+  });
+
+  it('a verified decision for another execution does not select the restricted profile', async () => {
+    const now = new Date(Date.UTC(2031, 0, 22, 3));
+    const { client } = ledgerWithThreeToday(now);
+    const dir = scratch();
+    const r = await R.runReserve({ client, env: env('b:foreign', undefined, { OR_PIPELINE_EXECUTION_ID: EXEC }), now, reservationPath: join(dir, 'r.json'), reserveStartedPath: join(dir, 's'), accessRestrictionPath: decisionFile(good('verified', { executionId: 'another-execution' })) });
+    expect(r).toMatchObject({ exitCode: 44, line: { rule: 'SPARSE_DAILY_ATTEMPT_CEILING', accessRestriction: 'unverifiable', accessProfile: 'not_access_restricted' } });
+  });
+});
+
 // ---- Emulator: the CLI code path against a real DynamoDB engine ------------------------------
 
 const ENABLED = process.env.LOCAL_AWS_INTEGRATION === '1';
@@ -400,9 +491,13 @@ describe.skipIf(!ENABLED)('ledger runner × real DynamoDB engine through the CLI
     const dupRev = { OR_SPARSE_LEDGER_ID: LEDGER_ID, OR_TRUSTED_SOURCE_REVISION: '7'.repeat(40) };
     const first = await R.runReserve({ client: R.cliClient(undefined, { dir: cliDir }), env: env(attempt, TABLE, dupRev), now, reservationPath: join(dir, 'a.json'), reserveStartedPath: join(dir, 'a.started') });
     expect(first.exitCode).toBe(0);
+    // While it is open, every next attempt waits for its outcome (D-5).
+    const open = await R.runReserve({ client: R.cliClient(undefined, { dir: cliDir }), env: env(attempt, TABLE, dupRev), now, reservationPath: join(dir, 'c.json'), reserveStartedPath: join(dir, 'c.started') });
+    expect(open).toMatchObject({ exitCode: 44, line: { rule: 'SPARSE_PREVIOUS_ATTEMPT_UNSETTLED' } });
+    expect((await R.runOutcome({ client: R.cliClient(undefined, { dir: cliDir }), outcome: 'failed', env: env(attempt, TABLE, dupRev), now, reservationPath: join(dir, 'a.json') })).exitCode).toBe(0);
+    // Settled: only the create-only attempt record can refuse the reused id.
     const again = await R.runReserve({ client: R.cliClient(undefined, { dir: cliDir }), env: env(attempt, TABLE, dupRev), now, reservationPath: join(dir, 'b.json'), reserveStartedPath: join(dir, 'b.started') });
     expect(again).toMatchObject({ exitCode: 44, line: { rule: 'SPARSE_LEDGER_CONFLICT' } });
-    expect((await R.runOutcome({ client: R.cliClient(undefined, { dir: cliDir }), outcome: 'failed', env: env(attempt, TABLE, dupRev), now, reservationPath: join(dir, 'a.json') })).exitCode).toBe(0);
     expect((await R.runOutcome({ client: R.cliClient(undefined, { dir: cliDir }), outcome: 'succeeded', env: env(attempt, TABLE, dupRev), now, reservationPath: join(dir, 'a.json') })).exitCode).toBe(45);
   });
 
@@ -433,7 +528,8 @@ describe.skipIf(!ENABLED)('ledger runner × real DynamoDB engine through the CLI
       ),
     );
     const allowed = runs.filter((r) => r.exitCode === 0);
-    expect(allowed.length).toBeLessThanOrEqual(2);
+    // D-5: one attempt at a time, so racers on a settled ledger reserve at most one.
+    expect(allowed.length).toBeLessThanOrEqual(1);
     const day = L.ledgerDay(now);
     expect(Number((await getItem(`DAY#${day}`))?.attemptCount?.N)).toBe(allowed.length);
   });

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { resolveCustomDomainContext } from './custom-domain-context';
 
-const CERT = 'arn:aws:acm:us-east-1:822063948773:certificate/11111111-2222-3333-4444-555555555555';
+const CERT = 'arn:aws:acm:us-east-1:111122223333:certificate/11111111-2222-3333-4444-555555555555';
 const VALID = JSON.stringify({
   domainName: 'open-reception.cinc.click',
   certificateArn: CERT,
@@ -141,8 +141,8 @@ describe('resolveCustomDomainContext — 落とすべきもの', () => {
 
   it('ACM の証明書 ARN でないものを落とす', () => {
     for (const arn of [
-      'arn:aws:iam::822063948773:server-certificate/foo',
-      'arn:aws:acm:us-east-1:822063948773:key/abc',
+      'arn:aws:iam::111122223333:server-certificate/foo',
+      'arn:aws:acm:us-east-1:111122223333:key/abc',
       'not-an-arn',
     ]) {
       const raw = JSON.stringify({ domainName: 'open-reception.cinc.click', certificateArn: arn });

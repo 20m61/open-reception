@@ -299,3 +299,47 @@ describe('GET /api/admin/security の storedPinUnreadable (#1160 AC2)', () => {
     expect(await (await GET()).json()).toMatchObject({ storedPinUnreadable: false });
   });
 });
+
+/**
+ * 🔴 **読めないセキュリティ設定を画面へ届ける配線 (#1172 AC4)。**
+ *
+ * 判定は `security-store` が縛っている。残る危険は配線で、`unreadableSettings` を返さない・
+ * `ipAllowlist` に `null` を返して画面が応答ごと拒否する（緊急停止まで押せなくなる）変異は
+ * store のテストからは見えない。**下界**（読める記録では空）と**値を返さない**を併せて縛る。
+ */
+describe('GET/PUT /api/admin/security の unreadableSettings (#1172 AC4)', () => {
+  const putRaw = (record: Record<string, unknown>) =>
+    getBackend().singleton('security', { default: () => ({}) }).put(record);
+  const put = (body: unknown) =>
+    PUT(new Request('http://localhost/api/admin/security', { method: 'PUT', body: JSON.stringify(body) }));
+
+  it('🔴 読めない記録なら名前を返し、閉じる側の値を返し、保存値は返さない', async () => {
+    await putRaw({ pinRequired: 'false', pin: '4821', ipAllowlist: 'SECRET-LOOKING-203.0.113.7', emergencyStop: 'no' });
+    const text = await (await GET()).text();
+    expect(JSON.parse(text)).toMatchObject({
+      unreadableSettings: ['ipAllowlist', 'emergencyStop', 'pinRequired'],
+      // 形は保つ（`null` を返すと画面が応答ごと拒否する）。閉じる側の値を返す。
+      ipAllowlist: [],
+      emergencyStop: true,
+      pinRequired: true,
+    });
+    expect(text).not.toContain('SECRET-LOOKING');
+  });
+
+  it('🔴 読める記録なら空を返す（下界）', async () => {
+    expect(await (await GET()).json()).toMatchObject({ unreadableSettings: [] });
+    await put({ rev: await currentRev(), ipAllowlist: [], pinRequired: false });
+    expect(await (await GET()).json()).toMatchObject({ unreadableSettings: [], ipAllowlist: [] });
+  });
+
+  /** 緊急停止だけの PUT では他のフィールドは直らず、応答も GET もそう言う。フォームの保存で直る。 */
+  it('🔴 緊急停止だけでは直らず、フォームの保存と再開で直る', async () => {
+    await putRaw({ pinRequired: 'false', pin: '4821', ipAllowlist: null, emergencyStop: undefined });
+    const stopped = await put({ emergencyStop: true });
+    expect(await stopped.json()).toMatchObject({ unreadableSettings: ['ipAllowlist', 'pinRequired'], emergencyStop: true, ipAllowlist: [] });
+    expect(await (await GET()).json()).toMatchObject({ unreadableSettings: ['ipAllowlist', 'pinRequired'] });
+    const saved = await put({ rev: await currentRev(), pinRequired: true, ipAllowlist: ['203.0.113.7'] });
+    expect(await saved.json()).toMatchObject({ unreadableSettings: [], ipAllowlist: ['203.0.113.7'] });
+    expect(await (await GET()).json()).toMatchObject({ unreadableSettings: [] });
+  });
+});

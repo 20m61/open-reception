@@ -10,7 +10,6 @@ import * as cloudtrail from 'aws-cdk-lib/aws-cloudtrail';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as cwActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as events from 'aws-cdk-lib/aws-events';
-import * as eventTargets from 'aws-cdk-lib/aws-events-targets';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -18,6 +17,22 @@ import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as s3assets from 'aws-cdk-lib/aws-s3-assets';
 import { BROKER_STACK_DEPLOY_ROLE_ARN_PATTERN } from '../config/broker-bootstrap';
+import { VALIDATION_NODE_OPTIONS_COMMAND } from '../config/validation-build-resources';
+import {
+  FILE_SHA256_CHECK_SCRIPT,
+  GITLEAKS_ARCHIVE_PATH,
+  GITLEAKS_LINUX_X64_SHA256,
+  GITLEAKS_URL,
+  SEMGREP_VENV,
+  SEMGREP_WHEEL_PATH,
+  SEMGREP_WHEEL_SHA256,
+  SEMGREP_WHEEL_URL,
+  VALIDATION_INFRA_TEST_COMMAND,
+  VALIDATION_SOURCE_BIND_SCRIPT,
+  VALIDATION_TOOL_BIN,
+  VALIDATION_UNIT_TEST_COMMAND,
+} from '../config/validation-gate-env';
+import { DEV_ACCOUNT_ID } from '../../../src/domain/governance/dev-account';
 
 export const DEV_DEPLOY_PROMOTION_BRANCH = 'dev-deploy';
 
@@ -28,7 +43,7 @@ export const DEV_DEPLOY_PROMOTION_BRANCH = 'dev-deploy';
  * account fails, the trusted policy evaluates the cloud assembly against this account, and the
  * broker build refuses to run in any other account.
  */
-export const DEV_DEPLOY_TARGET_ACCOUNT = '822063948773';
+export const DEV_DEPLOY_TARGET_ACCOUNT = DEV_ACCOUNT_ID;
 
 const VALIDATION_PROJECT_NAME = 'OpenReceptionDevDeployValidation';
 const BROKER_PROJECT_NAME = 'OpenReceptionTrustedDevDeployBroker';
@@ -77,6 +92,12 @@ export const SPARSE_LEDGER_PROTECTED_WRITES = [
  * disable deletion protection, and so on. Denied to every principal except the human override
  * issuer and the human stack-deploy (CloudFormation execution) role, which needs them to update
  * this stack.
+ *
+ * Every entry must be one DynamoDB accepts in a table policy
+ * (`config/dynamodb-resource-policy-actions.ts`; a bad name fails the whole table at create).
+ * `RestoreTableFromBackup` is not one: it acts on the backup and writes a *new* table, so this
+ * policy could never govern it, and it cannot touch the ledger (an existing table name is refused,
+ * and DeleteTable is denied here and blocked by deletion protection).
  */
 export const SPARSE_LEDGER_PROTECTED_CONTROL = [
   'dynamodb:UpdateTimeToLive',
@@ -85,7 +106,6 @@ export const SPARSE_LEDGER_PROTECTED_CONTROL = [
   'dynamodb:UpdateTable',
   'dynamodb:DeleteTable',
   'dynamodb:UpdateContinuousBackups',
-  'dynamodb:RestoreTableFromBackup',
   'dynamodb:RestoreTableToPointInTime',
   'dynamodb:UpdateKinesisStreamingDestination',
   'dynamodb:EnableKinesisStreamingDestination',
@@ -144,6 +164,7 @@ export const PROVENANCE_DECISION_PATH = `${BROKER_OUT_DIR}/provenance.json`;
 export const POLICY_RESULT_PATH = `${BROKER_OUT_DIR}/trusted-policy-result.json`;
 export const BROKER_RESULT_PATH = `${BROKER_OUT_DIR}/broker-result.json`;
 export const TARGET_STACKS_DECISION_PATH = `${BROKER_OUT_DIR}/target-stacks.json`;
+export const ACCESS_RESTRICTION_DECISION_PATH = `${BROKER_OUT_DIR}/access-restriction.json`;
 
 /**
  * Sparse ledger modules (#1153 wiring). Published as stack assets and SHA-256 verified like the
@@ -176,6 +197,14 @@ export const TARGET_STACKS_LOCAL_PATH = '/tmp/open-reception-target-stacks.mjs';
 export const TARGET_STACK_READ_ACTIONS = ['cloudformation:DescribeStacks'] as const;
 
 /**
+ * S6c access-restriction gate (D-5, #1153). Derives `absent` / `verified` / `unverifiable` from the
+ * provenance-bound assembly and denies a credential in the template. No AWS call, no new IAM: it
+ * reads only BROKER_ASSEMBLY_DIR. `reserve` reads its decision to pick the sparse-deploy profile.
+ */
+export const ACCESS_RESTRICTION_SOURCE_PATH = path.join(__dirname, '../../broker/access-restriction.mjs');
+export const ACCESS_RESTRICTION_LOCAL_PATH = '/tmp/open-reception-access-restriction.mjs';
+
+/**
  * Ledger / gate rules that need a human (S10a escalation): alerted whenever the runner logs them.
  * The repeated-failure rule is logged by `reserve` once armed; the stability gate by `deny`.
  */
@@ -184,6 +213,14 @@ export const ESCALATION_RULES = [
   'TARGET_STACK_UNVERIFIABLE',
   'TARGET_STACK_INPUT_INVALID',
   'SPARSE_REVISION_REPEATED_FAILURE',
+  'SPARSE_PREVIOUS_ATTEMPT_UNSETTLED',
+  // The ledger's integrity cannot be established (pointer mismatch, a future reservation time, an
+  // inconsistent genesis): possibly tampering, never retried; a human inspects CloudTrail (owner 2026-10-03).
+  'SPARSE_LEDGER_CORRUPT',
+  'ACCESS_RESTRICTION_WEAKENED',
+  'ACCESS_RESTRICTION_INPUT_INVALID',
+  // A credential found in the template has leaked into the repository / assembly: a human rotates it.
+  'ACCESS_RESTRICTION_CREDENTIAL_IN_TEMPLATE',
 ] as const;
 
 /**
@@ -241,7 +278,7 @@ export const ARTIFACT_HISTORY_WRITES = [
   's3:PutBucketObjectLockConfiguration',
 ] as const;
 
-/** Read-only APIs the provenance check calls (and nothing else). */
+/** Read-only APIs the provenance check calls (and nothing else). `validationBuild` also reads the broker's own build. */
 export const PROVENANCE_READ_ACTIONS = {
   pipeline: ['codepipeline:ListPipelineExecutions', 'codepipeline:ListActionExecutions'],
   validationBuild: ['codebuild:BatchGetBuilds'],
@@ -319,7 +356,14 @@ export const BROKER_MODULE_HASH_CHECK_SCRIPT = [
 
 /** Name the gate the broker is about to evaluate; `deny` records it if the build stops there. */
 export const gateCommand = (
-  rule: 'BROKER_MODULE_INTEGRITY' | 'TRUSTED_PROVENANCE_DENIED' | 'TRUSTED_REVISION_MISMATCH' | 'TRUSTED_POLICY_DENIED' | 'TARGET_STACK_NOT_STABLE' | 'BROKER_NOT_ARMED',
+  rule:
+    | 'BROKER_MODULE_INTEGRITY'
+    | 'TRUSTED_PROVENANCE_DENIED'
+    | 'TRUSTED_REVISION_MISMATCH'
+    | 'TRUSTED_POLICY_DENIED'
+    | 'TARGET_STACK_NOT_STABLE'
+    | 'ACCESS_RESTRICTION_DENIED'
+    | 'BROKER_NOT_ARMED',
 ) =>
   `echo ${rule} > ${LEDGER_GATE_FILE}`;
 
@@ -373,6 +417,21 @@ export const TARGET_STACKS_RESULT_CHECK_SCRIPT = [
   `const expected=${JSON.stringify(TARGET_STACKS.map((t) => t.stackName).join(','))};`,
   'const ok=d&&d.result==="allowed"&&d.rule===null&&typeof d.executionId==="string"&&d.executionId===process.env.OR_PIPELINE_EXECUTION_ID&&typeof d.revision==="string"&&d.revision===process.env.OR_TRUSTED_SOURCE_REVISION&&Array.isArray(d.stacks)&&d.stacks.map((s)=>s&&s.stackName).join(",")===expected;',
   'if(!ok){throw new Error("target stack decision missing, denied or not for this execution")}',
+].join(' ');
+
+/** The broker command that runs the verified access-restriction module over the validated assembly. */
+export const ACCESS_RESTRICTION_COMMAND = `node ${ACCESS_RESTRICTION_LOCAL_PATH} --assembly ${BROKER_ASSEMBLY_DIR}`;
+
+/**
+ * Broker: the access-restriction decision (in the broker-owned output dir) must say allowed, for
+ * THIS execution and revision, with a known state. argv[1] is the decision file.
+ */
+export const ACCESS_RESTRICTION_RESULT_CHECK_SCRIPT = [
+  'const fs=require("fs");',
+  'const d=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));',
+  'const s=d&&d.accessRestriction&&d.accessRestriction.state;',
+  'const ok=d&&d.result==="allowed"&&d.rule===null&&typeof d.executionId==="string"&&d.executionId===process.env.OR_PIPELINE_EXECUTION_ID&&typeof d.revision==="string"&&d.revision===process.env.OR_TRUSTED_SOURCE_REVISION&&(s==="absent"||s==="verified");',
+  'if(!ok){throw new Error("access restriction decision missing, denied or not for this execution")}',
 ].join(' ');
 
 /** Trusted revision shape: a full 40-hex commit SHA (short or missing values fail closed). */
@@ -541,6 +600,8 @@ export class DevDeployBrokerStack extends cdk.Stack {
     ledgerRunnerAsset.grantRead(brokerRole);
     const targetStacksAsset = new s3assets.Asset(this, 'TargetStacksModuleAsset', { path: TARGET_STACKS_SOURCE_PATH });
     targetStacksAsset.grantRead(brokerRole);
+    const accessRestrictionAsset = new s3assets.Asset(this, 'AccessRestrictionModuleAsset', { path: ACCESS_RESTRICTION_SOURCE_PATH });
+    accessRestrictionAsset.grantRead(brokerRole);
 
     // Sparse dev-deploy attempt ledger (#1153, Foundation S6a): state in the trusted account,
     // writable only by the broker. The Validation role (candidate code) gets no statement on it.
@@ -755,7 +816,9 @@ export class DevDeployBrokerStack extends cdk.Stack {
       queuedTimeout: cdk.Duration.minutes(5),
       environment: {
         buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
-        computeType: codebuild.ComputeType.SMALL,
+        // MEDIUM: the cheapest compute type that fits the measured build with a 1 GiB reserve
+        // (SMALL left ~0.6 GiB at the build:open-next peak). See validation-build-resources.ts.
+        computeType: codebuild.ComputeType.MEDIUM,
         privileged: false,
         environmentVariables: {
           OR_BROKER_TARGET_ACCOUNT: { value: DEV_DEPLOY_TARGET_ACCOUNT },
@@ -779,22 +842,48 @@ export class DevDeployBrokerStack extends cdk.Stack {
               // preserves the MiniStack/Moto hermeticity contract.
               'unset AWS_SESSION_TOKEN AWS_PROFILE AWS_CREDENTIAL_EXPIRATION AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE AWS_CONTAINER_CREDENTIALS_RELATIVE_URI AWS_CONTAINER_CREDENTIALS_FULL_URI AWS_CONTAINER_AUTHORIZATION_TOKEN AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE',
               'export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_EC2_METADATA_DISABLED=true',
+              // Node's default heap follows machine memory (~1.5 GiB on SMALL, ~2 GiB on MEDIUM), not
+              // the build: typecheck OOMed on SMALL in runbook 7.5 (2026-10-06). Set it explicitly.
+              VALIDATION_NODE_OPTIONS_COMMAND,
+              // Before any candidate code runs: make the source archive a repository bound to the
+              // trusted CommitId (the unit lane reads git history like the quality gate does). No
+              // connection credential: anonymous fetch of the public repo, checked against the
+              // archive file by file. Only verifies: the revision still comes from CodePipeline.
+              // See validation-gate-env.ts.
+              nodeEval(VALIDATION_SOURCE_BIND_SCRIPT),
+              // The gate's tools, version-pinned and SHA-256 verified, in a directory of their own
+              // with node/npm/npx (the image keeps node next to `aws` in /usr/local/bin).
+              `mkdir -p ${VALIDATION_TOOL_BIN}`,
+              `curl -sSfL ${GITLEAKS_URL} -o ${GITLEAKS_ARCHIVE_PATH}`,
+              nodeEval(FILE_SHA256_CHECK_SCRIPT, GITLEAKS_ARCHIVE_PATH, GITLEAKS_LINUX_X64_SHA256),
+              `tar -xzf ${GITLEAKS_ARCHIVE_PATH} -C ${VALIDATION_TOOL_BIN} gitleaks`,
+              `curl -sSfL ${SEMGREP_WHEEL_URL} -o ${SEMGREP_WHEEL_PATH}`,
+              nodeEval(FILE_SHA256_CHECK_SCRIPT, SEMGREP_WHEEL_PATH, SEMGREP_WHEEL_SHA256),
+              `python3 -m venv ${SEMGREP_VENV}`,
+              `${SEMGREP_VENV}/bin/pip install --quiet ${SEMGREP_WHEEL_PATH}`,
+              `ln -s ${SEMGREP_VENV}/bin/semgrep ${VALIDATION_TOOL_BIN}/semgrep`,
+              `for b in node npm npx; do ln -s "$(command -v $b)" ${VALIDATION_TOOL_BIN}/$b; done`,
+              `${VALIDATION_TOOL_BIN}/gitleaks version`,
+              `${VALIDATION_TOOL_BIN}/semgrep --version`,
               'npm ci',
               'npm --prefix infra ci',
             ],
           },
           build: {
             commands: [
-              // CodePipeline source archives do not provide a trustworthy local git history.
               // Promotion is intentionally rare, so run the full suite instead of a diff-optimized
               // PR gate. The inexpensive inner loop remains local Claude + MiniStack/Moto.
               'npm run typecheck',
               'npm run lint',
-              'npm test',
+              // The install phase's `unset` does not reach this phase (7.5, 2026-10-08: the role's
+              // AWS_CONTAINER_CREDENTIALS_RELATIVE_URI was visible to the unit lane), so the scrub
+              // is on this command line. Later steps keep their environment.
+              VALIDATION_UNIT_TEST_COMMAND,
               'npm run build:open-next',
               'npm run aws:local:test',
               'npm --prefix infra run typecheck',
-              'npm --prefix infra test',
+              // Instrumented (#1146 efa5f85f): prints what saturates; the verdict stays the suite's.
+              VALIDATION_INFRA_TEST_COMMAND,
               // Only the three stacks already admitted by ADR 0009 are synthesized (and written to
               // the assembly: promotionStacksOnly), with the ADR 0009 bootstrap qualifier the trusted
               // policy requires (blocker 7).
@@ -842,6 +931,9 @@ export class DevDeployBrokerStack extends cdk.Stack {
           OR_TARGET_STACKS_MODULE_BUCKET: { value: targetStacksAsset.s3BucketName },
           OR_TARGET_STACKS_MODULE_KEY: { value: targetStacksAsset.s3ObjectKey },
           OR_TARGET_STACKS_MODULE_SHA256: { value: trustedPolicySha256(TARGET_STACKS_SOURCE_PATH) },
+          OR_ACCESS_RESTRICTION_MODULE_BUCKET: { value: accessRestrictionAsset.s3BucketName },
+          OR_ACCESS_RESTRICTION_MODULE_KEY: { value: accessRestrictionAsset.s3ObjectKey },
+          OR_ACCESS_RESTRICTION_MODULE_SHA256: { value: trustedPolicySha256(ACCESS_RESTRICTION_SOURCE_PATH) },
           OR_BROKER_TARGET_REGION: { value: cdk.Aws.REGION },
         },
       },
@@ -894,6 +986,15 @@ export class DevDeployBrokerStack extends cdk.Stack {
               gateCommand('TARGET_STACK_NOT_STABLE'),
               TARGET_STACKS_COMMAND,
               nodeEval(TARGET_STACKS_RESULT_CHECK_SCRIPT, TARGET_STACKS_DECISION_PATH),
+              // S6c (D-5): derive whether the target is access-restricted from the validated
+              // assembly, and deny a restriction credential in the template. `reserve` reads the
+              // decision to pick the sparse-deploy profile; a weakened declared restriction escalates.
+              gateCommand('BROKER_MODULE_INTEGRITY'),
+              `aws s3 cp "s3://$OR_ACCESS_RESTRICTION_MODULE_BUCKET/$OR_ACCESS_RESTRICTION_MODULE_KEY" ${ACCESS_RESTRICTION_LOCAL_PATH} --only-show-errors`,
+              nodeEval(BROKER_MODULE_HASH_CHECK_SCRIPT, ACCESS_RESTRICTION_LOCAL_PATH, 'OR_ACCESS_RESTRICTION_MODULE_SHA256'),
+              gateCommand('ACCESS_RESTRICTION_DENIED'),
+              ACCESS_RESTRICTION_COMMAND,
+              nodeEval(ACCESS_RESTRICTION_RESULT_CHECK_SCRIPT, ACCESS_RESTRICTION_DECISION_PATH),
               // Even an allowed static assembly cannot mutate yet. When armed, the live ChangeSet
               // gate and then `ledger-runner.mjs reserve` (the last deny-capable step) go here,
               // and `outcome` after the mutation.
@@ -931,10 +1032,10 @@ export class DevDeployBrokerStack extends cdk.Stack {
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
       alarmDescription:
-        'A sparse-ledger attempt may be left in_progress (ambiguous reservation / unrecorded outcome / runner error), a denial went unaudited, or a denial needs a human (unstable target stack / repeated failure of one revision, S10a). See docs/architecture/aws-dev-deploy-broker.md.',
+        'A sparse-ledger attempt may be left in_progress (ambiguous reservation / unrecorded outcome / runner error), a denial went unaudited, or a denial needs a human (unstable target stack / repeated failure of one revision, S10a / unsettled previous attempt or corrupt ledger, weakened access restriction or credential in the template, D-5). See docs/architecture/aws-dev-deploy-broker.md.',
     });
     ledgerAttentionAlarm.addAlarmAction(new cwActions.SnsAction(brokerAlerts));
-    // The topic's resource policy (created for EventBridge / TLS) replaces the default one, so
+    // The topic's resource policy (created for TLS) replaces the default one, so
     // CloudWatch is named explicitly, bound to this alarm.
     brokerAlerts.addToResourcePolicy(
       new iam.PolicyStatement({
@@ -1017,8 +1118,15 @@ export class DevDeployBrokerStack extends cdk.Stack {
       ],
     });
 
+    // `aws-events-targets` `SnsTopic` grants `events.amazonaws.com` an unconditioned `sns:Publish` on the
+    // topic (#1218): any account's EventBridge rule could then publish a fake (or drown a real)
+    // alert. The target is bound without that grant; the publish is allowed below, bound to these
+    // two rules and this account.
+    const brokerAlertsTarget: events.IRuleTarget = {
+      bind: () => ({ arn: brokerAlerts.topicArn, targetResource: brokerAlerts }),
+    };
     // A broker build that times out, is stopped or faults never reaches its own bookkeeping.
-    new events.Rule(this, 'BrokerBuildAbortedRule', {
+    const brokerBuildAbortedRule = new events.Rule(this, 'BrokerBuildAbortedRule', {
       description: 'Broker build ended without finishing (a reserved attempt may stay in_progress).',
       eventPattern: {
         source: ['aws.codebuild'],
@@ -1028,9 +1136,9 @@ export class DevDeployBrokerStack extends cdk.Stack {
           'build-status': [...BROKER_ABORT_STATES],
         },
       },
-      targets: [new eventTargets.SnsTopic(brokerAlerts)],
+      targets: [brokerAlertsTarget],
     });
-    new events.Rule(this, 'BrokerPhaseAbortedRule', {
+    const brokerPhaseAbortedRule = new events.Rule(this, 'BrokerPhaseAbortedRule', {
       description: 'A broker build phase timed out, was stopped or faulted (its bookkeeping may not have run).',
       eventPattern: {
         source: ['aws.codebuild'],
@@ -1040,8 +1148,20 @@ export class DevDeployBrokerStack extends cdk.Stack {
           'completed-phase-status': [...BROKER_ABORT_STATES],
         },
       },
-      targets: [new eventTargets.SnsTopic(brokerAlerts)],
+      targets: [brokerAlertsTarget],
     });
+    brokerAlerts.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: 'AllowBrokerAbortRulesPublish',
+        principals: [new iam.ServicePrincipal('events.amazonaws.com')],
+        actions: ['sns:Publish'],
+        resources: [brokerAlerts.topicArn],
+        conditions: {
+          ArnEquals: { 'aws:SourceArn': [brokerBuildAbortedRule.ruleArn, brokerPhaseAbortedRule.ruleArn] },
+          StringEquals: { 'aws:SourceAccount': cdk.Aws.ACCOUNT_ID },
+        },
+      }),
+    );
 
     brokerRole.addToPolicy(
       new iam.PolicyStatement({
@@ -1054,7 +1174,9 @@ export class DevDeployBrokerStack extends cdk.Stack {
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         actions: [...PROVENANCE_READ_ACTIONS.validationBuild],
-        resources: [validationProject.projectArn],
+        // The validation build, and this broker build's own record (`initiator`: started by this
+        // pipeline). Read only; exactly these two projects, never a wildcard.
+        resources: [validationProject.projectArn, brokerProject.projectArn],
       }),
     );
 

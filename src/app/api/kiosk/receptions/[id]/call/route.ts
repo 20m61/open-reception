@@ -1,8 +1,7 @@
 import { NextResponse } from 'next/server';
 import { markCallFailed, startCall } from '@/lib/data-stores/reception-store';
 import { toResponse } from '@/lib/data-stores/http';
-import { denyWithoutKioskSession } from '@/lib/kiosk/session-guard';
-import { resolveDefaultScope } from '@/lib/tenant/default-scope';
+import { requireOwnedReception } from '@/lib/kiosk/session-guard';
 import { voiceDialingDisabled } from '@/lib/routing/voice-dial';
 import { KIOSK_DIAL_LOG_MARKERS } from '@/lib/routing/dial-log-markers';
 import { intendsRealDialing } from '@/lib/platform/provider-resolution';
@@ -36,10 +35,10 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<NextResponse> {
-  const denied = await denyWithoutKioskSession();
-  if (denied) return denied;
   const { id } = await params;
-  const scope = resolveDefaultScope();
+  const owned = await requireOwnedReception(id);
+  if (!owned.ok) return owned.response;
+  const scope = { tenantId: owned.session.tenantId, siteId: owned.session.siteId };
 
   const guard = await evaluateCallGuard(scope.tenantId, scope.siteId);
   if (!guard.allowed) {

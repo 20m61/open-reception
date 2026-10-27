@@ -44,12 +44,18 @@ export async function GET(): Promise<NextResponse> {
   const { settings: s, storedPinUnreadable } = await readSecuritySettings();
   return NextResponse.json({
     pinRequired: s.pinRequired,
-    ipAllowlist: s.ipAllowlist,
+    // 🔴 読めない許可リスト（`null` ＝全拒否）は形を保って `[]` で返し、事実は
+    //    `unreadableSettings` が別に持つ (#1172)。`null` を返すと既存の画面が応答ごと拒否して
+    //    緊急停止まで押せなくなる。画面は `unreadableSettings` を見て警告を出す。
+    ipAllowlist: s.ipAllowlist ?? [],
     pinConfigured: isPinConfigured(s),
     emergencyStop: s.emergencyStop,
     // 🔴 保存されていた PIN を読めず、PIN 認可を誰にも通さない状態（fail closed）か (#1160 AC2)。
     //    真偽だけを返す（値・どう壊れていたかは返さない）。
     storedPinUnreadable,
+    // 🔴 保存値を読めず閉じる側（全 IP 拒否・停止・PIN 必須）へ倒しているフィールド名 (#1172 AC4)。
+    //    名前だけを返す（値・どう壊れていたかは返さない）。読める記録では空。
+    unreadableSettings: s.unreadableFields,
     // 記録の版 (#1158)。管理画面はこれを付けて保存し、読んだ後に誰かが書いていれば 409 になる。
     rev: revisionOf(s.rev),
   });
@@ -107,12 +113,14 @@ export async function PUT(request: Request): Promise<NextResponse> {
   });
   return NextResponse.json({
     pinRequired: updated.pinRequired,
-    ipAllowlist: updated.ipAllowlist,
+    ipAllowlist: updated.ipAllowlist ?? [],
     pinConfigured: isPinConfigured(updated),
     emergencyStop: updated.emergencyStop,
     // 書いた記録から導く（GET と同じ判定）。読めない記録は、運用者が PIN を設定し直すまで
     // 生のまま書き戻されるので、PIN を送らない更新の後も true のまま（#1160 fail closed）。
     storedPinUnreadable: !isUsablePinCredential(updated.pin),
+    // 書いた記録から導く（GET と同じ解釈）。そのフィールドを送らない更新では直らない (#1172)。
+    unreadableSettings: updated.unreadableFields,
     rev: revisionOf(updated.rev),
   });
 }

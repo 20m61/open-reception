@@ -97,25 +97,42 @@ server Lambda にはデプロイ時に環境変数を渡す。`.env.example` の
   > **注意**: `ADMIN_PASSWORD` は `ADMIN_AUTH_PROVIDER=none`（既定）のデプロイで**必須**（#1021）。
   > 未設定だと管理ログインが fail-closed で **500**（401 ではない）になる。以前は公開既定値
   > `open-reception` で通っていた。Cognito / Entra を使うデプロイでは参照されない。
-  > 🔴 **これだけでは管理画面は守れない（#1124）。** `ADMIN_SESSION_SECRET` は依然
-  > warn-only なので、未設定のまま配ると**公開既定値で署名した `admin_session` cookie が
-  > 有効な管理セッションとして通る**（実測）。`ADMIN_PASSWORD` はパスワードという扉を、
-  > `ADMIN_SESSION_SECRET` はセッションという扉を閉じる —— **どちらも必要で、
-  > 片方を閉じてももう片方は開いたまま**である。両方与えること。
+  > 🔴 **`ADMIN_SESSION_SECRET` / `KIOSK_SESSION_SECRET` も実デプロイで必須（#1124）。**
+  > 未設定、または公開既定値（`dev-insecure-*`）と同じ値のままだと、`instrumentation.ts` の
+  > `register()` が**起動時に throw してサーバを動かさない**（方式 A / B どちらでも検査する）。
+  > 以前は warn-only で、**公開既定値で署名した cookie が有効なセッションとして通った**。
+  > `ADMIN_PASSWORD` はパスワードという扉を、`ADMIN_SESSION_SECRET` はセッションという扉を
+  > 閉じる —— **どちらも必要**である。provider が cognito / entra でも `ADMIN_SESSION_SECRET`
+  > は必須（`resolveAdminActorWithIdentity` が password セッションを優先して読むため）。
   >
-  > 🔴 **`ADMIN_SESSION_SECRET` には既知の窓がある（#1124）。** この鍵を読むのは
-  > **middleware（`src/proxy.ts`）**で、middleware は `instrumentation.ts` の `register()`
-  > より**先に走る**（上の「なぜ Lambda 環境変数に値が入るのか」/ #612 の実測）。
-  > 方式 B で供給した場合、**コールドインスタンスが最初に踏んだ admin 系リクエスト 1 本**は
-  > 未解決のまま公開既定値で検証される（admin 以外のパスは `passThrough` して Next サーバへ
-  > 届くので `register()` が走り、以後は解決される）。
+  > 🔴 **`ADMIN_SESSION_SECRET` の既知の窓は「通る」から「落ちる」へ変わった（#1124）。**
+  > この鍵を読むのは **middleware（`src/proxy.ts`）**で、middleware は `register()` より
+  > **先に走る**（#612）。方式 B で供給した場合、**コールドインスタンスが最初に踏んだ admin 系
+  > リクエスト**は鍵が未解決のまま届く。以前はそこで公開既定値で検証していたが、いまは
+  > 「セッション無し」として **API は 401、ページはログインへリダイレクト**する。ログイン画面は
+  > middleware を素通りして Next サーバへ届くので `register()` が走り、以後は解決される
+  > （管理者には「1 度ログインし直す」に見える）。
   >
-  > **供給経路はまだ決めていない。#1124 AC1 で決める。** `appEnv` へ移すのは一見簡単だが、
-  > このリポジトリは**同じ形を一度否定している** —— `infra/lib/stacks/web-stack.ts` は
-  > middleware が読む `ORIGIN_VERIFY*` を `appEnv` から**拒否**する（手で壊せる状態を
-  > 作れるため。#612）。origin-verify が採った **CFN 動的参照で Lambda env へ入れる**経路が
-  > 第一候補である。**それまでは方式 B に入れたままでよい**（上の窓は残るが、外すと
-  > 入れ忘れたときに全リクエストが公開既定値になり、**いまより悪い**）。
+  > **供給経路（CFN 動的参照で Lambda env へ入れる等）はまだ決めていない（#1124 AC1）。**
+  > 上の窓を消したいならそれが第一候補だが、本変更は窓を**安全側に倒す**ところまでで止めている。
+  >
+  > 🔴 **デプロイ前の確認: 公開既定値を貼っていないか（fail-closed の全 7 鍵）。**
+  > deploy 環境では `serverSecret()` が「公開既定値と同じ値」を未設定として扱う。
+  > `.env.example` や手順書の例をそのまま貼る形で起こるので、配る前に次の鍵の値が
+  > リポジトリに載っている既定値（`open-reception` / `dev-insecure-*`）**でない**ことを確かめる:
+  > `ADMIN_SESSION_SECRET` / `KIOSK_SESSION_SECRET` / `ADMIN_PASSWORD` /
+  > `KIOSK_ENROLLMENT_SECRET` / `CALL_ANSWER_SECRET` / `PLATFORM_ELEVATION_SECRET` /
+  > `VOICE_TRANSPORT_TOKEN_SECRET`。
+  > 起動時の自己検査（`register()`）は、セッション鍵 2 つは**未設定・空・公開既定値**で、
+  > 残り 5 つは**公開既定値を貼ったとき**に止める（`src/lib/auth/public-default-secrets.ts`）。
+  > 残り 5 つの**未設定**は起動時には止めない —— 機能・provider によって不要なことがあるため
+  > （`ADMIN_PASSWORD` は provider=none のときだけ使う）。未設定は従来どおり**使った時点で**
+  > 落ちる（下の「どれが欠けると何が落ちるか」の表）。
+  > 🔴 **「起動を止める」の見え方**: Next は失敗した `register()` を memo 化するので、Lambda の
+  > init は落ちず、**Next サーバを通るリクエストがすべて 500** のままになる。ログには
+  > `An error occurred while loading instrumentation hook: <ENV 名> is not set (or equals the
+  > public dev fallback) ...` が出る（値は出ない）。admin 系は middleware が先に走るので
+  > 401 / ログインへのリダイレクトに見えることがある。直したら関数を更新して実行環境を入れ替える。
 
 #### 方式 A: appEnv 平文注入（従来）
 
@@ -416,6 +433,21 @@ cd infra && npx cdk deploy OpenReception-Web-prod -c env=prod -c appEnv.<...>
 静的アセットは immutable（ハッシュ付き）。動的レスポンスは CloudFront でキャッシュ無効
 （`CACHING_DISABLED`）のため、ページ更新の即時反映に手動 invalidation は不要。
 
+#### 端末証明（#1237）を含む版を初めて配備したとき: 全端末の再登録
+
+PIN 画面からの再認可に使う端末証明（`kiosk_device` cookie）は**エンロールでしか発行しない**。
+この版より前に登録した端末は証明を持たず、kiosk セッションが切れた時点で
+PIN 画面が `not_enrolled`（登録し直しの案内）になる。kiosk セッションは**発行から固定 30 日**
+（延長しない。発行するのは enroll と authorize だけ）なので、配備前に発行されたセッションは
+**配備から 30 日より早く**切れる。
+
+- 🔴 **配備後なるべく早く、遅くとも配備から 30 日以内に、すべての受付端末を管理発行の
+  受付 URL / QR で登録し直す**（owner 判断。手順は `docs/operator-guide.md` 2.3 / 2.3.1）。
+  配備の完了報告に「再登録はなるべく早く。最終期限は配備日 + 30 日（それより前に止まる
+  端末がある）」と書き、運用者へ渡す。
+- `KIOSK_ENROLLMENT_SECRET` を回したときも同じ扱いになる（全端末の証明が無効になる）。
+- 根拠と状態の写像は `docs/experience/state-mapping.md`（authorize の節）。
+
 ## dev をゼロから立ち上げる手順（2026-08-04 実測）
 
 **この節は実際に一度通した記録。** 抜けると必ず詰まる箇所が 4 つあり、いずれも
@@ -452,7 +484,15 @@ aws secretsmanager create-secret --name open-reception/dev/app-v2 --secret-strin
 | `KIOSK_ENROLLMENT_SECRET` | 端末エンロール（`/api/kiosk/enroll`）**＋ PIN による初回許可（`/api/kiosk/authorize`）** | `src/lib/auth/kiosk-enrollment.ts` / `src/lib/security/client-identity.ts` |
 | `ADMIN_PASSWORD` | 管理ログイン（`ADMIN_AUTH_PROVIDER=none` のときのみ） | `src/lib/auth/admin.ts` (#1021) |
 | `CALL_ANSWER_SECRET` | 担当者の応答/拒否（`/api/staff/calls/[id]/answer`・`/respond`） | `src/lib/call/answer-token.ts` (#1021) |
-| `ADMIN_SESSION_SECRET` | **落ちない（warn-only）**。未設定でも動くが、公開既定値で署名した cookie が通る（#1124） | `src/proxy.ts` / `src/lib/auth/admin.ts` |
+| `ADMIN_SESSION_SECRET` | **サーバが起動しない**（未設定・公開既定値。#1124）。middleware は鍵が未解決の間、管理セッションを無効として扱う | `src/lib/auth/session-secrets.ts` / `src/lib/auth/admin.ts` / `src/proxy.ts` |
+| `KIOSK_SESSION_SECRET` | **サーバが起動しない**（未設定・公開既定値。#1124） | `src/lib/auth/session-secrets.ts` / `src/lib/auth/kiosk.ts` |
+
+> 🔴 **公開既定値を貼った場合は表の行と症状が違う。** 上の 5 鍵（セッション鍵以外）と
+> `PLATFORM_ELEVATION_SECRET` / `VOICE_TRANSPORT_TOKEN_SECRET` は、未設定なら使った時点で
+> 落ちるが、**公開既定値と同じ値**なら起動時に止まる（全リクエスト 500。
+> `src/lib/auth/public-default-secrets.ts`）。`serverSecret(..., { failClosed: true })` の鍵が
+> 起動時検査のどちらかに載っていることは `public-default-secrets.test.ts` が棚卸しで縛る
+> （この表と `.env.example` の網羅は縛っていない。#1122）。
 
 > 🔴 **この表は網羅ではない。手で書いたものである。** 実測で `serverSecret(..., { failClosed: true })`
 > の呼び出し元は **5 件**あり（#1021 で「6 件」と書いたのは `server-secret.ts` の doc コメントを
@@ -484,8 +524,10 @@ aws secretsmanager create-secret --name open-reception/dev/app-v2 --secret-strin
 > 「サーバー側の問題で通話に接続できませんでした」と出る（**リンクの話ではない**）。
 > サーバログには `[security] <ENV 名> is not set in a deployed environment` が
 > **プロセスにつき 1 度だけ**出る（拾う仕組みはまだ無い。アラーム化は #1131）。
-> 🔴 1 度だけなのは **fail-closed の鍵**（上の表）。`KIOSK_SESSION_SECRET` のように
-> warn-only の鍵は `[security] <ENV 名> unset in deploy` が**毎リクエスト**流れる（#1128）。
+> 🔴 1 度だけなのは **fail-closed の鍵**（上の表）。warn-only の鍵は
+> `[security] <ENV 名> unset in deploy` が**毎リクエスト**流れる（#1128）。
+> `ADMIN_SESSION_SECRET` / `KIOSK_SESSION_SECRET` は #1124 で fail-closed になり、
+> 欠けると起動そのものが止まる（`register()` の throw）。
 
 > **`CALL_ANSWER_SECRET` が欠けたデプロイは、未認証の誰からでも叩ける**（`/api/staff/**` は
 > middleware を `passThrough` するので、でっち上げのトークンで到達する）。#1123 で

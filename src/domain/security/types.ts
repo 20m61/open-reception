@@ -56,8 +56,37 @@ export function resolveKioskAccess(input: {
   return 'ready';
 }
 
-/** IP が許可リストに含まれるか（空リストは全許可）。 */
-export function isIpAllowed(ip: string, allowlist: string[]): boolean {
+/**
+ * 保存レコードの値を読めず、**閉じる側へ倒した**フィールド (#1172)。
+ * 値は持たない（どのフィールドが読めなかったかだけ）。
+ */
+export type UnreadableSecurityField = 'ipAllowlist' | 'emergencyStop' | 'pinRequired';
+
+/**
+ * 読み出した保存レコードを**判定に使える形**へ解釈したもの (#1172)。
+ *
+ * 🔴 **`ipAllowlist: null` は「読めない＝全拒否」で、`[]`（制限なし）とは別物。**
+ *    以前は配列でない記録を `[]` に正規化しており、`isIpAllowed` が空リストを全許可と
+ *    読むので、IP 許可リストを設定していたサイトで記録が壊れると**無言で全 IP 許可**に
+ *    なっていた。型で区別しておけば、新しい読み手は null の扱いを書かずにはコンパイルできない。
+ *
+ * `emergencyStop` / `pinRequired` は読めなければ閉じる側（停止・PIN 必須）の boolean に
+ * 正規化済みで、どれを倒したかは `unreadableFields` が持つ。
+ */
+export type EffectiveSecuritySettings = Omit<SecuritySettings, 'ipAllowlist'> & {
+  /** 許可 IP リスト。`[]` は制限なし、**`null` は保存値を読めず全拒否**。 */
+  ipAllowlist: string[] | null;
+  /** 保存値を読めず閉じる側へ倒したフィールド（無ければ空）。永続化しない。 */
+  unreadableFields: readonly UnreadableSecurityField[];
+};
+
+/**
+ * IP が許可リストに含まれるか（空リストは全許可）。
+ *
+ * 🔴 **`null`（保存値を読めない許可リスト）は全拒否 (#1172 AC1・owner 判断で fail closed)。**
+ */
+export function isIpAllowed(ip: string, allowlist: readonly string[] | null): boolean {
+  if (allowlist === null) return false;
   if (allowlist.length === 0) return true;
   return allowlist.includes(ip);
 }

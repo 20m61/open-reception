@@ -20,14 +20,35 @@
  * したがってここで解決してよいのは **SSR / Route Handler だけが読む値**（`getAdminSecret()` 等）。
  * middleware が読む値（`ORIGIN_VERIFY_SECRET`）は CDK が Lambda 環境変数として渡す。
  * 詳細は `infra/lib/stacks/web-stack.ts` の origin-verify 節。
+ *
+ * 🔴 **注入の後、セッション鍵を自己検査して起動を止める (#1124)。** 管理 / 受付端末の
+ * セッション鍵が deploy 環境で未設定・公開既定値なら throw する。方式 A（`APP_SECRETS_ARN`
+ * なし）でも検査する。ローカル `next start` / e2e（Lambda マーカー無し）では何もしない。
+ * 残りの fail-closed 鍵（`ADMIN_PASSWORD` 等）は**公開既定値を貼ったときだけ**止める
+ * （`public-default-secrets.ts`。未設定は機能・provider によって正当なので止めない）。
+ *
+ * 🔴 「起動を止める」の実体: Next は失敗した `register()` を memo 化するので、プロセス /
+ * Lambda init は落ちず、**Next サーバを通るリクエストがすべて 500** になり、ログに
+ * `An error occurred while loading instrumentation hook: <ENV> is not set ...` が出る。
  */
 import { awsClientConfig } from '@/lib/aws/client-config';
-export async function register(): Promise<void> {
-  const secretId = process.env.APP_SECRETS_ARN;
-  if (!secretId) return;
+import { assertNoPublicDefaultSecrets } from '@/lib/auth/public-default-secrets';
+import { assertSessionSecretsConfigured } from '@/lib/auth/session-secrets';
 
+export async function register(): Promise<void> {
   // Node ランタイムでのみ動作させる（middleware/edge では AWS SDK を読み込まない）。
   if (process.env.NEXT_RUNTIME && process.env.NEXT_RUNTIME !== 'nodejs') return;
+
+  await loadAppSecrets();
+  // 🔴 注入の**後**に検査する（Secrets Manager で埋まる鍵を未設定と誤判定しない）。
+  assertSessionSecretsConfigured();
+  // 残りの fail-closed 鍵は「公開既定値を貼った」ときだけ止める（未設定は使う時点で落ちる）。
+  assertNoPublicDefaultSecrets();
+}
+
+async function loadAppSecrets(): Promise<void> {
+  const secretId = process.env.APP_SECRETS_ARN;
+  if (!secretId) return;
 
   const { SecretsManagerClient, GetSecretValueCommand } = await import(
     '@aws-sdk/client-secrets-manager'

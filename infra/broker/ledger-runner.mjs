@@ -22,6 +22,12 @@
  *   including an unreadable or ambiguous ledger, exits 44 and mutation must not start.
  * - `outcome --outcome succeeded|failed`: record the terminal outcome of the reserved attempt.
  *
+ * `reserve` selects the D-5 access profile from the broker-derived access-restriction decision
+ * (`access-restriction.mjs`, written to ACCESS_RESTRICTION_PATH in the broker-owned output dir).
+ * Only a readable decision for THIS execution and revision that says `verified` selects the
+ * access-restricted profile; a missing, unreadable, denied or foreign decision is `unverifiable`
+ * (S6c: an unverifiable restriction is an absent one).
+ *
  * Every step prints one JSON line `{"event":"ledger.<name>",...}` for the log-based alarms.
  */
 import { execFileSync } from 'node:child_process';
@@ -37,6 +43,11 @@ const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const RESERVATION_PATH = `${LEDGER_DIR}/reservation.json`;
 /** Written before `reserve` touches the ledger: from then on `reserve` owns the attempt's audit. */
 export const RESERVE_STARTED_PATH = `${LEDGER_DIR}/reserve-started`;
+/**
+ * Decision of the access-restriction gate. Same value as `DECISION_PATH` in access-restriction.mjs
+ * (pinned by test): downloaded modules cannot import each other.
+ */
+export const ACCESS_RESTRICTION_PATH = '/tmp/open-reception-broker-out/access-restriction.json';
 
 /** Gates the buildspec can name in the gate file. Anything else is recorded as BROKER_GATE_UNKNOWN. */
 export const GATE_RULES = Object.freeze([
@@ -45,6 +56,7 @@ export const GATE_RULES = Object.freeze([
   'TRUSTED_REVISION_MISMATCH',
   'TRUSTED_POLICY_DENIED',
   'TARGET_STACK_NOT_STABLE',
+  'ACCESS_RESTRICTION_DENIED',
   'BROKER_NOT_ARMED',
 ]);
 export const UNKNOWN_GATE_RULE = 'BROKER_GATE_UNKNOWN';
@@ -167,7 +179,30 @@ export async function runDeny({ gateFile, client, env = process.env, now = new D
   }
 }
 
-export async function runReserve({ client, env = process.env, now = new Date(), writeFile = fs.writeFileSync, mkdir = fs.mkdirSync, reservationPath = RESERVATION_PATH, reserveStartedPath = RESERVE_STARTED_PATH }) {
+/**
+ * The access restriction `reserve` may rely on. Anything but a well-formed, allowed decision for
+ * this execution and revision is `unverifiable` (never `verified`).
+ */
+export function readAccessRestriction({ env = process.env, readFile = fs.readFileSync, accessRestrictionPath = ACCESS_RESTRICTION_PATH } = {}) {
+  const unverifiable = (reason) => ({ state: 'unverifiable', reason });
+  let d;
+  try {
+    d = JSON.parse(String(readFile(accessRestrictionPath, 'utf8')));
+  } catch {
+    return unverifiable('access-restriction decision missing or unreadable');
+  }
+  if (d === null || typeof d !== 'object' || Array.isArray(d)) return unverifiable('access-restriction decision is not an object');
+  const executionId = env.OR_PIPELINE_EXECUTION_ID;
+  const revision = env.OR_TRUSTED_SOURCE_REVISION;
+  if (typeof executionId !== 'string' || !executionId || d.executionId !== executionId) return unverifiable('access-restriction decision is not for this execution');
+  if (!isFullSha(revision) || d.revision !== revision) return unverifiable('access-restriction decision is not for this revision');
+  if (d.result !== 'allowed' || d.rule !== null) return unverifiable('access-restriction decision did not allow');
+  const state = d.accessRestriction?.state;
+  if (state === 'verified' || state === 'absent') return { state };
+  return unverifiable('access-restriction state missing or unknown');
+}
+
+export async function runReserve({ client, env = process.env, now = new Date(), writeFile = fs.writeFileSync, mkdir = fs.mkdirSync, readFile = fs.readFileSync, reservationPath = RESERVATION_PATH, reserveStartedPath = RESERVE_STARTED_PATH, accessRestrictionPath = ACCESS_RESTRICTION_PATH }) {
   const a = attemptFromEnv(env);
   if (!TABLE.test(a.table ?? '')) {
     return { exitCode: 44, line: { event: 'ledger.reserve_denied', rule: RULES.LEDGER_UNAVAILABLE, reason: 'ledger table not configured' } };
@@ -179,7 +214,8 @@ export async function runReserve({ client, env = process.env, now = new Date(), 
     // A second `reserve` in one build, or an unwritable marker: never reserve twice.
     return { exitCode: 44, line: { event: 'ledger.reserve_denied', rule: RULES.LEDGER_CONFLICT, reason: 'reserve already started in this build (or its marker could not be written)', attemptId: a.attemptId ?? null } };
   }
-  const decision = await reserveAttempt({ client, table: a.table, ledgerId: a.ledgerId, revision: a.revision, attemptId: a.attemptId, now });
+  const accessRestriction = readAccessRestriction({ env, readFile, accessRestrictionPath });
+  const decision = await reserveAttempt({ client, table: a.table, ledgerId: a.ledgerId, revision: a.revision, attemptId: a.attemptId, now, accessRestriction });
   if (decision.result !== 'allowed') {
     return {
       exitCode: 44,
@@ -190,6 +226,8 @@ export async function runReserve({ client, env = process.env, now = new Date(), 
         attemptId: a.attemptId ?? null,
         revision: a.revision ?? null,
         day: decision.day ?? null,
+        accessRestriction: accessRestriction.state,
+        accessProfile: decision.accessProfile ?? null,
         audited: decision.audited ?? false,
       },
     };
@@ -202,6 +240,10 @@ export async function runReserve({ client, env = process.env, now = new Date(), 
     mode: decision.mode,
     attemptNumber: decision.attemptNumber,
     reservedAt: now.toISOString(),
+    accessRestriction: accessRestriction.state,
+    accessProfile: decision.accessProfile,
+    softCeiling: decision.softCeiling,
+    cooldownWaived: decision.cooldownWaived,
     ...(decision.override ? { override: { approver: decision.override.approver, reason: decision.override.reason, expiresAt: decision.override.expiresAt } } : {}),
   };
   // The reservation is committed in the ledger; failing to write this local copy only means the

@@ -59,10 +59,28 @@ import {
   TARGET_STACKS_RESULT_CHECK_SCRIPT,
   TARGET_STACKS_SOURCE_PATH,
   TARGET_STACK_READ_ACTIONS,
+  ACCESS_RESTRICTION_COMMAND,
+  ACCESS_RESTRICTION_DECISION_PATH,
+  ACCESS_RESTRICTION_LOCAL_PATH,
+  ACCESS_RESTRICTION_RESULT_CHECK_SCRIPT,
+  ACCESS_RESTRICTION_SOURCE_PATH,
   nodeEval,
   trustedPolicySha256,
 } from '../lib/stacks/dev-deploy-broker-stack';
 import { BROKER_BOOTSTRAP_QUALIFIER } from '../lib/config/broker-bootstrap';
+import {
+  CODEBUILD_LINUX_COMPUTE,
+  VALIDATION_HEAP_HEADROOM,
+  VALIDATION_MEASURED_RUNS,
+  VALIDATION_MIN_HEAP_MIB,
+  VALIDATION_OS_RESERVE_MIB,
+} from '../lib/config/validation-build-resources';
+import { VALIDATION_SOURCE_BIND_SCRIPT } from '../lib/config/validation-gate-env';
+import {
+  DYNAMODB_TABLE_RESOURCE_POLICY_ACTIONS,
+  DYNAMODB_TABLE_RESOURCE_POLICY_REJECTED,
+} from '../lib/config/dynamodb-resource-policy-actions';
+import { DEV_ACCOUNT_ID } from '../../src/domain/governance/dev-account';
 
 /**
  * Adversarial Phase 1 invariants for the dev deploy broker (#1146).
@@ -95,7 +113,7 @@ const REV_B = '0123456789abcdef0123456789abcdef01234567';
 const template = (() => {
   const app = new cdk.App();
   const stack = new DevDeployBrokerStack(app, 'TestDevDeployBroker', {
-    env: { account: '822063948773', region: 'ap-northeast-1' },
+    env: { account: `${DEV_ACCOUNT_ID}`, region: 'ap-northeast-1' },
   });
   return Template.fromStack(stack);
 })();
@@ -226,18 +244,19 @@ const isProvenanceStatement = (s: Statement): boolean => {
   const res = JSON.stringify(s.Resource);
   const same = (xs: readonly string[]) => acts === JSON.stringify(xs.map((a) => a.toLowerCase()).sort());
   const validationProjectId = PROJECTS.find(([, r]) => r.Properties.Name === VALIDATION_PROJECT)?.[0];
+  const brokerProjectId = PROJECTS.find(([, r]) => r.Properties.Name === BROKER_PROJECT)?.[0];
   return (
     s.Effect === 'Allow' &&
     s.Condition === undefined &&
-    ((same(PROVENANCE_READ_ACTIONS.pipeline) && res === JSON.stringify({ 'Fn::Join': ['', ['arn:', { Ref: 'AWS::Partition' }, ':codepipeline:ap-northeast-1:822063948773:', { Ref: PIPELINES[0] }]] })) ||
-      (same(PROVENANCE_READ_ACTIONS.validationBuild) && res === JSON.stringify({ 'Fn::GetAtt': [validationProjectId, 'Arn'] })) ||
+    ((same(PROVENANCE_READ_ACTIONS.pipeline) && res === JSON.stringify({ 'Fn::Join': ['', ['arn:', { Ref: 'AWS::Partition' }, `:codepipeline:ap-northeast-1:${DEV_ACCOUNT_ID}:`, { Ref: PIPELINES[0] }]] })) ||
+      (same(PROVENANCE_READ_ACTIONS.validationBuild) && res === JSON.stringify([{ 'Fn::GetAtt': [validationProjectId, 'Arn'] }, { 'Fn::GetAtt': [brokerProjectId, 'Arn'] }])) ||
       (same(PROVENANCE_READ_ACTIONS.artifactBucket) && res === JSON.stringify({ 'Fn::GetAtt': [ARTIFACT_BUCKET[0], 'Arn'] })))
   );
 };
 
 /** The single reviewed target-stack read (S10a): DescribeStacks on exactly the three stack ARNs. */
 const TARGET_STACK_ARNS = TARGET_STACKS.map((t) => ({
-  'Fn::Join': ['', ['arn:', { Ref: 'AWS::Partition' }, `:cloudformation:${t.region ?? 'ap-northeast-1'}:822063948773:stack/${t.stackName}/*`]],
+  'Fn::Join': ['', ['arn:', { Ref: 'AWS::Partition' }, `:cloudformation:${t.region ?? 'ap-northeast-1'}:${DEV_ACCOUNT_ID}:stack/${t.stackName}/*`]],
 }));
 const isTargetStackStatement = (s: Statement): boolean =>
   s.Effect === 'Allow' &&
@@ -351,6 +370,9 @@ describe('dev deploy broker invariants: build environment allowlist', () => {
         'OR_TARGET_STACKS_MODULE_BUCKET',
         'OR_TARGET_STACKS_MODULE_KEY',
         'OR_TARGET_STACKS_MODULE_SHA256',
+        'OR_ACCESS_RESTRICTION_MODULE_BUCKET',
+        'OR_ACCESS_RESTRICTION_MODULE_KEY',
+        'OR_ACCESS_RESTRICTION_MODULE_SHA256',
         'OR_BROKER_TARGET_REGION',
       ].sort(),
     );
@@ -361,6 +383,122 @@ describe('dev deploy broker invariants: build environment allowlist', () => {
       ['artifacts', 'phases', 'version'].sort(),
     );
     expect(Object.keys(buildSpec(BROKER_PROJECT)).sort()).toEqual(['phases', 'version'].sort());
+  });
+});
+
+/**
+ * Commands of a buildspec in execution order: phases in CodeBuild's order, each phase's `finally`
+ * right after its commands (a `finally` runs before the next phase starts).
+ */
+const PHASE_ORDER = ['install', 'pre_build', 'build', 'post_build'] as const;
+const orderedCommands = (name: string): string[] => {
+  const phases = buildSpec(name).phases as Record<string, { commands?: string[]; finally?: string[] } | undefined>;
+  return PHASE_ORDER.flatMap((p) => [...(phases[p]?.commands ?? []), ...(phases[p]?.finally ?? [])]);
+};
+const runsNode = (command: string): boolean => /(^|[\s;&|(])(npm|npx|node)(\s|$)/.test(command);
+const HEAP_COMMAND = /^export NODE_OPTIONS=--max-old-space-size=([1-9][0-9]*)$/;
+const touchesHeap = (c: string): boolean => c.includes('NODE_OPTIONS') || c.includes('max-old-space-size');
+
+const computeOf = (computeType: unknown) => CODEBUILD_LINUX_COMPUTE.find((c) => c.type === computeType);
+const runFor = (c: (typeof CODEBUILD_LINUX_COMPUTE)[number]) => VALIDATION_MEASURED_RUNS.find((r) => r.vcpus === c.vcpus);
+/**
+ * Does the measured build fit the compute type with `heapMiB` per Node process, within the project
+ * timeout? Only a replay on the same number of vCPUs counts (more vCPUs mean more test workers, so a
+ * smaller machine's measurement does not carry over; no measurement = not known to fit):
+ * - memory: its anon peak, plus the extra heap if the configured heap is larger than the measured
+ *   one, plus the OS reserve;
+ * - time: no test exceeded its own timeout, and the build phase used at most half of the project
+ *   timeout (npm ci, aws:local:test and provisioning are not in the replay).
+ */
+const fits = (c: (typeof CODEBUILD_LINUX_COMPUTE)[number], heapMiB: number, timeoutMinutes: number): boolean => {
+  const run = runFor(c);
+  if (!run) return false;
+  const memory = run.anonPeakMiB + Math.max(0, heapMiB - run.heapMiB) + VALIDATION_OS_RESERVE_MIB <= c.memoryGiB * 1024;
+  const time = run.testTimeoutsExceeded === 0 && run.buildPhaseSeconds <= (timeoutMinutes * 60) / 2;
+  return memory && time;
+};
+const validationTimeout = (): number => project(VALIDATION_PROJECT).TimeoutInMinutes as number;
+
+/** The single heap the Validation buildspec gives Node (and where), asserting there is exactly one. */
+const validationHeap = (): { heapMiB: number; index: number } => {
+  const mentions = orderedCommands(VALIDATION_PROJECT)
+    .map((c, i) => [c, i] as const)
+    .filter(([c]) => touchesHeap(c));
+  // allCommands also covers phases outside PHASE_ORDER: nothing anywhere may touch the heap twice.
+  expect(allCommands(VALIDATION_PROJECT).filter(touchesHeap), 'exactly one command may touch NODE_OPTIONS / the heap').toHaveLength(1);
+  expect(mentions).toHaveLength(1);
+  const [command, index] = mentions[0]!;
+  const m = HEAP_COMMAND.exec(command);
+  expect(m, `${command} must only set --max-old-space-size (no other Node flags)`).not.toBeNull();
+  return { heapMiB: Number(m![1]), index };
+};
+
+describe('dev deploy broker invariants: validation build memory (7.5 OOM, 2026-10-06)', () => {
+  it('the measurements are self-consistent (guards the inputs of the checks below)', () => {
+    // Node's default heap on a 3 GiB machine (1584 MiB, measured; what SMALL behaved like in 7.5) is
+    // below the requirement: that is the failure being fixed. If this stops holding, re-measure.
+    expect(VALIDATION_MIN_HEAP_MIB).toBeGreaterThan(1584);
+    for (const run of VALIDATION_MEASURED_RUNS) {
+      // A replay that ran with less heap than the minimum could not have passed: a typo, not data.
+      expect(run.heapMiB).toBeGreaterThanOrEqual(VALIDATION_MIN_HEAP_MIB);
+      expect(run.anonPeakMiB).toBeGreaterThan(0);
+      expect(run.buildPhaseSeconds).toBeGreaterThan(0);
+    }
+    const memories = CODEBUILD_LINUX_COMPUTE.map((c) => c.memoryGiB);
+    expect([...memories].sort((x, y) => x - y)).toEqual(memories);
+  });
+
+  it('the chosen compute type and every cheaper one were measured ("cheapest" is backed by data)', () => {
+    const chosen = CODEBUILD_LINUX_COMPUTE.findIndex((c) => c.type === (project(VALIDATION_PROJECT).Environment as Json).ComputeType);
+    expect(chosen, 'known compute type').toBeGreaterThanOrEqual(0);
+    for (const c of CODEBUILD_LINUX_COMPUTE.slice(0, chosen + 1)) {
+      expect(runFor(c), `no replay measured on ${c.vcpus} vCPUs (${c.type})`).toBeDefined();
+    }
+  });
+
+  it('sets the heap once, before the first npm / node command, and nothing unsets it afterwards', () => {
+    const { index } = validationHeap();
+    const firstNode = orderedCommands(VALIDATION_PROJECT).findIndex(runsNode);
+    expect(firstNode, 'the validation buildspec runs npm').toBeGreaterThanOrEqual(0);
+    expect(index).toBeLessThan(firstNode);
+  });
+
+  it('the heap covers the measured minimum with head-room', () => {
+    const { heapMiB } = validationHeap();
+    expect(heapMiB).toBeGreaterThanOrEqual(Math.ceil(VALIDATION_MIN_HEAP_MIB * VALIDATION_HEAP_HEADROOM));
+  });
+
+  it('the heap is at most half of the machine memory (the rest of the measured tree needs the other half)', () => {
+    const c = computeOf((project(VALIDATION_PROJECT).Environment as Json).ComputeType);
+    expect(c, 'known compute type').toBeDefined();
+    expect(validationHeap().heapMiB).toBeLessThanOrEqual((c!.memoryGiB * 1024) / 2);
+  });
+
+  it('the compute type fits the measured build: memory with that heap, and time within the project timeout', () => {
+    const c = computeOf((project(VALIDATION_PROJECT).Environment as Json).ComputeType);
+    expect(c, 'known compute type').toBeDefined();
+    expect(fits(c!, validationHeap().heapMiB, validationTimeout())).toBe(true);
+  });
+
+  it('the compute type is the cheapest one that fits (cost: no over-provisioning)', () => {
+    const { heapMiB } = validationHeap();
+    const cheapest = CODEBUILD_LINUX_COMPUTE.find((c) => fits(c, heapMiB, validationTimeout()));
+    expect(cheapest, 'some listed compute type must fit').toBeDefined();
+    expect((project(VALIDATION_PROJECT).Environment as Json).ComputeType).toBe(cheapest!.type);
+  });
+
+  it('NODE_OPTIONS reaches the build only through that buildspec command (not project / action env)', () => {
+    expect(projectEnvNames(VALIDATION_PROJECT)).not.toContain('NODE_OPTIONS');
+    const actionEnv = JSON.stringify(pipelineResource().Properties.Stages ?? []);
+    expect(actionEnv).not.toContain('NODE_OPTIONS');
+  });
+
+  it('the trusted broker build is untouched: no NODE_OPTIONS / heap flags, still SMALL', () => {
+    for (const c of allCommands(BROKER_PROJECT)) {
+      expect(c.includes('NODE_OPTIONS') || c.includes('max-old-space-size'), c).toBe(false);
+    }
+    expect(projectEnvNames(BROKER_PROJECT)).not.toContain('NODE_OPTIONS');
+    expect((project(BROKER_PROJECT).Environment as Json).ComputeType).toBe('BUILD_GENERAL1_SMALL');
   });
 });
 
@@ -397,7 +535,6 @@ describe('dev deploy broker invariants: validation role (candidate code executes
     expect(p.QueuedTimeoutInMinutes).toBe(5);
     const env = p.Environment as Json;
     expect(env.PrivilegedMode).toBe(false);
-    expect(env.ComputeType).toBe('BUILD_GENERAL1_SMALL');
   });
 
   it('synthesizes only the three reviewed -dev stacks with env=dev', () => {
@@ -439,12 +576,15 @@ describe('dev deploy broker invariants: trusted broker (stack-owned buildspec, u
       /^mkdir -p \/tmp\/open-reception-ledger$/,
       /^aws s3 cp "s3:\/\/\$OR_LEDGER_(MODULE|RUNNER)_BUCKET\/\$OR_LEDGER_\1_KEY" \/tmp\/open-reception-ledger\/(sparse-ledger|ledger-runner)\.mjs --only-show-errors$/,
       /^node -e '[^']*' \/tmp\/open-reception-ledger\/(sparse-ledger|ledger-runner)\.mjs OR_LEDGER_(MODULE|RUNNER)_SHA256$/,
-      /^echo (BROKER_MODULE_INTEGRITY|TRUSTED_PROVENANCE_DENIED|TRUSTED_REVISION_MISMATCH|TRUSTED_POLICY_DENIED|TARGET_STACK_NOT_STABLE|BROKER_NOT_ARMED) > \/tmp\/open-reception-ledger\/gate$/,
+      /^echo (BROKER_MODULE_INTEGRITY|TRUSTED_PROVENANCE_DENIED|TRUSTED_REVISION_MISMATCH|TRUSTED_POLICY_DENIED|TARGET_STACK_NOT_STABLE|ACCESS_RESTRICTION_DENIED|BROKER_NOT_ARMED) > \/tmp\/open-reception-ledger\/gate$/,
       /^aws s3 cp "s3:\/\/\$OR_TARGET_STACKS_MODULE_BUCKET\/\$OR_TARGET_STACKS_MODULE_KEY" \/tmp\/open-reception-target-stacks\.mjs --only-show-errors$/,
       /^node -e '[^']*' \/tmp\/open-reception-target-stacks\.mjs OR_TARGET_STACKS_MODULE_SHA256$/,
       new RegExp(`^${TARGET_STACKS_COMMAND.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}$`),
+      /^aws s3 cp "s3:\/\/\$OR_ACCESS_RESTRICTION_MODULE_BUCKET\/\$OR_ACCESS_RESTRICTION_MODULE_KEY" \/tmp\/open-reception-access-restriction\.mjs --only-show-errors$/,
+      /^node -e '[^']*' \/tmp\/open-reception-access-restriction\.mjs OR_ACCESS_RESTRICTION_MODULE_SHA256$/,
+      /^node \/tmp\/open-reception-access-restriction\.mjs --assembly \/tmp\/open-reception-broker-work\/validated\/infra\/cdk\.out$/,
       new RegExp(`^${LEDGER_DENY_COMMAND.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}$`),
-      /^node \/tmp\/open-reception-trusted-policy\.mjs --assembly \/tmp\/open-reception-broker-work\/validated\/infra\/cdk\.out --account 822063948773 > \/tmp\/open-reception-broker-out\/trusted-policy-result\.json$/,
+      new RegExp(String.raw`^node \/tmp\/open-reception-trusted-policy\.mjs --assembly \/tmp\/open-reception-broker-work\/validated\/infra\/cdk\.out --account ${DEV_ACCOUNT_ID} > \/tmp\/open-reception-broker-out\/trusted-policy-result\.json$`),
       /^aws s3 cp "s3:\/\/\$OR_PROVENANCE_MODULE_BUCKET\/\$OR_PROVENANCE_MODULE_KEY" \/tmp\/open-reception-run-provenance\.mjs --only-show-errors$/,
       /^node -e '[^']*' \/tmp\/open-reception-run-provenance\.mjs OR_PROVENANCE_MODULE_SHA256$/,
       new RegExp(`^${PROVENANCE_COMMAND.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}$`),
@@ -600,6 +740,40 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
     expect(allowedActions(VALIDATION_ROLE).some((a) => a.startsWith('dynamodb:'))).toBe(false);
   });
 
+  // DynamoDB rejects the whole table when its resource policy names an action it does not accept
+  // there (2026-10-06: `RestoreTableFromBackup` failed the first create). The emulators do not
+  // check this, so every action of every table / stream policy must be on the documented list.
+  it('every action in a DynamoDB resource policy is one DynamoDB accepts there (allowlist, not a hand-written set)', () => {
+    const allowed = new Set(DYNAMODB_TABLE_RESOURCE_POLICY_ACTIONS.map((a) => a.toLowerCase()));
+    const policies = byType('AWS::DynamoDB::Table').flatMap(([id, r]) => {
+      const stream = r.Properties.StreamSpecification as { ResourcePolicy?: unknown } | undefined;
+      return [
+        [id, r.Properties.ResourcePolicy],
+        [`${id}/stream`, stream?.ResourcePolicy],
+      ].filter(([, p]) => p !== undefined) as Array<[string, { PolicyDocument: unknown }]>;
+    });
+    // Lower bound: the ledger policy is really inspected (an empty scan would pass vacuously).
+    expect(policies.map(([id]) => id)).toEqual(LEDGER_TABLES);
+    for (const [id, policy] of policies) {
+      const statements = documentStatements(policy.PolicyDocument);
+      expect(statements.length, id).toBeGreaterThan(0);
+      for (const statement of statements) {
+        // NotAction would expand to actions DynamoDB may reject; only explicit names are checkable.
+        expect(statement.NotAction, id).toBeUndefined();
+        const actions = actionsOf(statement);
+        expect(actions.length, id).toBeGreaterThan(0);
+        expect(actions.filter((a) => !allowed.has(a)), `${id} ${statement.Effect}`).toEqual([]);
+      }
+    }
+  });
+
+  it('the allowlist excludes every action AWS was observed to reject in a table policy', () => {
+    const allowed = DYNAMODB_TABLE_RESOURCE_POLICY_ACTIONS.map((a) => a.toLowerCase());
+    for (const rejected of DYNAMODB_TABLE_RESOURCE_POLICY_REJECTED) {
+      expect(allowed).not.toContain(rejected.toLowerCase());
+    }
+  });
+
   it('the table resource policy denies every write except from the broker role and the human issuer role', () => {
     const table = resources[LEDGER_TABLES[0]!]!;
     const doc = (table.Properties.ResourcePolicy as { PolicyDocument: unknown }).PolicyDocument;
@@ -616,7 +790,6 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
         'dynamodb:updatetable',
         'dynamodb:deletetable',
         'dynamodb:updatecontinuousbackups',
-        'dynamodb:restoretablefrombackup',
         'dynamodb:restoretabletopointintime',
         'dynamodb:updatekinesisstreamingdestination',
         'dynamodb:enablekinesisstreamingdestination',
@@ -668,25 +841,25 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
       // JS and Java agree on this subset (anchors, classes, negative lookahead).
       const re = new RegExp(param!.AllowedPattern!);
       for (const ok of [
-        'arn:aws:iam::822063948773:role/cdk-hnb659fds-cfn-exec-role-822063948773-ap-northeast-1',
-        'arn:aws:iam::822063948773:role/LedgerOverrideIssuer',
-        'arn:aws:iam::822063948773:role/humans/LedgerOverrideIssuer',
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/cdk-hnb659fds-cfn-exec-role-${DEV_ACCOUNT_ID}-ap-northeast-1`,
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/LedgerOverrideIssuer`,
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/humans/LedgerOverrideIssuer`,
       ]) {
         expect(re.test(ok), ok).toBe(true);
       }
       for (const bad of [
-        'arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1',
-        'arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev',
-        'arn:aws:iam::822063948773:role/OpenReceptionClaudeEntry',
-        'arn:aws:iam::822063948773:role/OpenReceptionTrustedDevDeployBrokerRole',
-        'arn:aws:iam::822063948773:role/OpenReceptionDevDeployValidationRole',
-        'arn:aws:iam::822063948773:role/OpenReception-Web-dev-ServerFnServiceRole282D3E61-ABC',
-        'arn:aws:iam::822063948773:role/some/path/OpenReceptionClaudeDeploy-dev',
-        'arn:aws:iam::822063948773:role/nodi-worker',
-        'arn:aws:iam::822063948773:role/salon-loop-fn',
-        'arn:aws:iam::822063948773:role/KiaffRuntime',
-        'arn:aws:iam::822063948773:user/CDK',
-        'arn:aws:iam::822063948773:role/x y',
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/cdk-orcloud01-cfn-exec-role-${DEV_ACCOUNT_ID}-ap-northeast-1`,
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/OpenReceptionClaudeDeploy-dev`,
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/OpenReceptionClaudeEntry`,
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/OpenReceptionTrustedDevDeployBrokerRole`,
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/OpenReceptionDevDeployValidationRole`,
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/OpenReception-Web-dev-ServerFnServiceRole282D3E61-ABC`,
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/some/path/OpenReceptionClaudeDeploy-dev`,
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/nodi-worker`,
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/salon-loop-fn`,
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/KiaffRuntime`,
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:user/CDK`,
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/x y`,
       ]) {
         expect(re.test(bad), bad).toBe(false);
       }
@@ -700,19 +873,19 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
     expect(param).not.toHaveProperty('Default');
     const re = new RegExp(param!.AllowedPattern!);
     for (const ok of [
-      'arn:aws:iam::822063948773:role/cdk-orbrkr01-cfn-exec-role-822063948773-ap-northeast-1',
-      'arn:aws:iam::822063948773:role/cdk-orbrkr01-cfn-exec-role-822063948773-us-east-1',
+      `arn:aws:iam::${DEV_ACCOUNT_ID}:role/cdk-orbrkr01-cfn-exec-role-${DEV_ACCOUNT_ID}-ap-northeast-1`,
+      `arn:aws:iam::${DEV_ACCOUNT_ID}:role/cdk-orbrkr01-cfn-exec-role-${DEV_ACCOUNT_ID}-us-east-1`,
     ]) {
       expect(re.test(ok), ok).toBe(true);
     }
     for (const bad of [
-      'arn:aws:iam::822063948773:role/cdk-hnb659fds-cfn-exec-role-822063948773-ap-northeast-1',
-      'arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1',
-      'arn:aws:iam::822063948773:role/cdk-orbrkr01-deploy-role-822063948773-ap-northeast-1',
-      'arn:aws:iam::822063948773:role/cdk-orbrkr01-cfn-exec-role-822063948773-ap-northeast-1-x/y',
-      'arn:aws:iam::822063948773:role/path/cdk-orbrkr01-cfn-exec-role-822063948773-ap-northeast-1',
-      'arn:aws:iam::822063948773:role/ledger-stack-deploy-human',
-      'arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev',
+      `arn:aws:iam::${DEV_ACCOUNT_ID}:role/cdk-hnb659fds-cfn-exec-role-${DEV_ACCOUNT_ID}-ap-northeast-1`,
+      `arn:aws:iam::${DEV_ACCOUNT_ID}:role/cdk-orcloud01-cfn-exec-role-${DEV_ACCOUNT_ID}-ap-northeast-1`,
+      `arn:aws:iam::${DEV_ACCOUNT_ID}:role/cdk-orbrkr01-deploy-role-${DEV_ACCOUNT_ID}-ap-northeast-1`,
+      `arn:aws:iam::${DEV_ACCOUNT_ID}:role/cdk-orbrkr01-cfn-exec-role-${DEV_ACCOUNT_ID}-ap-northeast-1-x/y`,
+      `arn:aws:iam::${DEV_ACCOUNT_ID}:role/path/cdk-orbrkr01-cfn-exec-role-${DEV_ACCOUNT_ID}-ap-northeast-1`,
+      `arn:aws:iam::${DEV_ACCOUNT_ID}:role/ledger-stack-deploy-human`,
+      `arn:aws:iam::${DEV_ACCOUNT_ID}:role/OpenReceptionClaudeDeploy-dev`,
     ]) {
       expect(re.test(bad), bad).toBe(false);
     }
@@ -720,7 +893,7 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
     const app = new cdk.App();
     new DevDeployBrokerStack(app, 'QualifiedBrokerExec', {
       stackName: 'OpenReception-DevDeployBroker',
-      env: { account: '822063948773', region: 'ap-northeast-1' },
+      env: { account: `${DEV_ACCOUNT_ID}`, region: 'ap-northeast-1' },
       synthesizer: new cdk.DefaultStackSynthesizer({ qualifier: BROKER_BOOTSTRAP_QUALIFIER }),
     });
     const artifact = app.synth().getStackArtifact('QualifiedBrokerExec');
@@ -785,13 +958,13 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
       const doc = JSON.parse(readFileSync(resolve(__dirname, '../../scripts/aws-policies', name), 'utf8'));
       const st = documentStatements(doc).find((s) => (s as { Sid?: string }).Sid === sid)!;
       expect(st.Effect, name).toBe('Deny');
-      expect(st.Resource, name).toContain(`arn:aws:iam::822063948773:role/cdk-${BROKER_BOOTSTRAP_QUALIFIER}-*`);
+      expect(st.Resource, name).toContain(`arn:aws:iam::${DEV_ACCOUNT_ID}:role/cdk-${BROKER_BOOTSTRAP_QUALIFIER}-*`);
     }
     // The synthesized template asks for that bootstrap (version parameter and deploy / exec roles).
     const app = new cdk.App();
     const stack = new DevDeployBrokerStack(app, 'QualifiedBroker', {
       stackName: 'OpenReception-DevDeployBroker',
-      env: { account: '822063948773', region: 'ap-northeast-1' },
+      env: { account: `${DEV_ACCOUNT_ID}`, region: 'ap-northeast-1' },
       synthesizer: new cdk.DefaultStackSynthesizer({ qualifier: BROKER_BOOTSTRAP_QUALIFIER }),
     });
     const template = Template.fromStack(stack).toJSON() as { Parameters: Record<string, { Default?: string }> };
@@ -850,9 +1023,23 @@ describe('dev deploy broker invariants: trusted source revision', () => {
     for (const name of [VALIDATION_PROJECT, BROKER_PROJECT]) {
       const text = buildSpecText(name);
       expect(text).not.toContain('CODEBUILD_RESOLVED_SOURCE_VERSION');
-      expect(text).not.toContain('rev-parse');
-      expect(text).not.toMatch(/\bgit\b/);
     }
+    // The broker never reads git metadata.
+    expect(buildSpecText(BROKER_PROJECT)).not.toContain('rev-parse');
+    expect(buildSpecText(BROKER_PROJECT)).not.toMatch(/\bgit\b/);
+    // Validation runs git in exactly one command (7.5, 2026-10-08: the unit lane needs the history),
+    // and that command only checks the checkout against the trusted revision: it takes the revision
+    // from OR_TRUSTED_SOURCE_REVISION alone and writes no file, so the evidence (VALIDATION_EVIDENCE_SCRIPT)
+    // still carries CodePipeline's CommitId, never one read from git.
+    const bindCommand = nodeEval(VALIDATION_SOURCE_BIND_SCRIPT);
+    const validationCommands = allCommands(VALIDATION_PROJECT);
+    expect(validationCommands.filter((c) => c === bindCommand)).toHaveLength(1);
+    const others = JSON.stringify(validationCommands.filter((c) => c !== bindCommand));
+    expect(others).not.toContain('rev-parse');
+    expect(others).not.toMatch(/\bgit\b/);
+    expect(VALIDATION_SOURCE_BIND_SCRIPT.match(/\bsha=/g)).toEqual(['sha=']);
+    expect(VALIDATION_SOURCE_BIND_SCRIPT).toContain('const sha=process.env.OR_TRUSTED_SOURCE_REVISION;');
+    expect(VALIDATION_SOURCE_BIND_SCRIPT).not.toMatch(/writeFile|appendFile|createWriteStream|console\.|process\.stdout/);
   });
 
   it('the synthesized commands are exactly the exported, tested scripts', () => {
@@ -1222,7 +1409,7 @@ describe('deploy account pin (pre-arming blocker 3)', () => {
 
   it('a concrete synth for another account fails before any template exists', () => {
     const app = new cdk.App();
-    expect(() => new DevDeployBrokerStack(app, 'Other', { env: { account: '123456789012', region: 'ap-northeast-1' } })).toThrow(/822063948773/);
+    expect(() => new DevDeployBrokerStack(app, 'Other', { env: { account: '123456789012', region: 'ap-northeast-1' } })).toThrow(new RegExp(DEV_ACCOUNT_ID));
     // Environment-agnostic synth is allowed; the broker's first command refuses any other account.
     expect(() => new DevDeployBrokerStack(new cdk.App(), 'Agnostic')).not.toThrow();
   });
@@ -1346,6 +1533,24 @@ describe('execution provenance (pre-arming blockers 2 and 4)', () => {
     }
   });
 
+  it('BatchGetBuilds is granted on exactly the validation and broker project ARNs (its own record, no wildcard)', () => {
+    const projectId = (name: string) => PROJECTS.find(([, r]) => r.Properties.Name === name)?.[0];
+    // IAM glob semantics: `codebuild:BatchGet*`, `codebuild:*Builds`, `*` all grant BatchGetBuilds.
+    const grantsAction = (pattern: string, action: string) =>
+      new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')}$`).test(action);
+    const grants = statementsFor(roleLogicalId(BROKER_ROLE)).filter((s) => s.Effect === 'Allow' && (s.NotAction !== undefined || actionsOf(s).some((a) => grantsAction(a, 'codebuild:batchgetbuilds'))));
+    expect(grants).toHaveLength(1);
+    expect(actionsOf(grants[0]!)).toEqual(['codebuild:batchgetbuilds']);
+    expect(grants[0]!.Resource).toEqual([{ 'Fn::GetAtt': [projectId(VALIDATION_PROJECT), 'Arn'] }, { 'Fn::GetAtt': [projectId(BROKER_PROJECT), 'Arn'] }]);
+    expect(JSON.stringify(grants[0]!.Resource)).not.toContain('*');
+  });
+
+  it('the module binds the same broker project name as the stack (the module is pinned, the env is not read)', async () => {
+    const m = (await import(pathToFileURL(PROVENANCE_SOURCE_PATH).href)) as { BROKER_PROJECT_NAME: string };
+    expect(m.BROKER_PROJECT_NAME).toBe(BROKER_PROJECT);
+    expect(PROJECTS.filter(([, r]) => r.Properties.Name === BROKER_PROJECT)).toHaveLength(1);
+  });
+
   it('runs the pinned module right after the account check, before any candidate file is read', () => {
     const commands = allCommands(BROKER_PROJECT);
     expect(commands.slice(0, 13)).toEqual([
@@ -1410,7 +1615,8 @@ describe('the broker never reads or writes the candidate tree CodeBuild extracte
       // Drop inline scripts and quoted strings; what remains are the paths and flags the shell sees.
       const shell = command.replace(/node -e '[^']*'/g, 'node').replace(/"[^"]*"/g, '');
       for (const token of shell.split(/\s+/).filter(Boolean)) {
-        if (/^(node|test|-f|-e|mkdir|-m|-p|700|aws|s3|cp|deny|--gate-file|&&|\|\||if|then|fi|\[|=|0|\];|>&2;|--only-show-errors|echo|exit|42|>|>&2|822063948773|--assembly|--account|--pipeline|--validation-project|--artifact-bucket-env|--stages|--stacks)$/.test(token)) continue;
+        if (token === DEV_ACCOUNT_ID) continue;
+        if (/^(node|test|-f|-e|mkdir|-m|-p|700|aws|s3|cp|deny|--gate-file|&&|\|\||if|then|fi|\[|=|0|\];|>&2;|--only-show-errors|echo|exit|42|>|>&2|--assembly|--account|--pipeline|--validation-project|--artifact-bucket-env|--stages|--stacks)$/.test(token)) continue;
         if (/^"\$[A-Z_]+"$|^"s3:\/\/\$[A-Z_]+\/\$[A-Z_]+"$|^OR_[A-Z0-9_]+$|^[A-Z][A-Za-z]+$|^[A-Z_]+$|^Source\/PromotionBranch,Validate\/UnprivilegedValidation,BrokerBoundary\/TrustedBrokerUnarmed$|^OpenReception-Web-dev,OpenReception-WebMonitoring-dev,OpenReception-CfMon-dev@us-east-1$/.test(token)) continue;
         expect(token.startsWith('/tmp/open-reception-'), `${token} in: ${command}`).toBe(true);
       }
@@ -1514,6 +1720,8 @@ describe('ledger wiring (#1153): delivery, pin and denial audit', () => {
       gateCommand('TRUSTED_POLICY_DENIED'),
       gateCommand('BROKER_MODULE_INTEGRITY'),
       gateCommand('TARGET_STACK_NOT_STABLE'),
+      gateCommand('BROKER_MODULE_INTEGRITY'),
+      gateCommand('ACCESS_RESTRICTION_DENIED'),
       gateCommand('BROKER_NOT_ARMED'),
     ]);
     // Every trusted-module download / hash check runs under the integrity marker.
@@ -1725,6 +1933,45 @@ describe('alerts for attempts that may stay in_progress (#1153)', () => {
     const [alarmId] = byType('AWS::CloudWatch::Alarm')[0]!;
     expect(cw[0]!.Condition).toEqual({ ArnEquals: { 'aws:SourceArn': { 'Fn::GetAtt': [alarmId, 'Arn'] } }, StringEquals: { 'aws:SourceAccount': { Ref: 'AWS::AccountId' } } });
   });
+
+  /** Every statement of every policy attached to the alert topic (all `AWS::SNS::TopicPolicy`). */
+  const topicStatements = (): Statement[] =>
+    byType('AWS::SNS::TopicPolicy')
+      .filter(([, p]) => (p.Properties.Topics as unknown[]).some((t) => JSON.stringify(t) === JSON.stringify({ Ref: topicId })))
+      .flatMap(([, p]) => documentStatements(p.Properties.PolicyDocument));
+
+  it('🔴 every Allow on the alert topic is bound to its source ARN and this account (no confused deputy, #1218)', () => {
+    // CDK's EventBridge SNS target adds an unconditioned `events.amazonaws.com` Allow (Sid "2"):
+    // any account's rule could then publish fake alerts, or drown a real one.
+    const allows = topicStatements().filter((s) => s.Effect === 'Allow');
+    expect(allows.length).toBeGreaterThan(0);
+    for (const s of allows) {
+      const c = s.Condition as Record<string, Record<string, unknown>> | undefined;
+      // Exact operators only: `ArnLike` with a wildcard or an `…IfExists` variant would not bind.
+      expect(c?.ArnEquals?.['aws:SourceArn'], JSON.stringify(s)).toBeDefined();
+      expect(JSON.stringify(c!.ArnEquals!['aws:SourceArn'])).not.toContain('*');
+      expect(c?.StringEquals?.['aws:SourceAccount'], JSON.stringify(s)).toEqual({ Ref: 'AWS::AccountId' });
+      expect(s.Principal, JSON.stringify(s)).toEqual({ Service: expect.stringMatching(/^[a-z]+\.amazonaws\.com$/) });
+      expect(s.NotPrincipal).toBeUndefined();
+    }
+  });
+
+  it('EventBridge may publish to the topic only from the two abort rules (#1218)', () => {
+    const ev = topicStatements().filter((s) => JSON.stringify(s.Principal) === JSON.stringify({ Service: 'events.amazonaws.com' }));
+    // Exactly one, and it is still there: without it the abort alerts would be silently dropped.
+    expect(ev).toHaveLength(1);
+    expect(ev[0]).toMatchObject({ Effect: 'Allow', Action: 'sns:Publish', Resource: { Ref: topicId } });
+    const ruleIds = byType('AWS::Events::Rule').map(([id]) => id);
+    expect(ruleIds).toHaveLength(2);
+    expect(ev[0]!.Condition).toEqual({
+      ArnEquals: { 'aws:SourceArn': ruleIds.map((id) => ({ 'Fn::GetAtt': [id, 'Arn'] })) },
+      StringEquals: { 'aws:SourceAccount': { Ref: 'AWS::AccountId' } },
+    });
+    // Resource-policy publish only: no rule role (no new IAM role or permission).
+    for (const [, rule] of byType('AWS::Events::Rule')) {
+      for (const t of rule.Properties.Targets as Json[]) expect(t.RoleArn).toBeUndefined();
+    }
+  });
 });
 
 describe('target-stack stability gate (S10a): a failed or busy target stack blocks automated attempts', () => {
@@ -1779,7 +2026,10 @@ describe('target-stack stability gate (S10a): a failed or busy target stack bloc
       TARGET_STACKS_COMMAND,
       nodeEval(TARGET_STACKS_RESULT_CHECK_SCRIPT, TARGET_STACKS_DECISION_PATH),
     ]);
-    expect(c[download + 5]).toBe(gateCommand('BROKER_NOT_ARMED'));
+    // Followed only by the access-restriction gate (pinned in its own block below), then BROKER_NOT_ARMED.
+    expect(c[download + 5]).toBe(gateCommand('BROKER_MODULE_INTEGRITY'));
+    expect(c[download + 6]).toBe(`aws s3 cp "s3://$OR_ACCESS_RESTRICTION_MODULE_BUCKET/$OR_ACCESS_RESTRICTION_MODULE_KEY" ${ACCESS_RESTRICTION_LOCAL_PATH} --only-show-errors`);
+    expect(c[download + 11]).toBe(gateCommand('BROKER_NOT_ARMED'));
     expect(c.filter((x) => x.includes(TARGET_STACKS_LOCAL_PATH))).toHaveLength(3);
   });
 
@@ -1832,6 +2082,7 @@ describe('target-stack stability gate (S10a): a failed or busy target stack bloc
     for (const r of ESCALATION_RULES) expect(pattern).toContain(`($.rule = "${r}")`);
     const ledger = (await import(pathToFileURL(LEDGER_MODULE_SOURCE_PATH).href)) as { RULES: Record<string, string> };
     expect(ESCALATION_RULES).toContain(ledger.RULES.REVISION_REPEATED_FAILURE);
+    expect(ESCALATION_RULES).toContain(ledger.RULES.LEDGER_CORRUPT);
     // Every rule the stability module can log (its own line carries the precise rule).
     const stacks = (await import(pathToFileURL(TARGET_STACKS_SOURCE_PATH).href)) as { RULES: Record<string, string> };
     for (const r of Object.values(stacks.RULES)) expect(ESCALATION_RULES, r).toContain(r);
@@ -1841,5 +2092,120 @@ describe('target-stack stability gate (S10a): a failed or busy target stack bloc
     const policy = (await import(pathToFileURL(TRUSTED_POLICY_SOURCE_PATH).href)) as { APPROVED_STACKS: Record<string, string> };
     // The broker (and the region-less stacks) run in the dev region the policy pins for Web.
     expect(Object.fromEntries(TARGET_STACKS.map((t) => [t.stackName, t.region ?? 'ap-northeast-1']))).toEqual(policy.APPROVED_STACKS);
+  });
+});
+
+describe('access-restriction gate (S6c, D-5): broker-derived, pinned, before BROKER_NOT_ARMED, no new authority', () => {
+  const commands = () => allCommands(BROKER_PROJECT);
+
+  it('downloads, verifies, runs and checks the pinned module after the target-stack check and right before BROKER_NOT_ARMED', () => {
+    const c = commands();
+    const targetCheck = c.indexOf(nodeEval(TARGET_STACKS_RESULT_CHECK_SCRIPT, TARGET_STACKS_DECISION_PATH));
+    expect(targetCheck).toBeGreaterThan(0);
+    expect(c.slice(targetCheck + 1, targetCheck + 10)).toEqual([
+      gateCommand('BROKER_MODULE_INTEGRITY'),
+      `aws s3 cp "s3://$OR_ACCESS_RESTRICTION_MODULE_BUCKET/$OR_ACCESS_RESTRICTION_MODULE_KEY" ${ACCESS_RESTRICTION_LOCAL_PATH} --only-show-errors`,
+      nodeEval(BROKER_MODULE_HASH_CHECK_SCRIPT, ACCESS_RESTRICTION_LOCAL_PATH, 'OR_ACCESS_RESTRICTION_MODULE_SHA256'),
+      gateCommand('ACCESS_RESTRICTION_DENIED'),
+      ACCESS_RESTRICTION_COMMAND,
+      nodeEval(ACCESS_RESTRICTION_RESULT_CHECK_SCRIPT, ACCESS_RESTRICTION_DECISION_PATH),
+      gateCommand('BROKER_NOT_ARMED'),
+      nodeEval(BROKER_NOT_ARMED_RESULT_SCRIPT, POLICY_RESULT_PATH, BROKER_RESULT_PATH),
+      'echo "Trusted broker is intentionally unarmed." >&2',
+    ]);
+    expect(c[targetCheck + 10]).toBe('exit 42');
+    expect(buildSpec(BROKER_PROJECT).phases.build!.commands.at(-1)).toBe('exit 42');
+    expect(c.filter((x) => x.includes(ACCESS_RESTRICTION_LOCAL_PATH))).toHaveLength(3);
+    expect(ACCESS_RESTRICTION_COMMAND).toBe(`node ${ACCESS_RESTRICTION_LOCAL_PATH} --assembly ${BROKER_ASSEMBLY_DIR}`);
+  });
+
+  it('runs only after the trusted policy, whose denial (nested stacks / assemblies included) stops the build first', () => {
+    const c = commands();
+    const policyRun = c.findIndex((x) => x.startsWith(`node ${TRUSTED_POLICY_LOCAL_PATH} --assembly ${BROKER_ASSEMBLY_DIR} `));
+    expect(policyRun).toBeGreaterThan(0);
+    // A plain command: a non-zero exit (41 = denied) fails the phase; nothing swallows it.
+    expect(c[policyRun]).not.toMatch(/\|\||;|&$/);
+    expect(policyRun).toBeLessThan(c.indexOf(ACCESS_RESTRICTION_COMMAND));
+    expect(c.slice(policyRun, c.indexOf(ACCESS_RESTRICTION_COMMAND)).some((x) => x.includes('|| true'))).toBe(false);
+  });
+
+  it('still never reserves or records an outcome while unarmed; BROKER_NOT_ARMED is the last gate', () => {
+    const c = commands();
+    expect(c.some((x) => / reserve\b| outcome\b/.test(x))).toBe(false);
+    const gates = c.filter((x) => x.endsWith(`> ${LEDGER_GATE_FILE}`));
+    expect(gates.at(-1)).toBe(gateCommand('BROKER_NOT_ARMED'));
+    const build = buildSpec(BROKER_PROJECT).phases.build!.commands;
+    expect(build.slice(build.indexOf(gateCommand('BROKER_NOT_ARMED')))).toEqual([
+      gateCommand('BROKER_NOT_ARMED'),
+      nodeEval(BROKER_NOT_ARMED_RESULT_SCRIPT, POLICY_RESULT_PATH, BROKER_RESULT_PATH),
+      'echo "Trusted broker is intentionally unarmed." >&2',
+      'exit 42',
+    ]);
+  });
+
+  it('pins the real content SHA-256 of the module', () => {
+    const vars = Object.fromEntries(
+      ((project(BROKER_PROJECT).Environment as Json).EnvironmentVariables as Array<{ Name: string; Value: unknown }>).map((v) => [v.Name, v.Value]),
+    );
+    expect(vars.OR_ACCESS_RESTRICTION_MODULE_SHA256).toBe(createHash('sha256').update(readFileSync(ACCESS_RESTRICTION_SOURCE_PATH)).digest('hex'));
+    expect(vars.OR_ACCESS_RESTRICTION_MODULE_SHA256).toBe(trustedPolicySha256(ACCESS_RESTRICTION_SOURCE_PATH));
+    expect(vars.OR_ACCESS_RESTRICTION_MODULE_KEY).toMatch(/^[0-9a-f]{64}\.mjs$/);
+  });
+
+  it('the module, the stack and the runner agree on the decision path; the runner records the gate', async () => {
+    const m = (await import(pathToFileURL(ACCESS_RESTRICTION_SOURCE_PATH).href)) as Record<string, unknown>;
+    expect(m.BROKER_OUT_DIR).toBe(BROKER_OUT_DIR);
+    expect(m.DECISION_PATH).toBe(ACCESS_RESTRICTION_DECISION_PATH);
+    const runner = (await import(pathToFileURL(LEDGER_RUNNER_SOURCE_PATH).href)) as { GATE_RULES: readonly string[]; ACCESS_RESTRICTION_PATH: string };
+    expect(runner.ACCESS_RESTRICTION_PATH).toBe(ACCESS_RESTRICTION_DECISION_PATH);
+    expect(runner.GATE_RULES).toContain('ACCESS_RESTRICTION_DENIED');
+  });
+
+  it('open-reception declares no restriction check today (effective policy stays 1 / 2)', async () => {
+    const m = (await import(pathToFileURL(ACCESS_RESTRICTION_SOURCE_PATH).href)) as { PRODUCT_RESTRICTION_CHECK: unknown };
+    expect(m.PRODUCT_RESTRICTION_CHECK).toBeNull();
+  });
+
+  it('the decision check requires allowed, this execution, this revision and a known state', () => {
+    const decision = (d: unknown) => {
+      const dir = workspace();
+      writeFileSync(join(dir, 'access-restriction.json'), JSON.stringify(d));
+      return run(nodeEval(ACCESS_RESTRICTION_RESULT_CHECK_SCRIPT, join(dir, 'access-restriction.json')), dir, {
+        OR_PIPELINE_EXECUTION_ID: 'e-1',
+        OR_TRUSTED_SOURCE_REVISION: REV_A,
+      }).ok;
+    };
+    const good = { result: 'allowed', rule: null, executionId: 'e-1', revision: REV_A, accessRestriction: { state: 'absent' } };
+    expect(decision(good)).toBe(true);
+    expect(decision({ ...good, accessRestriction: { state: 'verified' } })).toBe(true);
+    expect(decision({ ...good, accessRestriction: { state: 'unverifiable' } })).toBe(false);
+    expect(decision({ ...good, accessRestriction: {} })).toBe(false);
+    expect(decision({ ...good, result: 'denied' })).toBe(false);
+    expect(decision({ ...good, rule: 'ACCESS_RESTRICTION_WEAKENED' })).toBe(false);
+    expect(decision({ ...good, executionId: 'e-2' })).toBe(false);
+    expect(decision({ ...good, executionId: null })).toBe(false);
+    expect(decision({ ...good, revision: REV_B })).toBe(false);
+    expect(decision({})).toBe(false);
+  });
+
+  it('a weakened declared restriction, an unreadable assembly and an unsettled previous attempt raise the alarm', async () => {
+    const [, filter] = byType('AWS::Logs::MetricFilter')[0]!;
+    const pattern = filter.Properties.FilterPattern as string;
+    const m = (await import(pathToFileURL(ACCESS_RESTRICTION_SOURCE_PATH).href)) as { RULES: Record<string, string> };
+    const ledger = (await import(pathToFileURL(LEDGER_MODULE_SOURCE_PATH).href)) as { RULES: Record<string, string> };
+    // A leaked credential needs human rotation, so every access-restriction rule escalates.
+    expect(Object.values(m.RULES).sort()).toEqual(['ACCESS_RESTRICTION_CREDENTIAL_IN_TEMPLATE', 'ACCESS_RESTRICTION_INPUT_INVALID', 'ACCESS_RESTRICTION_WEAKENED']);
+    for (const r of [...Object.values(m.RULES), ledger.RULES.PREVIOUS_ATTEMPT_UNSETTLED!]) {
+      expect(ESCALATION_RULES as readonly string[], r).toContain(r);
+      expect(pattern).toContain(`($.rule = "${r}")`);
+    }
+  });
+
+  it('adds no IAM: the broker role reads the module through the existing asset grant only', () => {
+    const broker = statementsFor(roleLogicalId(BROKER_ROLE));
+    const text = JSON.stringify(broker);
+    expect(text).not.toContain('sts:AssumeRole');
+    // No statement names the module specifically: it shares the asset-bucket read the other trusted modules use.
+    expect(text).not.toContain('access-restriction');
   });
 });

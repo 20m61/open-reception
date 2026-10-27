@@ -23,14 +23,14 @@
     "@aws-sdk/client-route-53": "3.1093.0",
     "@aws-sdk/client-ssm": "3.1093.0",
     "@types/node": "22.10.7",
-    "aws-cdk": "2.1128.0",
+    "aws-cdk": "2.1145.0",
     "esbuild": "0.28.1",
     "ts-node": "10.9.2",
     "typescript": "5.7.3",
     "vitest": "4.1.9"
   },
   "dependencies": {
-    "aws-cdk-lib": "2.263.0",
+    "aws-cdk-lib": "2.273.0",
     "constructs": "10.6.0",
     "source-map-support": "0.5.21"
   }

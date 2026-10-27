@@ -40,15 +40,41 @@ export function getAnswerSecret(): string {
   return serverSecret('CALL_ANSWER_SECRET', 'dev-insecure-answer-secret', { failClosed: true });
 }
 
-/** 受付セッションに対する応答トークンを発行する（通知リンクに含める）。 */
-export async function issueAnswerToken(receptionId: string, ttlMs: number = DEFAULT_TTL_MS): Promise<string> {
-  return signSession({ role: 'call_answer', receptionId, exp: Date.now() + ttlMs }, getAnswerSecret());
+/**
+ * 受付セッションに対する応答トークンを発行する（通知リンクに含める）。
+ *
+ * `tenantId` は**担当者の所属テナント**（通知を組み立てる側がサーバー側で解決した値）。
+ * 応答ルートはこれが受付の Vonage セッションの所有テナントと一致するときだけトークンを
+ * 発行する（`lib/call/vonage-session-access.ts`）。
+ *
+ * 🔴 **通知経路へ配線するときは、受付側の値（`reception.vonageTenantId` や受付端末の
+ * テナント）をここへ渡さないこと。** 照合の相手そのものを渡すことになり、照合が必ず一致して
+ * 空虚になる（どのテナントの担当者にも発行できてしまう）。渡すのは通知先の担当者の所属を
+ * サーバー側（担当者台帳など）で解決した値だけ。現時点で本番の呼び出し元は無い。
+ */
+export async function issueAnswerToken(
+  receptionId: string,
+  tenantId: string,
+  ttlMs: number = DEFAULT_TTL_MS,
+): Promise<string> {
+  return signSession({ role: 'call_answer', receptionId, tenantId, exp: Date.now() + ttlMs }, getAnswerSecret());
 }
 
-/** 応答トークンを検証し receptionId を返す。無効/期限切れ/別用途なら null。 */
-export async function readAnswerToken(token: string | undefined): Promise<{ receptionId: string } | null> {
+/**
+ * 応答トークンを検証し receptionId（と担当者のテナント）を返す。無効/期限切れ/別用途なら null。
+ *
+ * `tenantId` を持たないトークンは `tenantId: undefined` で返す（受付への応答そのものは
+ * 妨げない）。Vonage のトークン発行はテナントが一致しない限り行わないので、持たないトークンは
+ * そこで拒否される。持っているのに文字列でない（壊れている）トークンは無効として扱う。
+ */
+export async function readAnswerToken(
+  token: string | undefined,
+): Promise<{ receptionId: string; tenantId?: string } | null> {
   const payload = await verifySession(token, getAnswerSecret());
   if (!payload || payload.role !== 'call_answer') return null;
   const receptionId = payload.receptionId;
-  return typeof receptionId === 'string' ? { receptionId } : null;
+  if (typeof receptionId !== 'string') return null;
+  const tenantId = payload.tenantId;
+  if (tenantId === undefined) return { receptionId };
+  return typeof tenantId === 'string' && tenantId !== '' ? { receptionId, tenantId } : null;
 }

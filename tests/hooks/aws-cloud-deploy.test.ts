@@ -39,6 +39,7 @@ import {
   stripBashComments,
   stripBashCommentsAndStrings,
 } from '../../src/domain/governance/bash-source';
+import { DEV_ACCOUNT_ID } from '../../src/domain/governance/dev-account';
 
 const WRAPPER = resolve(process.cwd(), 'scripts/aws-cloud-deploy.sh');
 
@@ -332,7 +333,7 @@ describe('workingTreeClean は git status 失敗時に fail-closed する (Impor
     [
       '#!/usr/bin/env bash',
       'if [ "$1" = "sts" ] && [ "$2" = "get-caller-identity" ]; then',
-      '  echo \'{"Account":"822063948773","Arn":"arn:aws:sts::822063948773:assumed-role/OpenReceptionClaudeDeploy-dev/test"}\'',
+      `  echo '{"Account":"${DEV_ACCOUNT_ID}","Arn":"arn:aws:sts::${DEV_ACCOUNT_ID}:assumed-role/OpenReceptionClaudeDeploy-dev/test"}'`,
       '  exit 0',
       'fi',
       'echo "fake aws: unsupported args: $*" >&2',

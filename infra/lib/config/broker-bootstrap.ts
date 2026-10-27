@@ -23,3 +23,24 @@ export const BROKER_BOOTSTRAP_QUALIFIER = 'orbrkr01';
  * shared bootstrap's cfn-exec role. CDK names it `cdk-<qualifier>-cfn-exec-role-<account>-<region>`.
  */
 export const BROKER_STACK_DEPLOY_ROLE_ARN_PATTERN = `^arn:aws:iam::[0-9]{12}:role/cdk-${BROKER_BOOTSTRAP_QUALIFIER}-cfn-exec-role-[0-9]{12}-[a-z]{2}(-[a-z]+)+-[0-9]$`;
+
+/**
+ * The broker stack lives in exactly one region. The CDK CLI always exports `CDK_DEFAULT_REGION`
+ * (from `AWS_REGION` / the profile, falling back to `us-east-1`), so `CDK_DEFAULT_REGION ?? '…'` was
+ * never the fallback it looked like: an offline synth without a configured region produced a
+ * `us-east-1` stack. The region is pinned, and a different configured region is refused rather than
+ * silently overridden: the runbook's other commands (`aws cloudformation …`, `rollback-stack`,
+ * `create-connection`) use the same shell, so a mismatch there must surface before a deploy.
+ */
+export const BROKER_STACK_REGION = 'ap-northeast-1';
+
+export function brokerStackRegion(env: Readonly<Record<string, string | undefined>>): string {
+  const configured = env.CDK_DEFAULT_REGION;
+  if (configured !== undefined && configured !== BROKER_STACK_REGION) {
+    throw new Error(
+      `The dev deploy broker stack must be synthesized for ${BROKER_STACK_REGION}, but CDK_DEFAULT_REGION is ${JSON.stringify(configured)}. ` +
+        `Set AWS_REGION=${BROKER_STACK_REGION} instead of relying on the profile's region.`,
+    );
+  }
+  return BROKER_STACK_REGION;
+}

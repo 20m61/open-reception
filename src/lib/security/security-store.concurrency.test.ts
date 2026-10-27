@@ -15,7 +15,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BUILTIN_DEFAULT_PIN } from '@/domain/security/pin';
-import type { SecuritySettings } from '@/domain/security/types';
+import type { EffectiveSecuritySettings, SecuritySettings } from '@/domain/security/types';
 import { getBackend } from '@/lib/data';
 import {
   __resetSecurity,
@@ -69,11 +69,11 @@ type Patch = Record<string, unknown>;
  * フィールドの素な組。管理画面と同じ形で送る: フォームの項目は**読んだ版（0）を付けて**、
  * 緊急停止は版なしのトグルで送る（版なしで受け付けるのは緊急停止だけ）。
  */
-const DISJOINT: ReadonlyArray<readonly [string, Patch, (s: SecuritySettings) => Promise<boolean>]> = [
+const DISJOINT: ReadonlyArray<readonly [string, Patch, (s: EffectiveSecuritySettings) => Promise<boolean>]> = [
   ['緊急停止', { emergencyStop: true }, async (s) => s.emergencyStop === true],
   ['PIN', { rev: 0, pin: '4821' }, async () => verifyPin('4821')],
   ['PIN 必須', { rev: 0, pinRequired: true }, async (s) => s.pinRequired === true],
-  ['IP 許可リスト', { rev: 0, ipAllowlist: ['203.0.113.7'] }, async (s) => s.ipAllowlist.includes('203.0.113.7')],
+  ['IP 許可リスト', { rev: 0, ipAllowlist: ['203.0.113.7'] }, async (s) => s.ipAllowlist?.includes('203.0.113.7') === true],
 ];
 
 describe('セキュリティ設定の同時更新 (#1158)', () => {
