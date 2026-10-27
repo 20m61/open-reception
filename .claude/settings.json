@@ -92,7 +92,16 @@
       "Bash(git push origin --delete:*)",
       "Bash(aws cloudformation list-stacks:*)",
       "Bash(aws cloudformation describe-stacks:*)",
-      "Bash(aws sts get-caller-identity)"
+      "Bash(aws sts get-caller-identity)",
+      "Bash(git rev-parse:*)",
+      "Bash(git remote -v)",
+      "Bash(dpkg -s:*)",
+      "Bash(fc-list:*)",
+      "Bash(node --version)",
+      "Bash(npm --version)",
+      "Bash(pnpm --version)",
+      "Bash(pnpm exec playwright --version)",
+      "Bash(npx playwright --version)"
     ]
   }
 }

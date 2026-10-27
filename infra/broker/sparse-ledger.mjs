@@ -1,0 +1,872 @@
+/**
+ * Sparse dev-deploy attempt ledger (#1153, Foundation safe-dev-deploy S5a / S6 / S6a / S6b).
+ *
+ * Owner decision recorded on #1153 (2026-09-27):
+ * - record every attempt that reaches the mutation boundary AND its outcome (success / failure);
+ * - the daily limit counts **attempts**, not successes (target 1, soft ceiling 2);
+ * - the accounting window is the calendar day in one declared IANA timezone (Asia/Tokyo);
+ * - a further attempt needs an S5a override bound to one revision AND one rule, single-use,
+ *   expiring and auditable;
+ * - an unavailable, unreadable or inconsistent ledger denies (S6a).
+ *
+ * This file is dependency-free. DynamoDB access goes through an injected client whose methods
+ * take the low-level DynamoDB JSON request (`transactGetItems`, `putItem`, `transactWriteItems`), so the
+ * same code runs against the AWS SDK, the AWS CLI or an emulator. Every write is conditional:
+ * the broker runs with concurrency 1, and the conditions are the second line of defence.
+ *
+ * Keys (single table, PK = `PROJECT#open-reception`):
+ * - `DAY#<YYYY-MM-DD>`            attemptCount / successCount / failureCount for one Tokyo day
+ * - `ATTEMPT#<attemptId>`         one audit record per attempt (reserved, outcome, denial)
+ * - `OVERRIDE#<rule>#<revision>#<day>`  one human-issued, single-use override (create-only)
+ * - `META#genesis`                written once by a human when the ledger is initialised
+ *
+ * The genesis item is what distinguishes "a fresh day" from "an empty or replaced table": a
+ * missing day counter only means zero when the genesis item exists and carries the ledger id
+ * the broker was configured with. It also carries a cumulative `totalAttempts`, the monotonic
+ * `lastDay` of the latest reservation and that day's attempt count (`lastDayAttempts`), all
+ * compare-and-set in every reservation, so a deleted, overwritten or decremented counter for
+ * today, a day count above the total, or a clock that went backwards is detected. Otherwise the ledger's integrity cannot be established (S6a).
+ *
+ * Owner decision D-5 (2026-10-03, Foundation safe-dev-deploy S6 / S6c):
+ * - two access profiles. A target that is not access-restricted keeps soft ceiling 2, no cooldown
+ *   and no waiver: the same ceiling and override semantics as before D-5. It is NOT byte-for-byte
+ *   the old behaviour: it additionally denies `SPARSE_PREVIOUS_ATTEMPT_UNSETTLED`,
+ *   `SPARSE_LEDGER_CORRUPT` on a previous-attempt pointer mismatch and `SPARSE_LEDGER_CONFLICT` on
+ *   a genesis race between the two reads, and the reservation records `accessProfile` /
+ *   `softCeiling` / `cooldownWaived`. A target whose restriction the broker VERIFIED over
+ *   the synthesized template (`access-restriction.mjs`) gets soft ceiling 5 per Tokyo day and a
+ *   1 h cooldown measured from when the previous attempt reached the mutation boundary (it does
+ *   not reset at midnight). The cooldown may be skipped once, only after a FAILED previous
+ *   attempt, only for a DIFFERENT revision, and never by an attempt right after one that itself
+ *   skipped it. A waived attempt consumes budget. `absent` and `unverifiable` are not restricted;
+ * - in both profiles, a previous attempt still `in_progress` denies every next attempt of the
+ *   project (`SPARSE_PREVIOUS_ATTEMPT_UNSETTLED`, not overridable; a human closes it, runbook 10a);
+ * - the previous attempt is found through a pointer on genesis (`lastAttemptId`, `lastReservedAt`,
+ *   `lastRevision`, `lastCooldownWaived`), present exactly when `totalAttempts > 0` and
+ *   compare-and-set by every reservation; its status is read from its own `ATTEMPT#` record.
+ */
+
+export const PROJECT_KEY = 'PROJECT#open-reception';
+export const LEDGER_TIMEZONE = 'Asia/Tokyo';
+export const TARGET_ATTEMPTS_PER_DAY = 1;
+/** Soft ceiling of the profile that is not access-restricted (the pre-D-5 ceiling). */
+export const SOFT_ATTEMPT_CEILING = 2;
+
+/**
+ * D-5 access profiles (Foundation `PORTFOLIO_DEFAULTS`). Only an access restriction the broker
+ * verified selects `access_restricted`; `absent`, `unverifiable` and anything unreadable select
+ * `not_access_restricted` (S6c: an unverifiable restriction is an absent one).
+ */
+export const ACCESS_PROFILES = Object.freeze({
+  not_access_restricted: Object.freeze({ name: 'not_access_restricted', softCeiling: SOFT_ATTEMPT_CEILING, cooldownSeconds: 0, cooldownWaiver: false }),
+  access_restricted: Object.freeze({ name: 'access_restricted', softCeiling: 5, cooldownSeconds: 60 * 60, cooldownWaiver: true }),
+});
+export const ACCESS_RESTRICTION_STATES = Object.freeze(['verified', 'absent', 'unverifiable']);
+
+export function selectAccessProfile(accessRestriction) {
+  return accessRestriction?.state === 'verified' ? ACCESS_PROFILES.access_restricted : ACCESS_PROFILES.not_access_restricted;
+}
+
+/** Status values of a reserved attempt's record. Anything else at the pointer is corruption. */
+const RESERVED_STATUSES = Object.freeze(['in_progress', 'succeeded', 'failed']);
+
+/** The only rule an override can lift. Guards such as IAM or revision binding are not overridable. */
+export const DAILY_CEILING_RULE = 'SPARSE_DAILY_ATTEMPT_CEILING';
+export const OVERRIDABLE_RULES = Object.freeze([DAILY_CEILING_RULE]);
+
+/**
+ * S10a: repeated failures against one source revision escalate to a human instead of consuming
+ * the remaining budget. A transient failure may be retried once (S6). An attempt that never
+ * recorded an outcome (timed out, stopped, crashed, ambiguous) counts like a failure until a
+ * success is recorded for it, and so does one still running: a revision is blocked once
+ * MAX_FAILURES_PER_REVISION of its reserved attempts have not succeeded. Not overridable: the S5a
+ * override lifts only the daily ceiling (`OVERRIDABLE_RULES`); a fix is a new revision.
+ */
+export const MAX_FAILURES_PER_REVISION = 2;
+export const REVISION_REPEATED_FAILURE_RULE = 'SPARSE_REVISION_REPEATED_FAILURE';
+/** D-5: a previous attempt still in_progress blocks the project (both profiles). Not overridable. */
+export const PREVIOUS_ATTEMPT_UNSETTLED_RULE = 'SPARSE_PREVIOUS_ATTEMPT_UNSETTLED';
+/** D-5: within the access-restricted cooldown without a valid waiver. Not overridable. */
+export const COOLDOWN_ACTIVE_RULE = 'SPARSE_COOLDOWN_ACTIVE';
+
+export const RULES = Object.freeze({
+  REVISION_INVALID: 'TRUSTED_REVISION_INVALID',
+  ATTEMPT_ID_INVALID: 'ATTEMPT_ID_INVALID',
+  LEDGER_UNAVAILABLE: 'SPARSE_LEDGER_UNAVAILABLE',
+  LEDGER_CORRUPT: 'SPARSE_LEDGER_CORRUPT',
+  LEDGER_CONFLICT: 'SPARSE_LEDGER_CONFLICT',
+  CLOCK_INVALID: 'BROKER_CLOCK_INVALID',
+  DAILY_CEILING: DAILY_CEILING_RULE,
+  REVISION_REPEATED_FAILURE: REVISION_REPEATED_FAILURE_RULE,
+  PREVIOUS_ATTEMPT_UNSETTLED: PREVIOUS_ATTEMPT_UNSETTLED_RULE,
+  COOLDOWN_ACTIVE: COOLDOWN_ACTIVE_RULE,
+});
+
+/** Longest override lifetime a human can issue. Keeps a forgotten override from lingering. */
+export const MAX_OVERRIDE_TTL_SECONDS = 24 * 60 * 60;
+
+const FULL_SHA = /^[0-9a-f]{40}$/;
+/** CodeBuild build ids look like `<project>:<uuid>`; keep the key space printable and bounded. */
+const ATTEMPT_ID = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,254}$/;
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+/** Ledger instance id pinned in the broker environment (e.g. a UUID chosen at initialisation). */
+const LEDGER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$/;
+
+export const isLedgerId = (v) => typeof v === 'string' && LEDGER_ID.test(v);
+const isValidDate = (d) => d instanceof Date && !Number.isNaN(d.getTime());
+
+export const isFullSha = (v) => typeof v === 'string' && FULL_SHA.test(v);
+export const isAttemptId = (v) => typeof v === 'string' && ATTEMPT_ID.test(v);
+
+/** Calendar day of `now` in the declared ledger timezone (never the caller's timezone). */
+export function ledgerDay(now) {
+  if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
+    throw new Error('ledgerDay requires a valid Date');
+  }
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: LEDGER_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(now);
+  const v = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  return `${v.year}-${v.month}-${v.day}`;
+}
+
+export const dayKey = (day) => `DAY#${day}`;
+export const attemptKey = (attemptId) => `ATTEMPT#${attemptId}`;
+export const overrideKey = (rule, revision, day) => `OVERRIDE#${rule}#${revision}#${day}`;
+export const GENESIS_KEY = 'META#genesis';
+export const revisionKey = (revision) => `REV#${revision}`;
+
+const key = (sk) => ({ PK: { S: PROJECT_KEY }, SK: { S: sk } });
+const epochSeconds = (now) => Math.floor(now.getTime() / 1000);
+
+/**
+ * Every attribute name in an expression is written as `#name` and aliased here. DynamoDB has
+ * hundreds of reserved words (`timezone`, `status`, `day`, ...); aliasing all of them removes
+ * the guesswork. The alias map is derived from the expression text, so it cannot drift.
+ */
+function withNames(op) {
+  const text = `${op.UpdateExpression ?? ''} ${op.ConditionExpression ?? ''}`;
+  const names = {};
+  for (const m of text.matchAll(/#([A-Za-z][A-Za-z0-9]*)/g)) names[`#${m[1]}`] = m[1];
+  return Object.keys(names).length ? { ...op, ExpressionAttributeNames: names } : op;
+}
+
+// --- DynamoDB attribute readers (strict: a present-but-wrong-typed attribute is corruption) ---
+
+const CORRUPT = Symbol('corrupt');
+
+function readInt(item, name) {
+  const attr = item[name];
+  if (attr === undefined) return undefined;
+  const keys = Object.keys(attr ?? {});
+  if (keys.length !== 1 || keys[0] !== 'N' || typeof attr.N !== 'string' || !/^\d+$/.test(attr.N)) {
+    return CORRUPT;
+  }
+  const n = Number(attr.N);
+  return Number.isSafeInteger(n) ? n : CORRUPT;
+}
+
+function readStr(item, name) {
+  const attr = item[name];
+  if (attr === undefined) return undefined;
+  const keys = Object.keys(attr ?? {});
+  if (keys.length !== 1 || keys[0] !== 'S' || typeof attr.S !== 'string') return CORRUPT;
+  return attr.S;
+}
+
+function readBool(item, name) {
+  const attr = item[name];
+  if (attr === undefined) return undefined;
+  const keys = Object.keys(attr ?? {});
+  if (keys.length !== 1 || keys[0] !== 'BOOL' || typeof attr.BOOL !== 'boolean') return CORRUPT;
+  return attr.BOOL;
+}
+
+/** An RFC 3339 instant exactly as `Date#toISOString` writes it (what the broker stores). */
+const isIsoInstant = (v) => typeof v === 'string' && !Number.isNaN(Date.parse(v)) && new Date(v).toISOString() === v;
+
+const isItem = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+/**
+ * Read the day counter. A missing item is a fresh day (count 0). A present item must carry the
+ * declared timezone, its own day, and consistent non-negative integer counters; otherwise the
+ * integrity of the count cannot be established and S6a denies.
+ */
+export function readDayCounter(dayItem, day) {
+  if (dayItem === undefined || dayItem === null) {
+    return { ok: true, exists: false, attemptCount: 0, successCount: 0, failureCount: 0 };
+  }
+  if (!isItem(dayItem)) return { ok: false, why: 'day item is not an object' };
+  if (readStr(dayItem, 'PK') !== PROJECT_KEY || readStr(dayItem, 'SK') !== dayKey(day)) {
+    return { ok: false, why: 'day item key does not match the requested day' };
+  }
+  if (readStr(dayItem, 'timezone') !== LEDGER_TIMEZONE) {
+    return { ok: false, why: 'day item timezone is missing or differs from the declared timezone' };
+  }
+  if (readStr(dayItem, 'day') !== day) {
+    return { ok: false, why: 'day item day attribute does not match its key' };
+  }
+  const attemptCount = readInt(dayItem, 'attemptCount');
+  const successCount = readInt(dayItem, 'successCount');
+  const failureCount = readInt(dayItem, 'failureCount');
+  for (const [name, v] of [
+    ['attemptCount', attemptCount],
+    ['successCount', successCount],
+    ['failureCount', failureCount],
+  ]) {
+    if (v === undefined || v === CORRUPT) {
+      return { ok: false, why: `${name} is missing or not a non-negative integer` };
+    }
+  }
+  if (successCount + failureCount > attemptCount) {
+    return { ok: false, why: 'more outcomes than attempts recorded' };
+  }
+  return { ok: true, exists: true, attemptCount, successCount, failureCount };
+}
+
+/**
+ * Per-revision counter (S10a). `unsettledCount` is the number of this revision's reserved
+ * attempts that have not recorded a success (running, failed, or never finished): a reservation
+ * adds one, a recorded success removes its own. `failureCount` is the recorded failures (for
+ * reporting; always <= unsettledCount). A missing item is a revision that never reached the
+ * boundary. A present item must be this revision's, with non-negative integers.
+ */
+export function readRevisionCounter(revisionItem, revision) {
+  if (revisionItem === undefined || revisionItem === null) return { ok: true, unsettledCount: 0, failureCount: 0 };
+  if (!isItem(revisionItem)) return { ok: false, why: 'revision item is not an object' };
+  if (readStr(revisionItem, 'PK') !== PROJECT_KEY || readStr(revisionItem, 'SK') !== revisionKey(revision) || readStr(revisionItem, 'revision') !== revision) {
+    return { ok: false, why: 'revision item does not match the requested revision' };
+  }
+  const unsettledCount = readInt(revisionItem, 'unsettledCount');
+  const failureCount = readInt(revisionItem, 'failureCount');
+  for (const [name, v] of [['unsettledCount', unsettledCount], ['failureCount', failureCount]]) {
+    if (v === undefined || v === CORRUPT) return { ok: false, why: `revision ${name} is missing or not a non-negative integer` };
+  }
+  if (failureCount > unsettledCount) return { ok: false, why: 'revision records more failures than unsettled attempts' };
+  return { ok: true, unsettledCount, failureCount };
+}
+
+/** The genesis item must exist and name the ledger id the broker was configured with. */
+export function readGenesis(genesisItem, ledgerId) {
+  if (!isLedgerId(ledgerId)) return { ok: false, why: 'broker has no valid ledger id configured' };
+  if (genesisItem === undefined || genesisItem === null) {
+    return { ok: false, why: 'genesis item missing (ledger not initialised, emptied or replaced)' };
+  }
+  if (!isItem(genesisItem)) return { ok: false, why: 'genesis item is not an object' };
+  if (readStr(genesisItem, 'PK') !== PROJECT_KEY || readStr(genesisItem, 'SK') !== GENESIS_KEY) {
+    return { ok: false, why: 'genesis item key mismatch' };
+  }
+  if (readStr(genesisItem, 'ledgerId') !== ledgerId) {
+    return { ok: false, why: 'genesis ledger id differs from the configured ledger id' };
+  }
+  if (readStr(genesisItem, 'timezone') !== LEDGER_TIMEZONE) return { ok: false, why: 'genesis timezone differs' };
+  const totalAttempts = readInt(genesisItem, 'totalAttempts');
+  if (totalAttempts === undefined || totalAttempts === CORRUPT) {
+    return { ok: false, why: 'genesis totalAttempts is missing or not a non-negative integer' };
+  }
+  const lastDay = readStr(genesisItem, 'lastDay');
+  if (lastDay === CORRUPT || (lastDay !== undefined && !DAY.test(lastDay))) {
+    return { ok: false, why: 'genesis lastDay is malformed' };
+  }
+  if ((lastDay === undefined) !== (totalAttempts === 0)) {
+    return { ok: false, why: 'genesis lastDay and totalAttempts disagree' };
+  }
+  const lastDayAttempts = readInt(genesisItem, 'lastDayAttempts');
+  if (lastDayAttempts === CORRUPT || (lastDay === undefined) !== (lastDayAttempts === undefined)) {
+    return { ok: false, why: 'genesis lastDayAttempts is malformed or disagrees with lastDay' };
+  }
+  if (lastDayAttempts !== undefined && (lastDayAttempts < 1 || lastDayAttempts > totalAttempts)) {
+    return { ok: false, why: 'genesis lastDayAttempts is out of range' };
+  }
+  // D-5 previous-attempt pointer: present exactly when an attempt was ever reserved.
+  const lastAttemptId = readStr(genesisItem, 'lastAttemptId');
+  const lastReservedAt = readStr(genesisItem, 'lastReservedAt');
+  const lastRevision = readStr(genesisItem, 'lastRevision');
+  const lastCooldownWaived = readBool(genesisItem, 'lastCooldownWaived');
+  const pointer = [lastAttemptId, lastReservedAt, lastRevision, lastCooldownWaived];
+  if (totalAttempts === 0) {
+    if (pointer.some((v) => v !== undefined)) return { ok: false, why: 'genesis carries a previous-attempt pointer but no attempt was reserved' };
+    return { ok: true, totalAttempts, lastDay, lastDayAttempts };
+  }
+  if (pointer.some((v) => v === undefined || v === CORRUPT)) {
+    return { ok: false, why: 'genesis previous-attempt pointer is missing or malformed' };
+  }
+  if (!isAttemptId(lastAttemptId) || !isFullSha(lastRevision) || !isIsoInstant(lastReservedAt)) {
+    return { ok: false, why: 'genesis previous-attempt pointer is malformed' };
+  }
+  if (ledgerDay(new Date(lastReservedAt)) !== lastDay) {
+    return { ok: false, why: 'genesis lastReservedAt is not on lastDay' };
+  }
+  return { ok: true, totalAttempts, lastDay, lastDayAttempts, lastAttemptId, lastReservedAt, lastRevision, lastCooldownWaived };
+}
+
+/** Same verified genesis state (used to detect a reservation between the two reads). */
+const sameGenesis = (a, b) =>
+  ['totalAttempts', 'lastDay', 'lastDayAttempts', 'lastAttemptId', 'lastReservedAt', 'lastRevision', 'lastCooldownWaived'].every((k) => a[k] === b[k]);
+
+/**
+ * The previous attempt's record, found through the genesis pointer. It must be the reservation
+ * the pointer names (id, revision, reservation time, waiver) in a reserved status; otherwise the
+ * ledger's integrity cannot be established.
+ */
+export function readPreviousAttempt(attemptItem, genesis) {
+  if (genesis.totalAttempts === 0) return { ok: true, previous: null };
+  if (attemptItem === undefined || attemptItem === null) return { ok: false, why: 'the previous attempt named on genesis has no record' };
+  if (!isItem(attemptItem)) return { ok: false, why: 'previous attempt record is not an object' };
+  if (readStr(attemptItem, 'PK') !== PROJECT_KEY || readStr(attemptItem, 'SK') !== attemptKey(genesis.lastAttemptId) || readStr(attemptItem, 'attemptId') !== genesis.lastAttemptId) {
+    return { ok: false, why: 'previous attempt record does not match the genesis pointer' };
+  }
+  if (readStr(attemptItem, 'revision') !== genesis.lastRevision || readStr(attemptItem, 'reservedAt') !== genesis.lastReservedAt) {
+    return { ok: false, why: 'previous attempt record revision or reservation time differs from genesis' };
+  }
+  if (readBool(attemptItem, 'cooldownWaived') !== genesis.lastCooldownWaived) {
+    return { ok: false, why: 'previous attempt record cooldown waiver differs from genesis' };
+  }
+  const status = readStr(attemptItem, 'status');
+  if (!RESERVED_STATUSES.includes(status)) return { ok: false, why: 'previous attempt record has no reserved status' };
+  return {
+    ok: true,
+    previous: { attemptId: genesis.lastAttemptId, revision: genesis.lastRevision, reservedAt: genesis.lastReservedAt, status, cooldownWaived: genesis.lastCooldownWaived },
+  };
+}
+
+/**
+ * Validate an override item against this exact attempt. Returns `{ ok: true, override }` or
+ * `{ ok: false, why }`. A structurally present but unusable override is simply absent (S5a:
+ * "an override that cannot be verified is absent, and an absent override denies").
+ */
+export function readOverride(overrideItem, { revision, rule, day, now }) {
+  if (overrideItem === undefined || overrideItem === null) return { ok: false, why: 'no override' };
+  if (!isItem(overrideItem)) return { ok: false, why: 'override item is not an object' };
+  if (readStr(overrideItem, 'PK') !== PROJECT_KEY || readStr(overrideItem, 'SK') !== overrideKey(rule, revision, day)) {
+    return { ok: false, why: 'override key does not match this revision, rule and day' };
+  }
+  if (readStr(overrideItem, 'revision') !== revision) return { ok: false, why: 'override is bound to another revision' };
+  if (readStr(overrideItem, 'rule') !== rule) return { ok: false, why: 'override is bound to another rule' };
+  if (readStr(overrideItem, 'day') !== day) return { ok: false, why: 'override is bound to another accounting day' };
+  if (readStr(overrideItem, 'timezone') !== LEDGER_TIMEZONE) return { ok: false, why: 'override timezone differs' };
+  if (overrideItem.consumedAt !== undefined || overrideItem.consumedBy !== undefined) {
+    return { ok: false, why: 'override already consumed' };
+  }
+  const expiresAt = readInt(overrideItem, 'expiresAt');
+  if (expiresAt === undefined || expiresAt === CORRUPT) return { ok: false, why: 'override has no valid expiry' };
+  if (expiresAt <= epochSeconds(now)) return { ok: false, why: 'override expired' };
+  const reason = readStr(overrideItem, 'reason');
+  const approver = readStr(overrideItem, 'approver');
+  const issuedAt = readStr(overrideItem, 'issuedAt');
+  if (typeof reason !== 'string' || !reason.trim()) return { ok: false, why: 'override has no reason' };
+  if (typeof approver !== 'string' || !approver.trim()) return { ok: false, why: 'override has no approver' };
+  if (typeof issuedAt !== 'string' || !issuedAt) return { ok: false, why: 'override has no issue time' };
+  return { ok: true, override: { rule, revision, day, expiresAt, reason, approver, issuedAt } };
+}
+
+const deny = (rule, reason, extra = {}) => ({ result: 'denied', rule, reason, retryable: false, ...extra });
+
+/**
+ * Pure preflight decision for one attempt, from the items the broker read with consistent reads.
+ * `readError` set means the ledger could not be read at all (S6a: deny).
+ *
+ * The previous attempt's record cannot be in the first read (its key is on genesis), so it is read
+ * in a second transaction together with genesis again (`genesisRecheckItem`): a genesis that moved
+ * between the two reads is a conflict, never a mix of two states.
+ *
+ * `accessRestriction` is the broker-derived `{ state }` (S6c); only `verified` selects the
+ * access-restricted profile.
+ *
+ * Returns either a denial or `{ result: 'allowed', mode: 'normal' | 'override', ... }` carrying
+ * `observedAttemptCount`, which the reservation uses as its compare-and-set value.
+ */
+export function evaluatePreflight({ revision, attemptId, now, ledgerId, genesisItem, dayItem, overrideItem, revisionItem, previousAttemptItem, genesisRecheckItem, accessRestriction, readError }) {
+  if (!isValidDate(now)) {
+    return deny(RULES.CLOCK_INVALID, 'broker clock is not a valid time');
+  }
+  if (!isFullSha(revision)) {
+    return deny(RULES.REVISION_INVALID, 'trusted source revision must be a full lowercase 40-hex commit id');
+  }
+  if (!isAttemptId(attemptId)) {
+    return deny(RULES.ATTEMPT_ID_INVALID, 'attempt id missing or malformed');
+  }
+  const day = ledgerDay(now);
+  const base = { revision, attemptId, day, timezone: LEDGER_TIMEZONE };
+  if (readError) {
+    return deny(RULES.LEDGER_UNAVAILABLE, 'sparse deploy ledger could not be read; an uncountable attempt is not a free one', base);
+  }
+  const genesis = readGenesis(genesisItem, ledgerId);
+  if (!genesis.ok) {
+    return deny(RULES.LEDGER_CORRUPT, `sparse deploy ledger integrity cannot be established: ${genesis.why}`, base);
+  }
+  if (genesis.totalAttempts > 0) {
+    const recheck = readGenesis(genesisRecheckItem, ledgerId);
+    if (!recheck.ok || !sameGenesis(genesis, recheck)) {
+      return deny(RULES.LEDGER_CONFLICT, 'sparse deploy ledger genesis changed while the previous attempt was read; not retried automatically', base);
+    }
+  }
+  const counter = readDayCounter(dayItem, day);
+  if (!counter.ok) {
+    return deny(RULES.LEDGER_CORRUPT, `sparse deploy ledger integrity cannot be established: ${counter.why}`, base);
+  }
+  if (genesis.lastDay !== undefined && genesis.lastDay > day) {
+    return deny(RULES.LEDGER_CORRUPT, `sparse deploy ledger integrity cannot be established: last reservation (${genesis.lastDay}) is after today (${day}); clock regression or tampering`, base);
+  }
+  if (genesis.lastDay === day && counter.attemptCount !== genesis.lastDayAttempts) {
+    return deny(RULES.LEDGER_CORRUPT, `sparse deploy ledger integrity cannot be established: today's counter (${counter.exists ? counter.attemptCount : 'missing'}) differs from the ${genesis.lastDayAttempts} reservations recorded on genesis`, base);
+  }
+  if (counter.attemptCount > genesis.totalAttempts) {
+    return deny(RULES.LEDGER_CORRUPT, 'sparse deploy ledger integrity cannot be established: day counter exceeds the cumulative total', base);
+  }
+  const revisionCounter = readRevisionCounter(revisionItem, revision);
+  if (!revisionCounter.ok) {
+    return deny(RULES.LEDGER_CORRUPT, `sparse deploy ledger integrity cannot be established: ${revisionCounter.why}`, base);
+  }
+  const revisionBlocked = revisionCounter.unsettledCount >= MAX_FAILURES_PER_REVISION;
+  const revisionDenial = (extra) =>
+    deny(
+      RULES.REVISION_REPEATED_FAILURE,
+      `revision ${revision} has ${revisionCounter.unsettledCount} attempts at the mutation boundary without a recorded success (${revisionCounter.failureCount} recorded failures; the rest are running or never finished); escalate to a human (S10a). A fix is a new revision; this rule cannot be overridden`,
+      { ...base, ...extra, revisionUnsettledCount: revisionCounter.unsettledCount, revisionFailureCount: revisionCounter.failureCount },
+    );
+  const prev = readPreviousAttempt(previousAttemptItem, genesis);
+  if (!prev.ok) {
+    return deny(RULES.LEDGER_CORRUPT, `sparse deploy ledger integrity cannot be established: ${prev.why}`, base);
+  }
+  const previous = prev.previous;
+  const profile = selectAccessProfile(accessRestriction);
+  const counts = {
+    ledgerId,
+    observedTotalAttempts: genesis.totalAttempts,
+    observedLastDay: genesis.lastDay,
+    observedLastAttemptId: genesis.lastAttemptId,
+    observedAttemptCount: counter.attemptCount,
+    successCount: counter.successCount,
+    failureCount: counter.failureCount,
+    accessProfile: profile.name,
+    softCeiling: profile.softCeiling,
+  };
+  // D-5, both profiles, first: one attempt at a time across the project. Until a human closes it
+  // (runbook 10a), nothing proves the previous mutation ended. Not overridable.
+  if (previous && previous.status === 'in_progress') {
+    return deny(
+      RULES.PREVIOUS_ATTEMPT_UNSETTLED,
+      `the previous attempt ${previous.attemptId} (revision ${previous.revision}, reserved ${previous.reservedAt}) has no recorded outcome; a human must close it before any further attempt (runbook 10a). This rule cannot be overridden`,
+      { ...base, ...counts, previousAttemptId: previous.attemptId },
+    );
+  }
+  // The revision rule is reported before the daily ceiling: it needs a human (escalation alarm) and
+  // no override can lift it, whereas the ceiling alone is routine. Both deny either way.
+  if (revisionBlocked) return revisionDenial(counts);
+  let cooldownWaived = false;
+  if (previous && profile.cooldownSeconds > 0) {
+    const elapsedMs = now.getTime() - Date.parse(previous.reservedAt);
+    if (elapsedMs < 0) {
+      return deny(RULES.LEDGER_CORRUPT, `sparse deploy ledger integrity cannot be established: the previous attempt was reserved after now (${previous.reservedAt}); clock regression or tampering`, base);
+    }
+    if (elapsedMs < profile.cooldownSeconds * 1000) {
+      const waivable = profile.cooldownWaiver && previous.status === 'failed' && previous.revision !== revision && previous.cooldownWaived === false;
+      if (!waivable) {
+        return deny(
+          RULES.COOLDOWN_ACTIVE,
+          `the previous attempt reached the mutation boundary ${Math.floor(elapsedMs / 1000)} s ago; the access-restricted cooldown is ${profile.cooldownSeconds} s. It may be skipped once only after a failed attempt, for a different revision, and not right after an attempt that skipped it. This rule cannot be overridden`,
+          { ...base, ...counts, previousAttemptId: previous.attemptId },
+        );
+      }
+      cooldownWaived = true;
+    }
+  }
+  if (counter.attemptCount < profile.softCeiling) {
+    return { result: 'allowed', rule: null, retryable: false, mode: 'normal', ...base, ...counts, cooldownWaived };
+  }
+  const ov = readOverride(overrideItem, { revision, rule: DAILY_CEILING_RULE, day, now });
+  if (!ov.ok) {
+    return deny(
+      RULES.DAILY_CEILING,
+      `${counter.attemptCount} deploy attempts already reached the mutation boundary on ${day} (${LEDGER_TIMEZONE}; ${profile.name} ceiling ${profile.softCeiling}); a human override bound to this revision and rule is required (${ov.why})`,
+      { ...base, ...counts },
+    );
+  }
+  return { result: 'allowed', rule: null, retryable: false, mode: 'override', ...base, ...counts, cooldownWaived, override: ov.override };
+}
+
+/**
+ * Reservation at the mutation boundary: count the attempt BEFORE mutating, in one transaction.
+ *
+ * - the day counter is compare-and-set on the observed attempt count, so two racers that read the
+ *   same count cannot both reserve;
+ * - the attempt audit record is create-only (an attempt id is used once);
+ * - an override is consumed in the same transaction (kept, marked consumed, for audit) and its
+ *   binding (revision, rule, day, expiry, unconsumed) is re-checked by DynamoDB, not only by JS.
+ */
+export function buildReserveTransaction({ table, decision, now }) {
+  if (decision?.result !== 'allowed') throw new Error('only an allowed preflight decision can be reserved');
+  const { day, revision, attemptId, mode, observedAttemptCount, observedTotalAttempts, observedLastAttemptId, ledgerId, cooldownWaived } = decision;
+  if (!isLedgerId(ledgerId) || !Number.isSafeInteger(observedTotalAttempts) || observedTotalAttempts < observedAttemptCount) {
+    throw new Error('reservation requires the verified genesis state of the decision');
+  }
+  if (observedTotalAttempts === 0 ? observedLastAttemptId !== undefined : !isAttemptId(observedLastAttemptId)) {
+    throw new Error('reservation requires the verified previous-attempt pointer of the decision');
+  }
+  const profile = Object.hasOwn(ACCESS_PROFILES, decision.accessProfile) ? ACCESS_PROFILES[decision.accessProfile] : undefined;
+  if (!profile || decision.softCeiling !== profile.softCeiling) throw new Error('reservation requires a known access profile');
+  if (typeof cooldownWaived !== 'boolean' || (cooldownWaived && !profile.cooldownWaiver)) {
+    throw new Error('reservation requires a cooldown waiver flag allowed by its profile');
+  }
+  if (mode === 'normal' && !(observedAttemptCount < profile.softCeiling)) {
+    throw new Error('normal reservation requires an observed count below the soft ceiling');
+  }
+  if (mode === 'override' && !(observedAttemptCount >= profile.softCeiling && decision.override)) {
+    throw new Error('override reservation requires the ceiling to be reached and a verified override');
+  }
+  const nowIso = now.toISOString();
+  const dayUpdate = {
+    TableName: table,
+    Key: key(dayKey(day)),
+    UpdateExpression:
+      'SET #attemptCount = if_not_exists(#attemptCount, :zero) + :one, #successCount = if_not_exists(#successCount, :zero), #failureCount = if_not_exists(#failureCount, :zero), #timezone = :tz, #day = :day, #updatedAt = :now',
+    ConditionExpression:
+      observedAttemptCount === 0
+        ? 'attribute_not_exists(#PK)'
+        : '#attemptCount = :observed AND #timezone = :tz AND #day = :day',
+    ExpressionAttributeValues: {
+      ':zero': { N: '0' },
+      ':one': { N: '1' },
+      ':tz': { S: LEDGER_TIMEZONE },
+      ':day': { S: day },
+      ':now': { S: nowIso },
+      ...(observedAttemptCount === 0 ? {} : { ':observed': { N: String(observedAttemptCount) } }),
+    },
+  };
+  const attemptItem = {
+    ...key(attemptKey(attemptId)),
+    attemptId: { S: attemptId },
+    revision: { S: revision },
+    day: { S: day },
+    timezone: { S: LEDGER_TIMEZONE },
+    status: { S: 'in_progress' },
+    mode: { S: mode },
+    attemptNumber: { N: String(observedAttemptCount + 1) },
+    reservedAt: { S: nowIso },
+    accessProfile: { S: profile.name },
+    softCeiling: { N: String(profile.softCeiling) },
+    cooldownWaived: { BOOL: cooldownWaived },
+  };
+  const genesisUpdate = {
+    TableName: table,
+    Key: key(GENESIS_KEY),
+    // Same day: lastDayAttempts moves in lock-step with the day counter's CAS. New day: it restarts.
+    // D-5: the previous-attempt pointer moves to this attempt, compare-and-set on the one observed.
+    UpdateExpression:
+      'SET #totalAttempts = :newTotal, #lastDay = :day, #lastDayAttempts = :newDayCount, #lastAttemptId = :attempt, #lastReservedAt = :now, #lastRevision = :rev, #lastCooldownWaived = :waived',
+    ConditionExpression:
+      (decision.observedLastDay === day
+        ? '#ledgerId = :ledgerId AND #timezone = :tz AND #totalAttempts = :observedTotal AND #lastDay = :day AND #lastDayAttempts = :observedDayCount'
+        : '#ledgerId = :ledgerId AND #timezone = :tz AND #totalAttempts = :observedTotal AND (attribute_not_exists(#lastDay) OR #lastDay < :day)') +
+      (observedTotalAttempts === 0 ? ' AND attribute_not_exists(#lastAttemptId)' : ' AND #lastAttemptId = :observedLastAttempt'),
+    ExpressionAttributeValues: {
+      ':attempt': { S: attemptId },
+      ':now': { S: nowIso },
+      ':rev': { S: revision },
+      ':waived': { BOOL: cooldownWaived },
+      ...(observedTotalAttempts === 0 ? {} : { ':observedLastAttempt': { S: observedLastAttemptId } }),
+      ':newTotal': { N: String(observedTotalAttempts + 1) },
+      ':newDayCount': { N: String(observedAttemptCount + 1) },
+      ...(decision.observedLastDay === day ? { ':observedDayCount': { N: String(observedAttemptCount) } } : {}),
+      ':observedTotal': { N: String(observedTotalAttempts) },
+      ':day': { S: day },
+      ':ledgerId': { S: ledgerId },
+      ':tz': { S: LEDGER_TIMEZONE },
+    },
+  };
+  const items = [{ Update: withNames(genesisUpdate) }, { Update: withNames(dayUpdate) }];
+  if (mode === 'override') {
+    const o = decision.override;
+    Object.assign(attemptItem, {
+      overrideRule: { S: o.rule },
+      overrideApprover: { S: o.approver },
+      overrideReason: { S: o.reason },
+      overrideIssuedAt: { S: o.issuedAt },
+      overrideExpiresAt: { N: String(o.expiresAt) },
+    });
+    items.push({
+      Update: withNames({
+        TableName: table,
+        Key: key(overrideKey(o.rule, revision, day)),
+        UpdateExpression: 'SET #consumedAt = :now, #consumedBy = :attempt',
+        ConditionExpression:
+          'attribute_exists(#PK) AND attribute_not_exists(#consumedAt) AND attribute_not_exists(#consumedBy) AND #revision = :rev AND #rule = :rule AND #day = :day AND #timezone = :tz AND #expiresAt > :epoch AND attribute_exists(#reason) AND attribute_exists(#approver)',
+        ExpressionAttributeValues: {
+          ':now': { S: nowIso },
+          ':attempt': { S: attemptId },
+          ':rev': { S: revision },
+          ':rule': { S: o.rule },
+          ':day': { S: day },
+          ':tz': { S: LEDGER_TIMEZONE },
+          ':epoch': { N: String(epochSeconds(now)) },
+        },
+      }),
+    });
+  }
+  items.push({
+    Put: withNames({
+      TableName: table,
+      Item: attemptItem,
+      ConditionExpression: 'attribute_not_exists(#PK)',
+    }),
+  });
+  // S10a: the engine re-checks and takes the revision's slot in the same transaction, so neither
+  // an outcome recorded after this preflight nor a concurrent reservation of the same revision can
+  // let more than MAX_FAILURES_PER_REVISION unsettled attempts through.
+  items.push({
+    Update: withNames({
+      TableName: table,
+      Key: key(revisionKey(revision)),
+      UpdateExpression: 'SET #revision = :rev, #unsettledCount = if_not_exists(#unsettledCount, :zero) + :one, #failureCount = if_not_exists(#failureCount, :zero), #lastAttemptId = :attempt, #lastReservedAt = :now',
+      ConditionExpression: '(attribute_not_exists(#PK) OR (#revision = :rev AND #unsettledCount < :maxFailures))',
+      ExpressionAttributeValues: {
+        ':rev': { S: revision },
+        ':zero': { N: '0' },
+        ':one': { N: '1' },
+        ':attempt': { S: attemptId },
+        ':now': { S: nowIso },
+        ':maxFailures': { N: String(MAX_FAILURES_PER_REVISION) },
+      },
+    }),
+  });
+  return { TransactItems: items };
+}
+
+export const OUTCOMES = Object.freeze(['succeeded', 'failed']);
+
+/**
+ * Record the outcome of a reserved attempt. A failed attempt keeps its budget (S6b / S10a); the
+ * outcome only moves it from in_progress to a terminal state, once.
+ */
+export function buildOutcomeTransaction({ table, attemptId, day, outcome, now, revision }) {
+  if (!isAttemptId(attemptId)) throw new Error('attempt id missing or malformed');
+  if (!isFullSha(revision)) throw new Error('outcome requires the attempt\'s full revision');
+  if (typeof day !== 'string' || !DAY.test(day)) throw new Error('day must be YYYY-MM-DD');
+  if (!OUTCOMES.includes(outcome)) throw new Error('outcome must be succeeded or failed');
+  const counter = outcome === 'succeeded' ? 'successCount' : 'failureCount';
+  const nowIso = now.toISOString();
+  return {
+    TransactItems: [
+      {
+        Update: withNames({
+          TableName: table,
+          Key: key(attemptKey(attemptId)),
+          UpdateExpression: 'SET #status = :outcome, #finishedAt = :now',
+          ConditionExpression: 'attribute_exists(#PK) AND #status = :inProgress AND #day = :day AND #revision = :rev',
+          ExpressionAttributeValues: {
+            ':outcome': { S: outcome },
+            ':now': { S: nowIso },
+            ':inProgress': { S: 'in_progress' },
+            ':day': { S: day },
+            ':rev': { S: revision },
+          },
+        }),
+      },
+      {
+        Update: withNames({
+          TableName: table,
+          Key: key(dayKey(day)),
+          UpdateExpression: `SET #${counter} = #${counter} + :one, #updatedAt = :now`,
+          // DynamoDB conditions cannot do arithmetic; outcomes <= attempts holds because each
+          // attempt record moves out of in_progress exactly once (the first update above).
+          ConditionExpression: 'attribute_exists(#attemptCount) AND #timezone = :tz AND #day = :day',
+          ExpressionAttributeValues: {
+            ':one': { N: '1' },
+            ':now': { S: nowIso },
+            ':tz': { S: LEDGER_TIMEZONE },
+            ':day': { S: day },
+          },
+        }),
+      },
+      // S10a: a success releases the slot its reservation took; a failure keeps it and is counted.
+      {
+        Update: withNames({
+          TableName: table,
+          Key: key(revisionKey(revision)),
+          ...(outcome === 'succeeded'
+            ? {
+                UpdateExpression: 'SET #unsettledCount = #unsettledCount - :one, #lastSuccessAt = :now',
+                ConditionExpression: 'attribute_exists(#unsettledCount) AND #revision = :rev AND #unsettledCount > :zero',
+                ExpressionAttributeValues: { ':one': { N: '1' }, ':zero': { N: '0' }, ':now': { S: nowIso }, ':rev': { S: revision } },
+              }
+            : {
+                UpdateExpression: 'SET #failureCount = #failureCount + :one, #lastFailureAt = :now',
+                ConditionExpression: 'attribute_exists(#unsettledCount) AND #revision = :rev',
+                ExpressionAttributeValues: { ':one': { N: '1' }, ':now': { S: nowIso }, ':rev': { S: revision } },
+              }),
+        }),
+      },
+    ],
+  };
+}
+
+/**
+ * Audit record for an attempt denied BEFORE the mutation boundary. It consumes no budget (S6b)
+ * and touches no counter.
+ */
+export function buildDenialPut({ table, attemptId, revision, rule, now }) {
+  if (!isAttemptId(attemptId)) throw new Error('attempt id missing or malformed');
+  if (!isValidDate(now)) throw new Error('valid clock required');
+  if (typeof rule !== 'string' || !rule) throw new Error('denial rule required');
+  const item = {
+    ...key(attemptKey(attemptId)),
+    attemptId: { S: attemptId },
+    day: { S: ledgerDay(now) },
+    timezone: { S: LEDGER_TIMEZONE },
+    status: { S: 'denied_before_mutation' },
+    denialRule: { S: rule },
+    decidedAt: { S: now.toISOString() },
+  };
+  if (isFullSha(revision)) item.revision = { S: revision };
+  return withNames({ TableName: table, Item: item, ConditionExpression: 'attribute_not_exists(#PK)' });
+}
+
+/**
+ * Human-issued override (S5a). This runs with a human's credentials against the trusted account,
+ * never from candidate code or the broker. It binds one revision, one overridable rule and one
+ * Tokyo day, requires a reason and an approver, and expires. Create-only: an override item is
+ * never replaced, so its history (issued, consumed or expired unused) survives for audit. At
+ * most one override exists per revision, rule and day.
+ */
+export function buildIssueOverridePut({ table, revision, rule, day, expiresAt, reason, approver, now }) {
+  if (!isFullSha(revision)) throw new Error('override revision must be a full lowercase 40-hex commit id');
+  if (!OVERRIDABLE_RULES.includes(rule)) throw new Error(`rule ${String(rule)} cannot be overridden`);
+  if (typeof day !== 'string' || !DAY.test(day)) throw new Error('day must be YYYY-MM-DD');
+  if (day !== ledgerDay(now)) throw new Error('an override can only be issued for the current accounting day');
+  if (typeof reason !== 'string' || !reason.trim()) throw new Error('override reason required');
+  if (typeof approver !== 'string' || !approver.trim()) throw new Error('override approver required');
+  const nowEpoch = epochSeconds(now);
+  if (!Number.isSafeInteger(expiresAt) || expiresAt <= nowEpoch) throw new Error('override expiry must be in the future');
+  if (expiresAt - nowEpoch > MAX_OVERRIDE_TTL_SECONDS) throw new Error('override expiry exceeds the maximum lifetime');
+  return withNames({
+    TableName: table,
+    Item: {
+      ...key(overrideKey(rule, revision, day)),
+      revision: { S: revision },
+      rule: { S: rule },
+      day: { S: day },
+      timezone: { S: LEDGER_TIMEZONE },
+      expiresAt: { N: String(expiresAt) },
+      reason: { S: reason.trim() },
+      approver: { S: approver.trim() },
+      issuedAt: { S: now.toISOString() },
+    },
+    ConditionExpression: 'attribute_not_exists(#PK)',
+  });
+}
+
+/** One-time initialisation by a human: pins the ledger id the broker is configured with. */
+export function buildGenesisPut({ table, ledgerId, now }) {
+  if (!isLedgerId(ledgerId)) throw new Error('ledger id must be 8-128 chars of [A-Za-z0-9._-]');
+  if (!isValidDate(now)) throw new Error('valid clock required');
+  return withNames({
+    TableName: table,
+    Item: {
+      ...key(GENESIS_KEY),
+      ledgerId: { S: ledgerId },
+      timezone: { S: LEDGER_TIMEZONE },
+      createdAt: { S: now.toISOString() },
+      totalAttempts: { N: '0' },
+    },
+    ConditionExpression: 'attribute_not_exists(#PK)',
+  });
+}
+
+// --- Orchestration over an injected client -------------------------------------------------
+
+/** DynamoDB refused a conditional write: another writer won, or the state moved. */
+export const isConditionFailure = (error) =>
+  error?.name === 'TransactionCanceledException' || error?.name === 'ConditionalCheckFailedException';
+
+/**
+ * Preflight + reservation for one attempt. Returns the S11-shaped decision fields. Never
+ * retries: a lost race or an unreadable ledger denies, and the caller does not auto-retry.
+ *
+ * Ordering contract for the wiring (arming work): call this strictly AFTER every other
+ * deny-capable gate (static policy, live ChangeSet evaluation) and immediately before the
+ * mutation. A reserved attempt has consumed budget; its only terminal outcomes are
+ * succeeded / failed.
+ *
+ * Every denial is audited best-effort (S6b: recorded, no budget consumed). A failed audit write
+ * never turns a denial into anything else.
+ */
+export async function reserveAttempt({ client, table, ledgerId, revision, attemptId, now, accessRestriction }) {
+  // One serializable snapshot of the items, so a concurrent reservation cannot make genesis and
+  // the day counter look inconsistent (which would read as corruption).
+  const read = async (keys) => {
+    const res = await client.transactGetItems({ TransactItems: keys.map((sk) => ({ Get: { TableName: table, Key: key(sk) } })) });
+    if (!Array.isArray(res?.Responses) || res.Responses.length !== keys.length) throw new Error('incomplete snapshot');
+    return res.Responses.map((r) => r?.Item);
+  };
+  const snapshot = async () => {
+    if (!(isValidDate(now) && isFullSha(revision) && isAttemptId(attemptId))) return { readError: false };
+    try {
+      const day = ledgerDay(now);
+      const [genesisItem, dayItem, overrideItem, revisionItem] = await read([GENESIS_KEY, dayKey(day), overrideKey(DAILY_CEILING_RULE, revision, day), revisionKey(revision)]);
+      // D-5: the previous attempt's record, read together with genesis again (the pointer's key is
+      // only known now). A malformed pointer is left to evaluatePreflight (corrupt).
+      const lastAttemptId = isItem(genesisItem) ? readStr(genesisItem, 'lastAttemptId') : undefined;
+      if (!isAttemptId(lastAttemptId)) return { genesisItem, dayItem, overrideItem, revisionItem, readError: false };
+      const [genesisRecheckItem, previousAttemptItem] = await read([GENESIS_KEY, attemptKey(lastAttemptId)]);
+      return { genesisItem, dayItem, overrideItem, revisionItem, genesisRecheckItem, previousAttemptItem, readError: false };
+    } catch {
+      return { readError: true };
+    }
+  };
+  let decision = evaluatePreflight({ revision, attemptId, now, ledgerId, accessRestriction, ...(await snapshot()) });
+  if (decision.result === 'allowed') {
+    try {
+      await client.transactWriteItems(buildReserveTransaction({ table, decision, now }));
+      return { ...decision, attemptNumber: decision.observedAttemptCount + 1 };
+    } catch (error) {
+      const context = { revision, attemptId, day: decision.day, timezone: LEDGER_TIMEZONE };
+      if (isConditionFailure(error)) {
+        // Refused: report the rule the ledger now shows (e.g. the revision just reached its
+        // limit), so an escalation is not hidden behind a generic conflict. Never retried.
+        const now2 = evaluatePreflight({ revision, attemptId, now, ledgerId, accessRestriction, ...(await snapshot()) });
+        decision =
+          now2.result === 'denied' && now2.rule !== RULES.LEDGER_UNAVAILABLE
+            ? { ...now2, reason: `reservation refused by the ledger; it now shows: ${now2.reason}` }
+            : deny(RULES.LEDGER_CONFLICT, 'sparse deploy ledger refused the reservation (state changed, attempt id reused, or override no longer valid); not retried automatically', context);
+      } else {
+        // Ambiguous: the write may have committed before the error (e.g. a lost response), so an
+        // in_progress attempt may now hold budget. Flagged for the stuck-attempt alarm.
+        // A client that knows the call never reached the service says so (`maybeCommitted: false`).
+        decision = deny(RULES.LEDGER_UNAVAILABLE, 'sparse deploy ledger reservation could not be written', { ...context, ambiguous: error?.maybeCommitted !== false });
+      }
+    }
+  }
+  if (isValidDate(now) && isAttemptId(attemptId)) {
+    try {
+      await client.putItem(buildDenialPut({ table, attemptId, revision, rule: decision.rule, now }));
+      decision = { ...decision, audited: true };
+    } catch {
+      decision = { ...decision, audited: false };
+    }
+  }
+  return decision;
+}
+
+/**
+ * Audit a denial from a gate that runs before `reserveAttempt` (static policy, live ChangeSet
+ * evaluation, BROKER_NOT_ARMED). Best-effort: returns whether the record was written; it never
+ * changes the denial.
+ */
+export async function recordDenial({ client, table, attemptId, revision, rule, now }) {
+  try {
+    await client.putItem(buildDenialPut({ table, attemptId, revision, rule, now }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Record the terminal outcome of a reserved attempt. Throws when the ledger refuses it. */
+export async function recordOutcome({ client, table, attemptId, day, outcome, now, revision }) {
+  await client.transactWriteItems(buildOutcomeTransaction({ table, attemptId, day, outcome, now, revision }));
+  return { recorded: outcome, attemptId, day };
+}

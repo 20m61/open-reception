@@ -1,6 +1,14 @@
+import { isPinConfigured, isUsablePinCredential } from '@/domain/security/pin';
 import { NextResponse } from 'next/server';
 import { asTenantId } from '@/domain/tenant/types';
-import { getSecuritySettings, updateSecuritySettings } from '@/lib/security/security-store';
+import {
+  readSecuritySettings,
+  revisionOf,
+  SecuritySettingsConflictError,
+  SecuritySettingsInvalidError,
+  SecuritySettingsPreconditionRequiredError,
+  updateSecuritySettings,
+} from '@/lib/security/security-store';
 import { readJson } from '@/lib/data-stores/result-http';
 import {
   assertCanRead,
@@ -33,12 +41,23 @@ export async function GET(): Promise<NextResponse> {
   } catch (err) {
     return toGuardResponse(err);
   }
-  const s = await getSecuritySettings();
+  const { settings: s, storedPinUnreadable } = await readSecuritySettings();
   return NextResponse.json({
     pinRequired: s.pinRequired,
-    ipAllowlist: s.ipAllowlist,
-    pinConfigured: s.pin !== '',
+    // 🔴 読めない許可リスト（`null` ＝全拒否）は形を保って `[]` で返し、事実は
+    //    `unreadableSettings` が別に持つ (#1172)。`null` を返すと既存の画面が応答ごと拒否して
+    //    緊急停止まで押せなくなる。画面は `unreadableSettings` を見て警告を出す。
+    ipAllowlist: s.ipAllowlist ?? [],
+    pinConfigured: isPinConfigured(s),
     emergencyStop: s.emergencyStop,
+    // 🔴 保存されていた PIN を読めず、PIN 認可を誰にも通さない状態（fail closed）か (#1160 AC2)。
+    //    真偽だけを返す（値・どう壊れていたかは返さない）。
+    storedPinUnreadable,
+    // 🔴 保存値を読めず閉じる側（全 IP 拒否・停止・PIN 必須）へ倒しているフィールド名 (#1172 AC4)。
+    //    名前だけを返す（値・どう壊れていたかは返さない）。読める記録では空。
+    unreadableSettings: s.unreadableFields,
+    // 記録の版 (#1158)。管理画面はこれを付けて保存し、読んだ後に誰かが書いていれば 409 になる。
+    rev: revisionOf(s.rev),
   });
 }
 
@@ -49,7 +68,33 @@ export async function PUT(request: Request): Promise<NextResponse> {
   } catch (err) {
     return toGuardResponse(err);
   }
-  const updated = await updateSecuritySettings(await readJson(request));
+  // 🔴 **body は 1 度だけ読む。** `pinChanged` は「PIN を送ったか」で決める
+  //    （レビュー 2 周目 MAJOR 2）——「未設定→設定済みの遷移」では**ローテーションが
+  //    全部 false** になり、退職・漏洩時の変更が監査から消える（実測）。
+  //    🔴 語義は厳密には「**PIN 欄に入力して保存した**」である（同じ値の再投入も true）。
+  //    値を比較できない以上こうなる（レビュー 3 周目 MINOR 10）。
+  const patch = await readJson(request);
+  let updated;
+  try {
+    updated = await updateSecuritySettings(patch);
+  } catch (err) {
+    // 🔴 **競合は黙って勝たない (#1158 AC2)。** 何も書いていないので監査も残さない
+    //    （`security.updated` は「変えた」記録であって「変えようとした」記録ではない）。
+    if (err instanceof SecuritySettingsConflictError) {
+      return NextResponse.json({ error: 'conflict' }, { status: 409 });
+    }
+    if (err instanceof SecuritySettingsInvalidError) {
+      return NextResponse.json({ error: 'invalid_rev' }, { status: 400 });
+    }
+    // 版を付けずに緊急停止以外を変えようとした。GET で `rev` を読んでから送り直させる。
+    if (err instanceof SecuritySettingsPreconditionRequiredError) {
+      return NextResponse.json({ error: 'rev_required' }, { status: 428 });
+    }
+    throw err;
+  }
+  const pinChanged =
+    typeof (patch as { pin?: unknown } | null)?.pin === 'string' &&
+    ((patch as { pin: string }).pin.trim() !== '');
   // 既存 AuditAction（security.updated）を使用。機微値（PIN）は metadata に残さない。
   await recordDangerAction({
     action: 'security.updated',
@@ -57,12 +102,25 @@ export async function PUT(request: Request): Promise<NextResponse> {
     metadata: {
       pinRequired: updated.pinRequired,
       emergencyStop: updated.emergencyStop,
+      // 🔴 **値は残さず、変えたことだけ残す（レビュー 1 周目 MINOR 6）。**
+      //    運用調査（「いつ誰が PIN を変えたか」）に効く。PII/secret は載せない。
+      pinChanged,
+      // 版の遷移 (#1158。fresh-context review L2)。「どの版からどの版へ書いたか」が無いと、
+      // 409 / 428 の報告と監査の行を突き合わせられない。書くたびに版は 1 つだけ進む。
+      fromRev: revisionOf(updated.rev) - 1,
+      rev: revisionOf(updated.rev),
     },
   });
   return NextResponse.json({
     pinRequired: updated.pinRequired,
-    ipAllowlist: updated.ipAllowlist,
-    pinConfigured: updated.pin !== '',
+    ipAllowlist: updated.ipAllowlist ?? [],
+    pinConfigured: isPinConfigured(updated),
     emergencyStop: updated.emergencyStop,
+    // 書いた記録から導く（GET と同じ判定）。読めない記録は、運用者が PIN を設定し直すまで
+    // 生のまま書き戻されるので、PIN を送らない更新の後も true のまま（#1160 fail closed）。
+    storedPinUnreadable: !isUsablePinCredential(updated.pin),
+    // 書いた記録から導く（GET と同じ解釈）。そのフィールドを送らない更新では直らない (#1172)。
+    unreadableSettings: updated.unreadableFields,
+    rev: revisionOf(updated.rev),
   });
 }

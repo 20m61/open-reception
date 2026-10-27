@@ -115,6 +115,22 @@ const FLOW_MUTATING_KIOSK_SPECS = /kiosk-flow-integration\.spec\.ts$/;
  */
 const STAFF_AVAILABILITY_MUTATING_SPECS = /kiosk-group-focus-absence\.spec\.ts$/;
 
+/**
+ * **グローバルなセキュリティ設定**（PIN の値・pinRequired・緊急停止）を実際に書き換える spec
+ * (#1161)。**専用の終端 project へ単独で隔離する。** 形は STAFF_AVAILABILITY_MUTATING_SPECS と同じ。
+ *
+ * 以前は `kiosk-access.spec.ts` の中に居て既定 project `chromium-ipad` で走っていた。
+ * `test.describe.configure({ mode: 'serial' })` は**ファイル内**の順序を縛るだけなので、
+ * PIN で authorize する spec が既定 project に 1 本でも足された瞬間に flaky になり、
+ * `retries` が吸収して緑のまま見えなくなる（#787 と同じ型）。#1021 で**PIN の値そのもの**を
+ * 書き換えるテストが加わって窓が広がった。設定の保存は版付き (#1158) なので、書くたびに
+ * 版が進み、並行する別の書き手は 409 になる —— 書き手は全部ここへ集める。
+ *
+ * 🔴 **`flow-mutation-kiosk` / `staff-availability-mutation` へ相乗りさせない**（上の注記）。
+ * 同居者 0 は `tests/config/e2e-project-ownership.test.ts` が固定する。
+ */
+const SECURITY_SETTINGS_MUTATING_SPECS = /kiosk-security-mutation\.spec\.ts$/;
+
 // soak（長時間連続稼働）テストは `tests/e2e/soak/` に隔離し、専用の playwright.soak.config.ts
 // （`npm run test:soak*`）からのみ実行する (issue #317)。本設定（既定 `npm run test:e2e` /
 // `scripts/quality-gate.sh --pr|--full`）では、testDir の再帰探索に紛れ込まないよう明示的に除外する。
@@ -163,6 +179,7 @@ const DEFAULT_TEST_IGNORE = [
   FLOW_MUTATING_SPECS,
   FLOW_MUTATING_KIOSK_SPECS,
   STAFF_AVAILABILITY_MUTATING_SPECS,
+  SECURITY_SETTINGS_MUTATING_SPECS,
   PRISTINE_STATE_SPECS,
   PLATFORM_SPECS,
   SOAK_SPECS,
@@ -264,6 +281,15 @@ export default defineConfig({
       use: { browserName: 'chromium', ...iPadPortraitViewport, launchOptions: chromiumLaunchOptions },
       testMatch: STAFF_AVAILABILITY_MUTATING_SPECS,
       dependencies: ['flow-mutation-kiosk'],
+    },
+    {
+      // **セキュリティ設定（PIN の値・pinRequired・緊急停止）を書き換える spec の終端 project**
+      // (#1161)。`staff-availability-mutation` の後に単独で走る。同居者を作らないことが要件なので
+      // spec が 1 本でも専用 project にする（詳細は SECURITY_SETTINGS_MUTATING_SPECS の注記）。
+      name: 'security-settings-mutation',
+      use: { browserName: 'chromium', ...iPadPortraitViewport, launchOptions: chromiumLaunchOptions },
+      testMatch: SECURITY_SETTINGS_MUTATING_SPECS,
+      dependencies: ['staff-availability-mutation'],
     },
     // platform は developer 専用サーバ（別ポート・別プロセス）へ向ける。実サーバを起こせない
     // 実環境向け実行（PLAYWRIGHT_BASE_URL 指定）では passwordRole を制御できないため project ごと落とす

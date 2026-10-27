@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prefersHtml, renderServiceHoldPage } from '@/domain/reception/service-hold-page';
 import type { NextRequest } from 'next/server';
-import { buildCsp, createCspNonce, NONCE_HEADER } from '@/lib/security/csp';
+import { buildCsp, cspOptionsFor, createCspNonce, NONCE_HEADER } from '@/lib/security/csp';
 import { verifySession } from '@/lib/auth/session';
 import { ADMIN_COOKIE, ENTRA_TOKEN_COOKIE, getAdminSecret } from '@/lib/auth/admin';
 import { getAdminAuthConfig, validateAdminAuthConfig } from '@/lib/auth/admin-auth-config';
@@ -154,7 +154,24 @@ export const PATHNAME_HEADER = 'x-or-pathname';
  * 応答ではリクエストヘッダにも CSP / x-nonce を載せる（レスポンスヘッダの付与は
  * proxy() の出口で全応答経路に対して一括で行う）。
  */
-type CspContext = { nonce: string; value: string };
+/**
+ * 🔴 **不変にする（#1132 レビュー 13 周目 BLOCKER 1）。**
+ *
+ * `proxy()` はこれを `route()` へ**参照ごと**渡し、戻ってから `csp.value` を配る。
+ * 可変だった間は、その**間の 60 行**が `csp.value` を書き換えられた ——
+ * 実測で `route()` の冒頭に cookie 条件の 3 行を置く変異が **unit 8862 本とも全緑**だった
+ *（`proxy` / `passThrough` の本体は 1 文字も変わらないので、本体の固定も反応しない）。
+ *
+ * **検出器を足すのではなく、書き換えられる余地そのものを消す。**
+ *
+ * 🔴 **効き方を正確に書く（レビュー 14 周目 MINOR 2）**:
+ *
+ * - キャスト無しで書き換えれば **`tsc` が落とす**（＝機械が止める）
+ * - キャストを挟むと **typecheck は通り、実行時に `TypeError`** になる。CSP は緩まないが、
+ *   **その枝を踏んだリクエストだけが 500** になる（テストは緑のまま）。
+ *   「沈黙の緩和」は防げているが、「機械が止める」とまでは書けない
+ */
+type CspContext = { readonly nonce: string; readonly value: string };
 
 function passThrough(req: NextRequest, csp: CspContext): NextResponse {
   const headers = new Headers(req.headers);
@@ -165,22 +182,37 @@ function passThrough(req: NextRequest, csp: CspContext): NextResponse {
 }
 
 /**
- * 同一オリジン iframe への埋め込みを許可するルート (#363)。
- * 受付体験スタジオ本体（/admin/demo）がプレビューを iframe で抱えるため、
- * プレビュールートのみ frame-ancestors 'self'（X-Frame-Options は next.config.ts 側で
- * SAMEORIGIN に上書き）。それ以外は従来どおり 'none' / DENY を維持する。
+ * 管理セッションの鍵を解決する。deploy 環境で未設定・公開既定値なら `null`（#1124）。
+ *
+ * 🔴 **throw を「セッション無し」として扱う。** middleware は `instrumentation.ts` の
+ * `register()` より先に走る（#612）ので、方式 B（Secrets Manager）で供給したコールド
+ * インスタンスでは、最初の admin 系リクエストの時点で鍵がまだ解決されていない。
+ * ここで uncaught にすると 500 になり、しかも middleware が応答した要求は Next サーバへ
+ * 届かず `register()` が走らない。401 / ログインへ倒せば、ログイン画面（PUBLIC_PATHS）が
+ * Next サーバへ届いて `register()` が走り、以後は解決される。以前はこの窓で
+ * **公開既定値で検証していた**。
+ *
+ * 🔴 **catch の射程は鍵の解決だけ**（`verifySession` を try に入れない。
+ * `src/lib/auth/secret-unavailable.ts` の規約と同じ理由）。
  */
-const SELF_FRAMEABLE_PATHS = new Set<string>(['/admin/demo/preview']);
+function resolveAdminSecretOrNull(): string | null {
+  try {
+    return getAdminSecret();
+  } catch {
+    return null;
+  }
+}
 
 export async function proxy(req: NextRequest): Promise<NextResponse> {
   const nonce = createCspNonce();
-  const csp: CspContext = {
+  // 🔴 CSP のオプションは `cspOptionsFor`（pathname だけを受け取る）が決める。
+  // ここで条件を足さないこと —— リクエストの形や環境変数で CSP を緩める変更は、
+  // テストレーンでは env が未設定なので**期待値と実測が揃って緩まない**（#1132 レビュー 9〜11 周目）。
+  // 見張っているのは `src/proxy.test.ts` の「読まれた env キーに毒を入れても CSP が変わらない」。
+  const csp: CspContext = Object.freeze({
     nonce,
-    value: buildCsp(nonce, {
-      dev: process.env.NODE_ENV === 'development',
-      frameAncestors: SELF_FRAMEABLE_PATHS.has(req.nextUrl.pathname) ? 'self' : 'none',
-    }),
-  };
+    value: buildCsp(nonce, cspOptionsFor(req.nextUrl.pathname)),
+  });
   const res = await route(req, csp);
   // 全応答（pass-through / 拒否 / リダイレクト）に per-request CSP を付与する。
   res.headers.set('Content-Security-Policy', csp.value);
@@ -243,7 +275,8 @@ async function route(req: NextRequest, csp: CspContext): Promise<NextResponse> {
 
   // --- 既存のパスワードセッション（provider=none。entra/cognito は上の SSO 分岐で処理済み） ---
   const token = req.cookies.get(ADMIN_COOKIE)?.value;
-  const session = await verifySession(token, getAdminSecret());
+  const secret = resolveAdminSecretOrNull();
+  const session = secret === null ? null : await verifySession(token, secret);
   if (session?.role === 'admin') return passThrough(req, csp);
 
   return denyApiOrRedirect(req, isAdminApi, 401);

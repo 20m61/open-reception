@@ -10,8 +10,13 @@ export const KIOSK_COOKIE = 'kiosk_session';
 /** 長期保持（30 日）。失効は端末レジストリ（#18）で制御する。 */
 export const KIOSK_SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 
+/**
+ * 受付端末セッションの署名鍵。**deploy 環境で未設定・公開既定値なら throw する** (#1124)。
+ * 以前は warn-only で、公開既定値で署名した cookie から enroll / PIN を通らずに
+ * kiosk セッションを鋳造できた。起動時の検査は `session-secrets.ts`。
+ */
 export function getKioskSecret(): string {
-  return serverSecret('KIOSK_SESSION_SECRET', 'dev-insecure-kiosk-secret');
+  return serverSecret('KIOSK_SESSION_SECRET', 'dev-insecure-kiosk-secret', { failClosed: true });
 }
 
 export async function issueKioskSession(kioskId: string): Promise<string> {

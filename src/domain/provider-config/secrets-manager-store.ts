@@ -19,6 +19,7 @@
  * Get/Describe/Create/Put/Delete のみを付与する（CDK 側 WebStack で配線。ワイルドカード全体は禁止）。
  */
 import { SecretValue, type TenantSecretStore } from './secret';
+import { awsClientConfig } from '@/lib/aws/client-config';
 
 /**
  * AWS Secrets Manager 操作の最小注入境界。実 AWS を要さず store をテストするための port。
@@ -147,7 +148,7 @@ export class AwsSecretsManagerBackend implements TenantSecretBackend {
     if (!this.clientPromise) {
       this.clientPromise = (async () => {
         const { SecretsManagerClient } = await import('@aws-sdk/client-secrets-manager');
-        return new SecretsManagerClient({ region: this.region });
+        return new SecretsManagerClient(awsClientConfig(undefined, { region: this.region }));
       })();
     }
     return this.clientPromise;

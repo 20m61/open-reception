@@ -6,6 +6,24 @@
       "module": "brace-expansion",
       "reason": "aws-cdk-lib の bundleDependencies に同梱されており、npm の overrides でも audit fix でも到達できない（tarball 内に含まれるため）。上流が再バンドルするまで手段が無い。aws-cdk-lib は synth 時にしか動かず Lambda へは配られないため、外部入力がこの経路へ届かない。2.263.0 への更新で他 5 件は解消済み。",
       "expires": "2026-11-01"
+    },
+    {
+      "id": "GHSA-q2hr-2g5m-vwhr",
+      "module": "brace-expansion",
+      "reason": "GHSA-rgw5-rvv9-x895 と同じ。aws-cdk-lib の bundleDependencies（minimatch 経由の brace-expansion 5.0.8）に同梱されており、overrides でも audit fix でも到達できない。最新の aws-cdk-lib 2.272.0 でも同梱は 5.0.9 で対象範囲内（2026-10-03 確認）。aws-cdk-lib は synth 時にしか動かず Lambda へは配られないため、外部入力がこの経路へ届かない。owner が 2026-10-03 に期限付きの受容を承認。",
+      "expires": "2026-11-01"
+    },
+    {
+      "id": "GHSA-qhr7-859c-m2p7",
+      "module": "brace-expansion",
+      "reason": "GHSA-rgw5-rvv9-x895 と同じ。aws-cdk-lib の bundleDependencies（minimatch 経由の brace-expansion 5.0.8）に同梱されており、overrides でも audit fix でも到達できない。最新の aws-cdk-lib 2.272.0 でも同梱は 5.0.9 で対象範囲内（2026-10-03 確認）。aws-cdk-lib は synth 時にしか動かず Lambda へは配られないため、外部入力がこの経路へ届かない。owner が 2026-10-03 に期限付きの受容を承認。",
+      "expires": "2026-11-01"
+    },
+    {
+      "id": "GHSA-6j4f-fj2g-mc7p",
+      "module": "brace-expansion",
+      "reason": "GHSA-rgw5-rvv9-x895 と同じ。aws-cdk-lib の bundleDependencies（minimatch 経由の brace-expansion 5.0.8）に同梱されており、overrides でも audit fix でも到達できない。最新の aws-cdk-lib 2.272.0 でも同梱は 5.0.9 で対象範囲内（2026-10-03 確認）。aws-cdk-lib は synth 時にしか動かず Lambda へは配られないため、外部入力がこの経路へ届かない。owner が 2026-10-03 に期限付きの受容を承認。",
+      "expires": "2026-11-01"
     }
   ]
 }

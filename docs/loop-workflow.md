@@ -20,6 +20,17 @@ squash マージ → クリーンアップ → Issue クローズ」で消化す
   をこのランブックで運用ルールとして強制する。
 - マージは **squash**、マージ後はブランチを削除する（リポジトリ設定は
   `deleteBranchOnMerge=false` のため `--delete-branch` を明示する）。
+- **feature ブランチを main へ追随させるときは `git merge main` でよい** (#1031)。
+  merge commit が出来るが、squash マージで破棄されるので main の履歴には届かない。
+  `scripts/check-merge-method.ts` は **main の履歴だけ**を検査するので、これでゲートは赤くならない。
+
+  🔴 **かつては赤くなった。** 同検査が `HEAD` を走査していたため、main を取り込んだ
+  merge commit が「squash 規約への逸脱」として検出され、unit が落ちて `--fast` / `--pr` /
+  `--full` が全部赤くなり、`pr-gate-guard.sh` が PR 作成もマージもブロックした
+  （2026-09-09 の PR #1017 で実際に踏み、その場は rebase で回避した）。
+  しかも案内が「`KNOWN_VIOLATIONS` へ載せろ」だったため**誤った回避策へ誘導していた** ――
+  あれは事後に直せない履歴のための枠で、載せると次の本物の逸脱に気づけなくなる。
+  **`KNOWN_VIOLATIONS` へ載せて回避しないこと。**
 
 ---
 
@@ -83,8 +94,8 @@ git switch -c feat/<topic>
 （unit が 43s → 377s ＋ 偽の赤になった実測がある）。委譲の手順・環境 ID・既知の罠は
 `docs/cloud-dev-environment.md`、方針は `CLAUDE.md`「どこで回すか」。
 
-🔴 **PR 作成とマージまでクラウド内で完結させる。** ゲートスタンプは `.git` 配下のローカル記録
-なので、クラウドで green を取ってもローカルの `gh pr merge` はフックにブロックされる。
+🔴 **PR 作成と `--full` の証拠投稿までクラウド内で完結させる（merge は owner・#1195）。** ゲートスタンプは `.git` 配下のローカル記録
+なので、クラウドで green を取ってもローカルの `gh pr merge` はフックにブロックされる（だから証拠を PR へ載せる）。
 
 以下はローカルで回す場合の参考（`--fast` で足りないときや、クラウドが使えないとき）:
 
@@ -168,6 +179,15 @@ npx tsx scripts/create-pull-request.ts \
 PR タイトルは squash 後の main コミットになるため、Conventional Commits で書く。
 本文には `Closes #<N>` を入れ、Issue の受け入れ条件をチェックリストとして転記する。
 
+**PR は少なく・短く保つ（#1195）。** 関連する修正は**少数の PR にまとめる**。
+PR の上に PR を重ねる**長い積み上げ PR を作らない** —— 2026-09-28、依存し合う 12 本
+（#1181〜#1192）を owner が 1 本ずつ `--full` を回して merge する羽目になった。
+
+- 同じ目的の修正（同じ Issue の AC・同じ原因の直し）は 1 本にまとめる
+- 独立した修正は、それぞれ **main から**ブランチを切る（前の PR のブランチから切らない）
+- 前の PR が merge されないと成り立たない変更は、**merge を待ってから**切る。
+  待てないなら、その 2 つは 1 本にまとめるべきだったというサイン
+
 ### 7. セルフレビュー
 
 マージ前に自分の diff を読み直す。必要なら専門エージェントを使う:
@@ -176,9 +196,20 @@ PR タイトルは squash 後の main コミットになるため、Conventional
 - `pr-review-toolkit:silent-failure-hunter` … エラー握りつぶし
 - `/code-review` … 差分のバグ/簡素化レビュー
 
+**（試行・任意 / #1201）** 変異検証をした周回では、独立レビューにも**実装者に見せずに作った変異
+（holdout）**を当てさせ、train（実装者）と holdout（レビュー）の kill 率を分けて PR 本文に残してよい
+（`docs/mutation-holdout.md`）。停止条件は変えない（報告のみ。基準へ組み込むかは owner が決める）。
+
 指摘を反映したら再度 `./scripts/quality-gate.sh --pr`。
 
 ### 8. マージ（**ゲート + レビュー green で自動マージ**）
+
+🔴 **Claude が作った PR は、Claude が merge しない（#1195・2026-09-28 の owner 決定）。**
+Claude は Cloud で `--full` を green にし、その証拠を PR に載せるところまでやる
+（`npm run gate:evidence -- --number <PR>`。手順と fail-closed の条件は
+`docs/cloud-dev-environment.md` §0-B2）。**merge は owner が、PR 上の証拠を見て行う**
+（見出しが ✅ で、検証したコミットが PR の現在の head と一致していること）。
+以下の「自動マージ」の条件と手順は、owner が merge するとき・人が回すときの基準として読む。
 
 運用方針: PR は、次の両方を満たせば **ユーザー確認なしで自動マージ**してよい。
 1. 品質ゲート green（`./scripts/quality-gate.sh --pr`、UI/a11y 変更時は `--e2e` 等も）。

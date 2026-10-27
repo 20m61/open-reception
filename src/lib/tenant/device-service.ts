@@ -38,8 +38,12 @@ import {
   type SiteId,
   type TenantId,
 } from '@/domain/tenant/types';
+import { credentialGenerationOf, generationAfterStatusChange } from '@/domain/tenant/device-credential';
 import type { AppendAudit, ServiceResult } from './site-service';
 import type { DeviceRepository, SiteRepository } from './repository';
+
+/** 登録状態の切替が競合で負けたときに読み直してやり直す上限。 */
+const STATUS_CHANGE_ATTEMPTS = 5;
 
 function fail(
   code: 'invalid_input' | 'not_found' | 'forbidden',
@@ -191,16 +195,18 @@ export class DeviceService {
       if (trimmed === '') return fail('invalid_input', 'name must not be empty');
       name = trimmed;
     }
-    const next: Device = {
-      ...found,
+    // 部分更新で書く。読んだ値で丸ごと置き換えると、read→write の間に入った
+    // エンロールの消費（世代）や失効（status）を巻き戻す（#1237 の follow-up）。
+    const written = await this.devices.updateDeviceFields(id, {
       name,
       location:
         patch.location !== undefined ? patch.location.trim() || undefined : found.location,
       kind: patch.kind ?? found.kind,
       maintenance: patch.maintenance ?? found.maintenance,
       updatedAt: this.now().toISOString(),
-    };
-    await this.devices.putDevice(next);
+    });
+    const next = written ? await this.devices.getDevice(tenantId, id) : undefined;
+    if (!next) return fail('not_found', 'device not found');
     return { ok: true, value: this.toView(next) };
   }
 
@@ -222,13 +228,9 @@ export class DeviceService {
     if (!canAccessSite(actor, tenantId, found.siteId, 'write'))
       return fail('forbidden', 'actor cannot write to this device');
 
-    const next: Device = {
-      ...found,
-      status: enabled ? 'active' : 'revoked',
-      enrollmentTokenId: undefined,
-      updatedAt: this.now().toISOString(),
-    };
-    await this.devices.putDevice(next);
+    const status = enabled ? 'active' : 'revoked';
+    const next = await this.changeStatus(found, status, () => this.devices.getDevice(tenantId, id));
+    if (!next) return fail('not_found', 'device not found');
     await this.audit(enabled ? 'device.enabled' : 'device.disabled', next);
     return { ok: true, value: this.toView(next) };
   }
@@ -259,13 +261,14 @@ export class DeviceService {
       ttlMs,
       this.now().getTime(),
     );
-    const next: Device = {
-      ...found,
+    // 部分更新で書く（世代・status を巻き戻さない。#1237 の follow-up）。
+    const written = await this.devices.updateDeviceFields(id, {
       tokenRegistered: true,
       enrollmentTokenId: jti,
       updatedAt: this.now().toISOString(),
-    };
-    await this.devices.putDevice(next);
+    });
+    const next = written ? await this.devices.getDevice(tenantId, id) : undefined;
+    if (!next) return fail('not_found', 'device not found');
     await this.audit('device.token_reissued', next);
     return { ok: true, value: { view: this.toView(next), enrollment: { token, expiresAt } } };
   }
@@ -281,7 +284,9 @@ export class DeviceService {
    */
   async consumeEnrollment(
     claims: EnrollmentClaims,
-  ): Promise<{ ok: true; kioskId: string } | { ok: false; reason: ConsumeFailure }> {
+  ): Promise<
+    { ok: true; kioskId: string; credentialGeneration: number } | { ok: false; reason: ConsumeFailure }
+  > {
     const tenantId = asTenantId(claims.tenantId);
     const device = await this.devices.getDevice(tenantId, asDeviceId(claims.deviceId));
     if (!device) return { ok: false, reason: 'not_found' };
@@ -292,10 +297,13 @@ export class DeviceService {
     // 消去は **条件付き部分更新**（enrollmentTokenId === jti のときのみ）で原子的に行う。同一 URL の
     // 同時アクセスで上の read チェックを両者が通過しても、書込で勝てるのは 1 つだけ → 二重消費を防ぐ。
     // アイテム全体は置換せず該当フィールドのみ更新するため lost-update も避ける (issue #239)。
+    // 同じ書込で端末証明の世代を上げる（再登録で、以前に発行した証明を通らなくする。#1237）。
+    const credentialGeneration = credentialGenerationOf(device) + 1;
     const won = await this.devices.consumeEnrollment(
       asDeviceId(claims.deviceId),
       claims.jti,
       this.now().toISOString(),
+      { expected: device.credentialGeneration, next: credentialGeneration },
     );
     if (!won) {
       // 競合で書込に負けた。再読込で割り込みの種類を区別する（used と取り違えない）。
@@ -304,7 +312,7 @@ export class DeviceService {
       if (after.status === 'revoked') return { ok: false, reason: 'revoked' };
       return { ok: false, reason: 'used' };
     }
-    return { ok: true, kioskId: String(device.id) };
+    return { ok: true, kioskId: String(device.id), credentialGeneration };
   }
 
   /**
@@ -423,13 +431,43 @@ export class DeviceService {
       return { created: created.ok, updated: false };
     }
     if (existing.status === status) return { created: false, updated: false };
-    await this.devices.putDevice({
-      ...existing,
-      status,
-      enrollmentTokenId: undefined,
-      updatedAt: this.now().toISOString(),
-    });
-    return { created: false, updated: true };
+    // setEnabled と同じく、登録状態の切替で端末証明の世代を上げる (#1237)。
+    const next = await this.changeStatus(existing, status, () =>
+      this.devices.findDeviceById(existing.id),
+    );
+    return { created: false, updated: next !== undefined };
+  }
+
+  /**
+   * 登録状態を条件付き部分更新で切り替える（#1237 の follow-up）。
+   *
+   * 読んだ時点の世代を条件に書くので、間にエンロールの消費や別の切替（どちらも世代を上げる）が
+   * 入っていれば書き込みに負ける。負けたら読み直して、**最新の世代から**やり直す。
+   * これで (a) 世代は巻き戻らず、(b) 切替なら切替前に発行されたどの証明の世代よりも大きくなる。
+   * 状態が変わらない切替は世代を据え置く（証明を巻き添えで失効させない）。保留中の
+   * エンロール URL はどちらでも消す（revoke → 再有効化で旧 URL を復活させない）。
+   *
+   * 書けたら書いた後の記録を、端末が消えていたら undefined を返す。
+   */
+  private async changeStatus(
+    found: Device,
+    status: Device['status'],
+    reread: () => Promise<Device | undefined>,
+  ): Promise<Device | undefined> {
+    let current: Device | undefined = found;
+    for (let attempt = 0; attempt < STATUS_CHANGE_ATTEMPTS && current; attempt += 1) {
+      const won = await this.devices.changeDeviceStatus(current.id, {
+        expectedGeneration: current.credentialGeneration,
+        status,
+        credentialGeneration: generationAfterStatusChange(current, status),
+        updatedAt: this.now().toISOString(),
+      });
+      if (won) return reread();
+      current = await reread();
+    }
+    if (!current) return undefined;
+    // 競合が続いて書けなかった。黙って成功扱いにしない（status も世代も未反映のため）。
+    throw new Error('device status change lost the race repeatedly');
   }
 
   /** Device → DeviceView。token 平文は持ち込まない（型上も存在しない）。 */

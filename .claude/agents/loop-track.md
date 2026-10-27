@@ -15,7 +15,8 @@ tools: ["*"]
 - **品質ゲート**: PR 前に `./scripts/quality-gate.sh --pr` を green にする（依存追加時は `--secrets` も）。依存欠落/lockfile ドリフトはゲートが自動 bootstrap する。
 - **コミット署名**: 1Password ロック中は署名が失敗するため、その場合のみ `git commit --no-gpg-sign`。**`--no-verify` は使わない**。本文末尾に実行モデルの Co-Authored-By（例 `Co-Authored-By: Claude <モデル名> <noreply@anthropic.com>`。オーケストレータから指定があればそれに従う）。
 - **Conventional Commits**（日本語可）。PR タイトル = squash 後の main コミット。
-- **PR**: `gh pr create --base main`、本文は `.github/pull_request_template.md` 構成。完全充足なら `Closes #N`、増分なら `関連 #N`。末尾に `🤖 Generated with [Claude Code](https://claude.com/claude-code)`。
+- **PR**: `npx tsx scripts/create-pull-request.ts --head <branch> --base main --title … --body …`
+  （🔴 `gh pr create` は使わない。web セッションには `gh` が無く、routine では GraphQL が 403 / #1117）、本文は `.github/pull_request_template.md` 構成。完全充足なら `Closes #N`、増分なら `関連 #N`。末尾に `🤖 Generated with [Claude Code](https://claude.com/claude-code)`。
 - **マージしない**。
 - **worktree**: 与えられた作業ツリー内で完結。`git worktree add ../...` 等で外部 worktree を新規作成しない（撤去漏れの原因）。
 - 外部依存追加時は `docs/license-privacy-guide.md`（#105）に従い SPDX/商用可否を確認し `THIRD_PARTY_NOTICES.md` に記録。

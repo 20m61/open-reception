@@ -10,7 +10,20 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const denyWithoutKioskSession = vi.fn();
+const getReception = vi.fn();
+const TENANT = 'internal';
+const SITE = 'default-site';
+const readKioskSession = vi.fn();
+// 認証は共通ガード（`@/lib/kiosk/session-guard`）を実物で通す。差し替えるのは cookie・署名検証・
+// 端末台帳だけ（所有権判定を含むガード本体はモックしない）。
+vi.mock('next/headers', () => ({ cookies: async () => ({ get: () => ({ value: 'TEST-token' }) }) }));
+vi.mock('@/lib/auth/kiosk', () => ({
+  KIOSK_COOKIE: 'kiosk_session',
+  readKioskSession: (...a: unknown[]) => readKioskSession(...a),
+}));
+vi.mock('@/lib/product-context/device-binding', () => ({
+  resolveDeviceBinding: async (kioskId: string) => ({ kioskId, tenantId: TENANT, siteId: SITE }),
+}));
 const startCall = vi.fn();
 const markCallFailed = vi.fn();
 const executeRoutedCall = vi.fn();
@@ -18,10 +31,8 @@ const routedCallAdapter = vi.fn();
 const evaluateCallGuard = vi.fn();
 const intendsRealDialing = vi.fn();
 
-vi.mock('@/lib/kiosk/session-guard', () => ({
-  denyWithoutKioskSession: (...a: unknown[]) => denyWithoutKioskSession(...a),
-}));
 vi.mock('@/lib/data-stores/reception-store', () => ({
+  getReception: (...a: unknown[]) => getReception(...a),
   startCall: (...a: unknown[]) => startCall(...a),
   markCallFailed: (...a: unknown[]) => markCallFailed(...a),
 }));
@@ -35,9 +46,6 @@ vi.mock('@/lib/routing/call-execution', async (importOriginal) => ({
 }));
 vi.mock('@/lib/platform/provider-resolution', () => ({
   intendsRealDialing: (...a: unknown[]) => intendsRealDialing(...a),
-}));
-vi.mock('@/lib/tenant/default-scope', () => ({
-  resolveDefaultScope: () => ({ tenantId: 'internal', siteId: 'default-site' }),
 }));
 vi.mock('@/lib/operating-policy/call-guard', () => ({
   evaluateCallGuard: (...a: unknown[]) => evaluateCallGuard(...a),
@@ -54,7 +62,8 @@ function call(id = 'rec-1') {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  denyWithoutKioskSession.mockResolvedValue(null);
+  readKioskSession.mockResolvedValue({ kioskId: 'kiosk-1' });
+  getReception.mockResolvedValue({ ok: true, value: { id: 'rec-1', kioskId: 'kiosk-1', state: 'confirming' } });
   routedCallAdapter.mockReturnValue({ call: vi.fn() });
   evaluateCallGuard.mockResolvedValue({ allowed: true });
   // 既定は「実発信の意図なし」＝ dev / デモ / 未設定テナント（全 seed がこれ）。
@@ -64,9 +73,7 @@ beforeEach(() => {
 
 describe('POST /api/kiosk/receptions/:id/call', () => {
   it('kiosk セッションが無ければ 403（取次を実行しない）', async () => {
-    denyWithoutKioskSession.mockResolvedValue(
-      new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }),
-    );
+    readKioskSession.mockResolvedValue(null);
     const res = await call();
     expect(res.status).toBe(403);
     expect(executeRoutedCall).not.toHaveBeenCalled();
@@ -313,7 +320,7 @@ describe('POST /api/kiosk/receptions/:id/call — 営業時間外ガード (#367
   });
 
   it('kiosk セッションが無ければ営業時間ガードより先に 403 で止まる（ガード未評価）', async () => {
-    denyWithoutKioskSession.mockResolvedValue(new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }));
+    readKioskSession.mockResolvedValue(null);
     const res = await call();
     expect(res.status).toBe(403);
     expect(evaluateCallGuard).not.toHaveBeenCalled();

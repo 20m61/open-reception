@@ -7,18 +7,91 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const getSecuritySettings = vi.fn();
 const verifyPin = vi.fn();
 const issueKioskSession = vi.fn();
+const reserveLayeredSafely = vi.fn();
+const recordLayeredSuccess = vi.fn();
+const reportAttemptBudgetExceeded = vi.fn();
+const reportAttemptStoreUnavailable = vi.fn();
+const assertIdentitySaltAvailable = vi.fn();
 
 vi.mock('@/lib/security/security-store', () => ({
   getSecuritySettings: (...a: unknown[]) => getSecuritySettings(...a),
   verifyPin: (...a: unknown[]) => verifyPin(...a),
 }));
-vi.mock('@/lib/auth/kiosk', () => ({
-  KIOSK_COOKIE: 'kiosk_session',
+vi.mock('@/lib/security/attempt-store', () => ({
+  reserveLayeredSafely: (...a: unknown[]) => reserveLayeredSafely(...a),
+  recordLayeredSuccess: (...a: unknown[]) => recordLayeredSuccess(...a),
+}));
+vi.mock('@/lib/security/attempt-report', () => ({
+  reportAttemptBudgetExceeded: (...a: unknown[]) => reportAttemptBudgetExceeded(...a),
+  reportAttemptStoreUnavailable: (...a: unknown[]) => reportAttemptStoreUnavailable(...a),
+}));
+// 🔴 **`clientIdentity` は本物のまま残す。** ここをモックすると、下の
+//    「鍵は XFF の末尾から決まる」が**配線を一切通らなくなり空虚に通る**
+//    （実際に一度そうしてしまい、そのテストが落ちて気づいた）。差し替えるのは
+//    鍵の解決可否だけにする。
+vi.mock('@/lib/security/client-identity', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/security/client-identity')>()),
+  assertIdentitySaltAvailable: (...a: unknown[]) => assertIdentitySaltAvailable(...a),
+}));
+// 🔴 **`readKioskSession` は本物のまま残す (#1237)。** 署名検証ごとモックすると、
+//    「偽造 cookie では通らない」が配線を通らず空虚に通る。差し替えるのは発行だけ。
+vi.mock('@/lib/auth/kiosk', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/auth/kiosk')>()),
   KIOSK_SESSION_TTL_MS: 1000,
   issueKioskSession: (...a: unknown[]) => issueKioskSession(...a),
 }));
+let kioskCookie: string | undefined;
+/** 端末証明（登録の証跡, #1237）。既定は持たない（従来の端末と同じ）。 */
+let deviceCookie: string | undefined;
+vi.mock('next/headers', () => ({
+  cookies: async () => ({
+    get: (name: string) => {
+      const value =
+        name === 'kiosk_session' ? kioskCookie : name === 'kiosk_device' ? deviceCookie : undefined;
+      return value !== undefined ? { value } : undefined;
+    },
+  }),
+}));
+/** 端末台帳で有効な端末 id の集合（`resolveDeviceBinding` は未登録・失効で null）。 */
+const ENROLLED = 'kiosk-enrolled';
+let activeDevices: ReadonlySet<string>;
+/** 台帳の端末証明の世代（未設定は 0）。 */
+let generations: ReadonlyMap<string, number>;
+const resolveDeviceBinding = vi.fn(async (kioskId: string) =>
+  activeDevices.has(kioskId)
+    ? {
+        tenantId: 'internal',
+        siteId: 'default-site',
+        kioskId,
+        credentialGeneration: generations.get(kioskId) ?? 0,
+      }
+    : null,
+);
+/** 台帳が読めない端末 id（ストア障害の再現, #1237 follow-up）。 */
+let unreadableDevices: ReadonlySet<string>;
+const lookupDeviceBinding = vi.fn(async (kioskId: string) => {
+  if (unreadableDevices.has(kioskId)) return { kind: 'unavailable' as const };
+  const binding = await resolveDeviceBinding(kioskId);
+  return binding ? { kind: 'enrolled' as const, binding } : { kind: 'not_enrolled' as const };
+});
+vi.mock('@/lib/product-context/device-binding', () => ({
+  resolveDeviceBinding: (kioskId: string) => resolveDeviceBinding(kioskId),
+  lookupDeviceBinding: (kioskId: string) => lookupDeviceBinding(kioskId),
+}));
+
+/** 応答が設定する cookie の名前（`Set-Cookie` を 1 本ずつ読む）。 */
+function setCookieNames(res: Response): string[] {
+  return res.headers.getSetCookie().map((c) => c.split('=')[0]!.trim());
+}
 
 import { POST } from './route';
+import { KIOSK_AUTHORIZE_LAYERS } from '@/domain/security/attempt-budget';
+import { __resetSecretUnavailableLog } from '@/lib/auth/secret-unavailable';
+import { issueDeviceCredential } from '@/lib/auth/kiosk-device-credential';
+
+const realKiosk = await vi.importActual<typeof import('@/lib/auth/kiosk')>('@/lib/auth/kiosk');
+/** エンロールが発行するのと同じ署名の kiosk セッション。 */
+const sessionFor = (kioskId: string) => realKiosk.issueKioskSession(kioskId);
 
 function post(body: unknown = { pin: '0000', kioskId: 'kiosk-dev' }) {
   return POST(
@@ -29,11 +102,41 @@ function post(body: unknown = { pin: '0000', kioskId: 'kiosk-dev' }) {
   );
 }
 
-beforeEach(() => {
+/**
+ * 🔴 **発信元が識別できる要求。** XFF が無いと `clientIdentity` はハッシュを計算せずに
+ * `GLOBAL_IDENTITY` へ退避するので、**salt を一度も触らない** ——
+ * 鍵の材料不足を測るテストが**何も測らなくなる**。
+ */
+function postWithXff(body: unknown = { pin: '0000', kioskId: 'kiosk-dev' }) {
+  return POST(
+    new Request('http://localhost/api/kiosk/authorize', {
+      method: 'POST',
+      headers: { 'x-forwarded-for': '203.0.113.9, 192.0.2.1' },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+beforeEach(async () => {
   vi.clearAllMocks();
   getSecuritySettings.mockResolvedValue({ pinRequired: true, pin: '0000', ipAllowlist: [] });
   verifyPin.mockResolvedValue(true);
   issueKioskSession.mockResolvedValue('signed-kiosk-session');
+  reserveLayeredSafely.mockResolvedValue({
+    allowed: true,
+    nextWindow: { startedAt: 0, failures: 0 },
+  });
+  // 🔴 既定は「記録が成功する」。`vi.clearAllMocks()` が戻り値も消すので、
+  //    ここで置き直さないと `undefined` が返り、通常経路でも
+  //    「記録に失敗した」と読まれる（下界のテストがこの取りこぼしを捕まえた）。
+  recordLayeredSuccess.mockResolvedValue(true);
+  assertIdentitySaltAvailable.mockReturnValue(undefined);
+  // 既定は「エンロール済みで台帳でも有効な端末」。未登録の扱いは下の describe が縛る。
+  activeDevices = new Set([ENROLLED]);
+  generations = new Map();
+  unreadableDevices = new Set();
+  kioskCookie = await sessionFor(ENROLLED);
+  deviceCookie = undefined;
 });
 
 describe('POST /api/kiosk/authorize (#244)', () => {
@@ -71,5 +174,660 @@ describe('POST /api/kiosk/authorize (#244)', () => {
     );
     expect(res.status).toBe(403);
     expect(issueKioskSession).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 🔴 **PIN で認可できるのは登録済みの端末だけ (#1237)。**
+ *
+ * 端末 ID は body から取らず、エンロールで得た kiosk セッション（署名検証つき）から導出し、
+ * 端末台帳で有効な端末に限る。下界（登録済みなら通る）を併せて縛り、
+ * 「全部拒否」の世界でも満たせる形にしない。
+ */
+describe('POST /api/kiosk/authorize は登録済みの端末に限る (#1237)', () => {
+  it('🔴 セッションの無い端末は正しい PIN でも 403（照合も予約もしない）', async () => {
+    kioskCookie = undefined;
+    const res = await post({ pin: '0000', kioskId: ENROLLED });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error: 'not_enrolled' });
+    expect(issueKioskSession).not.toHaveBeenCalled();
+    expect(res.headers.get('set-cookie')).toBeNull();
+    expect(verifyPin).not.toHaveBeenCalled();
+    expect(reserveLayeredSafely).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['署名の無い値', 'kiosk-enrolled'],
+    ['改ざんした値', 'x.y'],
+    ['空文字', ''],
+  ])('🔴 検証できない cookie（%s）は 403', async (_l, value) => {
+    kioskCookie = value;
+    const res = await post({ pin: '0000', kioskId: ENROLLED });
+    expect(res.status).toBe(403);
+    expect(issueKioskSession).not.toHaveBeenCalled();
+  });
+
+  it('🔴 台帳で有効でない端末（未登録・失効）のセッションは 403', async () => {
+    kioskCookie = await sessionFor('kiosk-revoked');
+    const res = await post({ pin: '0000', kioskId: ENROLLED });
+    expect(res.status).toBe(403);
+    expect(resolveDeviceBinding).toHaveBeenCalledWith('kiosk-revoked');
+    expect(issueKioskSession).not.toHaveBeenCalled();
+  });
+
+  it('🔴 body の kioskId は無視し、セッションの端末 id だけを発行する', async () => {
+    activeDevices = new Set([ENROLLED, 'kiosk-other']);
+    for (const kioskId of ['kiosk-other', 'kiosk-dev', '', undefined, 42]) {
+      issueKioskSession.mockClear();
+      const res = await post({ pin: '0000', kioskId });
+      expect(res.status, String(kioskId)).toBe(200);
+      expect(issueKioskSession.mock.calls, String(kioskId)).toEqual([[ENROLLED]]);
+    }
+  });
+
+  it('🔴 body に kioskId が無くても、登録済みの端末は自分の id で通る（下界）', async () => {
+    const res = await post({ pin: '0000' });
+    expect(res.status).toBe(200);
+    expect(issueKioskSession.mock.calls).toEqual([[ENROLLED]]);
+    expect(res.headers.get('set-cookie')).toContain('kiosk_session=');
+  });
+
+  /** 既存の検査（IP・pinRequired）が登録の検査より先に効く（順序を入れ替えない）。 */
+  it.each([
+    ['IP 不許可', { pinRequired: true, pin: '0000', ipAllowlist: ['1.2.3.4'] }, 'ip not allowed'],
+    ['PIN 認可が無効', { pinRequired: false, pin: '0000', ipAllowlist: [] }, 'pin authorization disabled'],
+  ])('🔴 未登録でも %s なら既存の 403 で断る', async (_l, settings, message) => {
+    kioskCookie = undefined;
+    getSecuritySettings.mockResolvedValue(settings);
+    const res = await postWithXff({ pin: '0000' });
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { message: string }).message).toContain(message);
+  });
+
+  it('🔴 登録済みでも PIN 不一致は 401（登録は PIN を代替しない）', async () => {
+    verifyPin.mockResolvedValue(false);
+    const res = await post({ pin: 'wrong' });
+    expect(res.status).toBe(401);
+    expect(issueKioskSession).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 試行回数制限 (#1021 AC4)。
+ *
+ * ## 何を守るか
+ *
+ * この route は**未認証の公開経路**で、PIN は事実上 4 桁＝10^4 しかない。通れば
+ * **30 日の kiosk セッション**が出る（以降 #1020 の面が全部開く）。
+ *
+ * 🔴 **この doc は 1 周目の前提を書いていた（「鍵はサイト全体（global）しか選べない」）。
+ * その前提は独立レビュー B1 に反証されたので撤回する。** `x-forwarded-for` の**末尾**は
+ * CloudFront が付ける詐称できない viewer IP で（`src/lib/admin/audit.ts` が同じ抽出をしている）、
+ * `src/proxy.ts` の origin-verify が CloudFront 迂回を全ルートで拒否する。
+ * 今の鍵は**層**になっている: 一次＝発信元ごと / 二次＝global cap。
+ * 下の「鍵は XFF の末尾から決まる」がそれを縛っている。
+ *
+ * ## 代償（正直に書く）
+ *
+ * 二次（global cap）を使い切られている間は**初回の PIN 認可が閉じる**。
+ * 被害を限るのは次の 2 つで、機構ではなく事実である:
+ *
+ * - **既に許可済みの端末は影響を受けない**（kiosk セッションは 30 日 cookie なので、
+ *   稼働中の受付端末は攻撃中も動き続ける）。閉じるのは**初回の PIN 認可だけ**
+ * - 窓は短く取り、攻撃が止まれば**自然に開く**
+ */
+describe('試行回数制限 (#1021 AC4)', () => {
+  it('🔴 予算超過なら 429 と Retry-After を返す', async () => {
+    reserveLayeredSafely.mockResolvedValue({ allowed: false, retryAfterMs: 42_000 });
+    const res = await post();
+    expect(res.status).toBe(429);
+    expect(res.headers.get('retry-after')).toBe('42');
+    expect(issueKioskSession).not.toHaveBeenCalled();
+    expect(res.headers.get('set-cookie')).toBeNull();
+  });
+
+  /**
+   * 🔴 **本体。** 予算超過の試行は**照合を走らせない**。
+   *
+   * AC3 で PIN 照合は PBKDF2（実測 約 5ms/回）になったので、走らせると
+   * 叩くだけで Lambda の GB-ms と同時実行を消費させられる。断るついでに
+   * **コストを下げる**のがこの配線の要点である（増幅を閉じる側に使う）。
+   */
+  it('🔴 予算超過なら PIN 照合を走らせない（計算増幅を閉じる）', async () => {
+    reserveLayeredSafely.mockResolvedValue({ allowed: false, retryAfterMs: 1000 });
+    await post();
+    expect(verifyPin).not.toHaveBeenCalled();
+  });
+
+  /** 🔴 下界: 予算内なら従来どおり照合する（全部 429 にして満たしていない）。 */
+  it('🔴 予算内なら照合して通す（下界）', async () => {
+    const res = await post();
+    expect(res.status).toBe(200);
+    expect(verifyPin).toHaveBeenCalledTimes(1);
+  });
+
+  it('🔴 PIN 不一致は失敗として数える', async () => {
+    verifyPin.mockResolvedValue(false);
+    const res = await post({ pin: 'wrong' });
+    expect(res.status).toBe(401);
+    // 🔴 予約の時点で数えているので、ここで数え直さない（二重計上になる）。
+    expect(reserveLayeredSafely).toHaveBeenCalledTimes(1);
+    expect(recordLayeredSuccess).not.toHaveBeenCalled();
+  });
+
+  /** 🔴 成功は失敗数を捨てる（正しく入った直後に予算切れで断られる形を作らない）。 */
+  it('🔴 成功したら失敗数をリセットする', async () => {
+    await post();
+    expect(recordLayeredSuccess).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * 🔴 **PIN 認可が無効なサイトでは数えない。** `pinRequired=false` の 403 は
+   * PIN の試行ではないので、数えると**攻撃でもないもので予算を使い切る**
+   * （その端末は enroll 経路を使うのが正しい）。
+   */
+  it('🔴 pinRequired=false の 403 は数えない', async () => {
+    getSecuritySettings.mockResolvedValue({ pinRequired: false, pin: '0000', ipAllowlist: [] });
+    await post();
+    expect(reserveLayeredSafely).not.toHaveBeenCalled();
+  });
+
+  /** 🔴 鍵は body の kioskId に依らない（回しても同じ窓を使う＝素通りさせない）。 */
+  it('🔴 kioskId を変えても同じ鍵で数える', async () => {
+    await post({ pin: '0000', kioskId: 'kiosk-a' });
+    await post({ pin: '0000', kioskId: 'kiosk-b' });
+    const keys = reserveLayeredSafely.mock.calls.map((c) => c[0]);
+    expect(keys[0]).toBe(keys[1]);
+  });
+
+  /** 🔴 応答に PIN の値を出さない（未認証経路。`rules/pii-secret-minimization.md`）。 */
+  it('🔴 429 の応答本文に入力値を出さない', async () => {
+    reserveLayeredSafely.mockResolvedValue({ allowed: false, retryAfterMs: 1000 });
+    const res = await post({ pin: '1234', kioskId: 'kiosk-dev' });
+    const text = await res.text();
+    expect(text).not.toContain('1234');
+  });
+});
+
+/**
+ * ストア障害時の倒れ方（#1021 AC4 / レビュー M2）。
+ *
+ * 🔴 **この増分は「帳簿」を受付完遂の経路に足した。** その帳簿が落ちたときに
+ * どう倒れるかを**明示的に選んでテストで固定する** —— 選ばないと未捕捉 500 になり、
+ * 「正しい PIN を入れた来訪者が、DynamoDB の一時障害だけで受付を開始できない」が起きる
+ * （実測でそうなっていた）。
+ */
+describe('帳簿が落ちたとき (#1021 AC4)', () => {
+  /** 🔴 判定できないときは fail-closed（落とせば制限が消える状態を作らない）。 */
+  it('🔴 予約できないときは 503（未捕捉 500 にしない）', async () => {
+    reserveLayeredSafely.mockResolvedValue('unavailable');
+    const res = await post();
+    expect(res.status).toBe(503);
+    expect(verifyPin).not.toHaveBeenCalled();
+    expect(issueKioskSession).not.toHaveBeenCalled();
+  });
+
+  /**
+   * 🔴 **本体（M2）。成功の記録に失敗しても、セッションは発行する。**
+   *
+   * 捨て損なっても予算は窓明けで自然に戻るので、ここで止める理由が無い。止めると
+   * **正しい PIN を入れた来訪者が受付を開始できない**（帳簿の書き込み失敗だけで）。
+   */
+  it('🔴 成功の記録に失敗してもセッションを発行する', async () => {
+    recordLayeredSuccess.mockResolvedValue(false);
+    const res = await post();
+    expect(res.status).toBe(200);
+    expect(issueKioskSession).toHaveBeenCalledTimes(1);
+    expect(res.headers.get('set-cookie')).toContain('kiosk_session=');
+  });
+
+  /** 🔴 下界: 記録が成功する通常経路でも当然発行する（上を空虚に満たさない）。 */
+  it('🔴 記録が成功する通常経路でも発行する（下界）', async () => {
+    const res = await post();
+    expect(res.status).toBe(200);
+    expect(issueKioskSession).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * 🔴 **予算の鍵は発信元ごと（レビュー B1）。** XFF の**末尾**で鍵が決まるので、
+   * 攻撃者が先頭へ何を詰めても他人の予算を消費できない。
+   */
+  it('🔴 鍵は XFF の末尾から決まる（先頭の詐称に引きずられない）', async () => {
+    const send = (xff: string) =>
+      POST(
+        new Request('http://localhost/api/kiosk/authorize', {
+          method: 'POST',
+          headers: { 'x-forwarded-for': xff },
+          body: JSON.stringify({ pin: '0000' }),
+        }),
+      );
+    await send('1.1.1.1, 192.0.2.1');
+    await send('2.2.2.2, 3.3.3.3, 192.0.2.1');
+    await send('9.9.9.9');
+    const [a, b, c] = reserveLayeredSafely.mock.calls.map((call) => call[0] as string);
+    // 末尾が同じなら同じ鍵（先頭に何を詰められても変わらない）。
+    expect(a).toBe(b);
+    // 末尾が違えば違う鍵。
+    expect(c).not.toBe(a);
+    // 🔴 生の IP を鍵にしない（レビュー 2 周目 M-4。鍵は 2 時間永続化される）。
+    expect(a).not.toContain('192.0.2.1');
+    expect(a).toMatch(/^ip:[0-9a-f]{64}$/);
+  });
+});
+
+/**
+ * 検出信号の配線（#1021 AC4 / レビュー M4。変異検証で生存した穴）。
+ *
+ * 信号を足しても**呼んでいることを縛らないと**、次に触った人が外しても誰も気づかない。
+ */
+describe('検出信号の配線 (#1021 AC4)', () => {
+  it('🔴 予算超過を記録する', async () => {
+    reserveLayeredSafely.mockResolvedValue({ allowed: false, retryAfterMs: 1000 });
+    await post();
+    expect(reportAttemptBudgetExceeded).toHaveBeenCalledTimes(1);
+  });
+
+  it('🔴 帳簿が読めないことを記録する', async () => {
+    reserveLayeredSafely.mockResolvedValue('unavailable');
+    await post();
+    expect(reportAttemptStoreUnavailable).toHaveBeenCalledTimes(1);
+  });
+
+  /** 🔴 成功の記録に失敗したことも記録する（沈黙で飲まない）。 */
+  it('🔴 成功の記録に失敗したことを記録する', async () => {
+    recordLayeredSuccess.mockResolvedValue(false);
+    await post();
+    expect(reportAttemptStoreUnavailable).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * 🔴 **方針と scope の配線を縛る。** 別の方針（緩い予算）や別の scope を渡すと、
+   * 定数側のテストが全部緑のまま**この経路だけ制限が外れる**。
+   */
+  it('🔴 kiosk の方針と scope を渡している', async () => {
+    await post();
+    expect(reserveLayeredSafely.mock.calls[0]?.[2], 'kiosk の方針が渡っていない').toBe(
+      KIOSK_AUTHORIZE_LAYERS,
+    );
+    expect(reserveLayeredSafely.mock.calls[0]?.[1]).toBe('kiosk-authorize');
+  });
+
+  it('🔴 通常経路では記録しない（下界）', async () => {
+    await post();
+    expect(reportAttemptBudgetExceeded).not.toHaveBeenCalled();
+    expect(reportAttemptStoreUnavailable).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 発信元ハッシュの材料（`KIOSK_ENROLLMENT_SECRET`）が解決できないとき
+ * （#1021 AC4 / 独立レビュー 4 周目 MAJOR-1 の対処）。
+ *
+ * salt を fail-closed の鍵から導出するようにしたので、**未設定デプロイでは throw する**。
+ * 未認証経路なので、そのまま素通しにするとスタックトレースつきの 500 を無制限に生ませられる。
+ */
+describe('鍵の材料が無いデプロイ (#1021 AC4)', () => {
+  it('🔴 鍵が解決できないなら 503（未捕捉 500 にしない）', async () => {
+    assertIdentitySaltAvailable.mockImplementation(() => {
+      throw new Error('KIOSK_ENROLLMENT_SECRET is not set in a deployed environment');
+    });
+    const res = await post();
+    expect(res.status).toBe(503);
+    // 🔴 鍵の名前は出してよいが、**値は出さない**（未認証経路）。
+    expect(JSON.stringify(await res.json())).not.toContain('0000');
+  });
+
+  /**
+   * 🔴 **鍵が無い世界を「本物の材料不足」で再現する（変異 M-E が生存した穴）。**
+   *
+   * 上の 3 本は `assertIdentitySaltAvailable` **だけ**をモックで throw させている。
+   * 本物の `clientIdentity` は dev フォールバックがあるので**決して throw しない** ——
+   * つまりテストの世界では「鍵が無い」が**片方の関数にしか存在せず、本番と食い違っている**。
+   *
+   * その食い違いのせいで、**検査を `clientIdentity` の後ろへ動かす変異が 25 本全部を
+   * 素通り**した（実測）。その順序だと、鍵未設定の Lambda へ XFF 付きで POST した
+   * 未認証の相手が、**1 リクエストにつき 1 本スタックトレース付きの 500** を無制限に
+   * 生ませられる（`secret-unavailable.ts` が存在する理由そのもの）。
+   *
+   * ここでは env を実際に欠けさせ、**モックを外して本物を使う**。順序が正しければ
+   * 鍵の解決で 503 に倒れ、後ろへ動かすと `clientIdentity` が先に throw して落ちる。
+   */
+  it('🔴 材料が本当に無いとき、鍵の解決が clientIdentity より先に効く', async () => {
+    const savedMarker = process.env.AWS_LAMBDA_FUNCTION_NAME;
+    const savedSecret = process.env.KIOSK_ENROLLMENT_SECRET;
+    const actual = await vi.importActual<typeof import('@/lib/security/client-identity')>(
+      '@/lib/security/client-identity',
+    );
+    process.env.AWS_LAMBDA_FUNCTION_NAME = 'open-reception-server';
+    delete process.env.KIOSK_ENROLLMENT_SECRET;
+    // 欠けているのは enrollment 鍵**だけ**の世界にする。セッション鍵まで欠けたデプロイは
+    // #1124 で起動時に止まる（register()）ので、route まで届く世界ではない。
+    vi.stubEnv('KIOSK_SESSION_SECRET', 'TEST-kiosk-session-secret');
+    kioskCookie = await sessionFor(ENROLLED);
+    actual.__resetIdentitySalt();
+    // 🔴 モックを外して本物を使う（ここが「本番と同じ世界」にする唯一の手）。
+    assertIdentitySaltAvailable.mockImplementation(actual.assertIdentitySaltAvailable);
+    try {
+      const res = await postWithXff();
+      expect(res.status, '鍵の解決より先に clientIdentity が走っている').toBe(503);
+    } finally {
+      if (savedMarker === undefined) delete process.env.AWS_LAMBDA_FUNCTION_NAME;
+      else process.env.AWS_LAMBDA_FUNCTION_NAME = savedMarker;
+      if (savedSecret === undefined) delete process.env.KIOSK_ENROLLMENT_SECRET;
+      else process.env.KIOSK_ENROLLMENT_SECRET = savedSecret;
+      vi.unstubAllEnvs();
+      actual.__resetIdentitySalt();
+    }
+  });
+
+  /**
+   * 🔴 **503 の検出信号を呼んでいる（変異 M-R が生存した穴）。**
+   *
+   * この増分は `reportAttemptBudgetExceeded` / `reportAttemptStoreUnavailable` について
+   * 「信号を足しても**呼んでいることを縛らないと**外しても誰も気づかない」と書いて
+   * 専用の describe で縛っているのに、**3 つ目だけ入れ忘れていた** ——
+   * `secretUnavailableResponse` をログ無しの inline 503 へ置き換えても 25 本全部が緑だった。
+   * `CLAUDE.md` #788 の「同型の 2 本には対策を入れ、3 本目にだけ入れ忘れた」と同型である。
+   *
+   * 信号が落ちると、鍵欠落デプロイで**受付が止まっている理由がサーバログに一切残らない**。
+   */
+  it('🔴 503 のときサーバログに理由を残す（鍵名はログだけ・本文には出さない）', async () => {
+    __resetSecretUnavailableLog();
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    assertIdentitySaltAvailable.mockImplementation(() => {
+      throw new Error('unset');
+    });
+    try {
+      const res = await post();
+      expect(res.status).toBe(503);
+      const logged = error.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(logged, '鍵欠落の理由がログに残っていない').toContain('KIOSK_ENROLLMENT_SECRET');
+      // 🔴 下界: 鍵名は**本文には**出さない（未認証経路なので設定状態を漏らさない）。
+      expect(JSON.stringify(await res.json())).not.toContain('KIOSK_ENROLLMENT_SECRET');
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  /** 🔴 鍵が無いなら照合も予約もしない（未設定デプロイで帳簿を汚さない）。 */
+  it('🔴 鍵が解決できないなら照合も予約もしない', async () => {
+    assertIdentitySaltAvailable.mockImplementation(() => {
+      throw new Error('unset');
+    });
+    await post();
+    expect(verifyPin).not.toHaveBeenCalled();
+    expect(reserveLayeredSafely).not.toHaveBeenCalled();
+  });
+
+  /**
+   * 🔴 **catch の射程を広げない（#1123 と同じ形）。** 鍵**以外**の throw まで 503 に
+   * 化けると、実装バグが「設定漏れ」に見えて**原因に辿り着けなくなる**。
+   * 鍵の解決の**後**に走るものが落ちたときは、503 へ丸めずそのまま出す。
+   */
+  it('🔴 鍵以外の throw は 503 に化けない', async () => {
+    reserveLayeredSafely.mockRejectedValue(new Error('unexpected implementation bug'));
+    await expect(post()).rejects.toThrow('unexpected implementation bug');
+  });
+
+  /** 🔴 下界: 鍵が解決できる通常経路では 503 にしない。 */
+  it('🔴 鍵が解決できれば通常どおり通す（下界）', async () => {
+    const res = await post();
+    expect(res.status).toBe(200);
+  });
+});
+
+/**
+ * 🔴 **セッションが切れた登録済みの端末は、端末証明で PIN 再認可できる (#1237)。**
+ *
+ * PIN 画面が出るのは有効なセッションが無いときなので、以下は既定で**セッション cookie を外す**。
+ * 証明はエンロールでだけ発行され、台帳の世代と一致するときだけ身元の根拠になる。
+ * 身元が決まったあとの検査（試行予算・照合）と、身元より前の検査（IP・pinRequired）は従来どおり。
+ */
+describe('端末証明による PIN 再認可 (#1237)', () => {
+  beforeEach(async () => {
+    kioskCookie = undefined;
+    generations = new Map([[ENROLLED, 2]]);
+    deviceCookie = await issueDeviceCredential(ENROLLED, 2);
+  });
+
+  it('🔴 セッションが無くても、世代の一致する証明と正しい PIN で証明の端末にセッションを発行する', async () => {
+    const res = await post({ pin: '0000', kioskId: 'kiosk-attacker' });
+    expect(res.status).toBe(200);
+    // body の kioskId は使わない。
+    expect(issueKioskSession).toHaveBeenCalledWith(ENROLLED);
+    expect(res.headers.get('set-cookie')).toContain('kiosk_session=');
+  });
+
+  it('🔴 証明もセッションも無い端末は 403 not_enrolled（照合も予約もしない）', async () => {
+    deviceCookie = undefined;
+    const res = await post();
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('not_enrolled');
+    expect(reserveLayeredSafely).not.toHaveBeenCalled();
+    expect(verifyPin).not.toHaveBeenCalled();
+    expect(issueKioskSession).not.toHaveBeenCalled();
+  });
+
+  it('🔴 台帳に無い端末（未登録）の証明は 403', async () => {
+    deviceCookie = await issueDeviceCredential('kiosk-unknown', 0);
+    const res = await post();
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('not_enrolled');
+    expect(reserveLayeredSafely).not.toHaveBeenCalled();
+    expect(issueKioskSession).not.toHaveBeenCalled();
+  });
+
+  it('🔴 失効した端末の証明は 403（世代が一致していても台帳で有効でなければ通さない）', async () => {
+    activeDevices = new Set();
+    const res = await post();
+    expect(res.status).toBe(403);
+    expect(verifyPin).not.toHaveBeenCalled();
+    expect(issueKioskSession).not.toHaveBeenCalled();
+  });
+
+  it('🔴 古い世代の証明（失効・再登録の前に発行）は 403', async () => {
+    generations = new Map([[ENROLLED, 3]]);
+    const res = await post();
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('not_enrolled');
+    expect(reserveLayeredSafely).not.toHaveBeenCalled();
+    expect(issueKioskSession).not.toHaveBeenCalled();
+  });
+
+  it('🔴 新しすぎる世代の証明も 403（一致だけを通す）', async () => {
+    deviceCookie = await issueDeviceCredential(ENROLLED, 3);
+    expect((await post()).status).toBe(403);
+    expect(issueKioskSession).not.toHaveBeenCalled();
+  });
+
+  it('🔴 署名の壊れた証明は 403', async () => {
+    deviceCookie = `${deviceCookie}x`;
+    expect((await post()).status).toBe(403);
+    expect(issueKioskSession).not.toHaveBeenCalled();
+  });
+
+  it('🔴 kiosk セッションを証明の cookie に入れても証明として読まない', async () => {
+    deviceCookie = await sessionFor(ENROLLED);
+    expect((await post()).status).toBe(403);
+    expect(issueKioskSession).not.toHaveBeenCalled();
+  });
+
+  it('🔴 証明があっても PIN 不一致は 401 で、試行予算を消費する', async () => {
+    verifyPin.mockResolvedValue(false);
+    const res = await post({ pin: 'wrong' });
+    expect(res.status).toBe(401);
+    expect(reserveLayeredSafely).toHaveBeenCalledTimes(1);
+    expect(recordLayeredSuccess).not.toHaveBeenCalled();
+    expect(issueKioskSession).not.toHaveBeenCalled();
+  });
+
+  it('🔴 証明があっても予算超過なら 429 で照合しない', async () => {
+    reserveLayeredSafely.mockResolvedValue({ allowed: false, retryAfterMs: 5000 });
+    const res = await post();
+    expect(res.status).toBe(429);
+    expect(verifyPin).not.toHaveBeenCalled();
+    expect(issueKioskSession).not.toHaveBeenCalled();
+  });
+
+  it('🔴 証明があっても IP 不許可・PIN 認可無効は既存の 403 で断る（身元より前の検査）', async () => {
+    getSecuritySettings.mockResolvedValue({ pinRequired: true, pin: '0000', ipAllowlist: ['1.2.3.4'] });
+    const ip = await postWithXff();
+    expect(ip.status).toBe(403);
+    expect((await ip.json()).message).toBe('ip not allowed');
+    getSecuritySettings.mockResolvedValue({ pinRequired: false, pin: '0000', ipAllowlist: [] });
+    const off = await post();
+    expect(off.status).toBe(403);
+    expect((await off.json()).error).toBe('forbidden');
+    expect(issueKioskSession).not.toHaveBeenCalled();
+  });
+
+  it('🔴 試行の鍵の材料が無ければ証明があっても 503（照合も予約もしない）', async () => {
+    assertIdentitySaltAvailable.mockImplementation(() => {
+      throw new Error('KIOSK_ENROLLMENT_SECRET is not set');
+    });
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect((await post()).status).toBe(503);
+    } finally {
+      spy.mockRestore();
+      __resetSecretUnavailableLog();
+    }
+    expect(reserveLayeredSafely).not.toHaveBeenCalled();
+    expect(issueKioskSession).not.toHaveBeenCalled();
+  });
+
+  it('🔴 証明の検証鍵が解決できない実デプロイでは 503（未登録に化けない・発行しない）', async () => {
+    vi.stubEnv('AWS_LAMBDA_FUNCTION_NAME', 'fn');
+    vi.stubEnv('KIOSK_ENROLLMENT_SECRET', '');
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const res = await post();
+      expect(res.status).toBe(503);
+      expect(JSON.stringify(await res.json())).not.toMatch(/SECRET|dev-insecure/);
+    } finally {
+      spy.mockRestore();
+      warn.mockRestore();
+      vi.unstubAllEnvs();
+      __resetSecretUnavailableLog();
+    }
+    expect(verifyPin).not.toHaveBeenCalled();
+    expect(reserveLayeredSafely).not.toHaveBeenCalled();
+    expect(issueKioskSession).not.toHaveBeenCalled();
+  });
+
+  it('証明が通らなくても、有効なセッションがあれば従来どおり通る（下界）', async () => {
+    generations = new Map([[ENROLLED, 9]]);
+    kioskCookie = await sessionFor(ENROLLED);
+    expect((await post()).status).toBe(200);
+    expect(issueKioskSession).toHaveBeenCalledWith(ENROLLED);
+  });
+
+  it('証明とセッションの端末が違うときは、通る証明の端末を使う', async () => {
+    activeDevices = new Set([ENROLLED, 'kiosk-other']);
+    kioskCookie = await sessionFor('kiosk-other');
+    expect((await post()).status).toBe(200);
+    expect(issueKioskSession).toHaveBeenCalledWith(ENROLLED);
+  });
+
+  it('🔴 証明の端末で発行するセッションにも、証明の値を応答に出さない', async () => {
+    const res = await post();
+    expect(await res.text()).not.toContain(deviceCookie ?? '<none>');
+  });
+});
+
+/**
+ * 🔴 **PIN 認可は端末証明を決して発行しない（owner 判断 controltower#167 選択肢 A の条件）。**
+ * 証明はエンロールでだけ発行する。authorize が発行すると、PIN だけで登録の証跡が延長・
+ * 新設できてしまう。成功・失敗のどの経路でも `kiosk_device` を設定しないことを縛る。
+ */
+describe('PIN 認可は端末証明を発行しない (#1237 follow-up)', () => {
+  it('🔴 セッション経路の成功は kiosk_session だけを設定する', async () => {
+    const res = await post();
+    expect(res.status).toBe(200);
+    expect(setCookieNames(res)).toEqual(['kiosk_session']);
+  });
+
+  it('🔴 証明経路の成功も kiosk_session だけを設定する（証明を更新・延長しない）', async () => {
+    kioskCookie = undefined;
+    generations = new Map([[ENROLLED, 3]]);
+    deviceCookie = await issueDeviceCredential(ENROLLED, 3);
+    const res = await post();
+    expect(res.status).toBe(200);
+    expect(setCookieNames(res)).toEqual(['kiosk_session']);
+  });
+
+  it('🔴 失敗の経路（401 / 403 / 429 / 503）は cookie を何も設定しない', async () => {
+    verifyPin.mockResolvedValueOnce(false);
+    const wrong = await post();
+    expect(wrong.status).toBe(401);
+    expect(setCookieNames(wrong)).toEqual([]);
+
+    kioskCookie = undefined;
+    const notEnrolled = await post();
+    expect(notEnrolled.status).toBe(403);
+    expect(setCookieNames(notEnrolled)).toEqual([]);
+
+    kioskCookie = await sessionFor(ENROLLED);
+    reserveLayeredSafely.mockResolvedValueOnce({ allowed: false, retryAfterMs: 1000 });
+    const limited = await post();
+    expect(limited.status).toBe(429);
+    expect(setCookieNames(limited)).toEqual([]);
+
+    unreadableDevices = new Set([ENROLLED]);
+    const down = await post();
+    expect(down.status).toBe(503);
+    expect(setCookieNames(down)).toEqual([]);
+  });
+});
+
+/**
+ * 🔴 **台帳が読めないことを「未登録」と言わない（#1237 follow-up）。** どちらもセッションは
+ * 出さない（fail-closed）が、障害時に再登録を案内すると担当者に直らない作業をさせる。
+ * 区別は応答（503 / error）だけで、検査の順序と強さは変えない。
+ */
+describe('台帳が読めないとき (#1237 follow-up)', () => {
+  it('🔴 セッションの端末が引けなければ 503 unavailable（not_enrolled にしない・照合も予約もしない）', async () => {
+    unreadableDevices = new Set([ENROLLED]);
+    const res = await post();
+    expect(res.status).toBe(503);
+    expect((await res.json()).error).toBe('unavailable');
+    expect(reserveLayeredSafely).not.toHaveBeenCalled();
+    expect(verifyPin).not.toHaveBeenCalled();
+    expect(issueKioskSession).not.toHaveBeenCalled();
+  });
+
+  it('🔴 証明の端末が引けず、セッションも無ければ 503 unavailable', async () => {
+    kioskCookie = undefined;
+    deviceCookie = await issueDeviceCredential(ENROLLED, 0);
+    unreadableDevices = new Set([ENROLLED]);
+    const res = await post();
+    expect(res.status).toBe(503);
+    expect((await res.json()).error).toBe('unavailable');
+    expect(issueKioskSession).not.toHaveBeenCalled();
+  });
+
+  it('証明の端末が引けなくても、セッションの端末が有効なら従来どおり通る', async () => {
+    activeDevices = new Set([ENROLLED, 'kiosk-other']);
+    deviceCookie = await issueDeviceCredential('kiosk-other', 0);
+    unreadableDevices = new Set(['kiosk-other']);
+    const res = await post();
+    expect(res.status).toBe(200);
+    expect(issueKioskSession).toHaveBeenCalledWith(ENROLLED);
+  });
+
+  it('🔴 台帳が読めても未登録なら従来どおり 403 not_enrolled（下界）', async () => {
+    activeDevices = new Set();
+    const res = await post();
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe('not_enrolled');
+  });
+
+  it('🔴 503 でも IP 不許可・PIN 認可無効は身元より前の 403 のまま', async () => {
+    unreadableDevices = new Set([ENROLLED]);
+    getSecuritySettings.mockResolvedValue({ pinRequired: false, pin: '0000', ipAllowlist: [] });
+    const res = await post();
+    expect(res.status).toBe(403);
+    expect(lookupDeviceBinding).not.toHaveBeenCalled();
   });
 });

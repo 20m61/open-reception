@@ -104,6 +104,10 @@ const WIRING_DIRS: readonly string[] = ['scripts/hooks', 'src', 'infra/lib', 'in
 export const MANUAL_ONLY_ALLOWLIST: Readonly<Record<string, string>> = {
   'record-gate-run.sh':
     '週次 routine（リポジトリ外）から呼ばれる入口そのもの。リポジトリ内に呼び出し元は無くて正しい。',
+  'check-publish-path.ts':
+    'record-gate-run.sh --publish がゲートの前に呼ぶ事前確認 (#1117)。その入口自体が ' +
+    '週次 routine 専用（上記）なので、自動経路からは辿れなくて正しい。配線は ' +
+    'tests/config/github-cli-independence.test.ts が「ゲートより前に呼ばれること」として縛る。',
   'cloud-setup.sh': 'クラウド開発環境の初期化。人が環境を作るときだけ走る。',
   'cursor-cloud-install.sh':
     'Cursor Cloud Agent の install 正本。ダッシュボードの install 欄へ人が載せる／同期する。自動では走らない。',
@@ -118,12 +122,19 @@ export const MANUAL_ONLY_ALLOWLIST: Readonly<Record<string, string>> = {
   'kiosk-visual-check.mjs': '実ブラウザが要る（visual-checks skill から手動）。',
   'qr-routing-check.mjs': '実ブラウザが要る（visual-checks skill から手動）。',
   'vrm-visual-check.mjs': '実ブラウザが要る（visual-checks skill から手動）。',
+  'aws-local-capability.ts':
+    'エミュレータの稼働が前提（`npm run aws:local:capability` = `scripts/aws-local.sh capability`）。' +
+    '能力の再測を人が回すときだけ走る。品質ゲートには入れない（#1103 条件 5: 既定のゲートを変えない）。',
   'aws-cloud-deploy.sh':
     'クラウドセッション / routine から呼ぶ入口そのもの。リポジトリ内に呼び出し元は無くて正しい。',
   'aws-issue-credentials.sh':
     '人間がローカル Mac の Admin 環境でデプロイ窓を開けるときだけ走る（値をリポジトリに残さない）。',
   'deploy-context-block.ts':
-    '`aws-issue-credentials.sh`（manual-only）が、窓を開けるときにデプロイ context 4 変数を貼り付け用ブロックへ組み立てるのに使う CLI。窓を開ける操作の中でしか意味が無く、秘密の値を扱うので自動では走らせない (#989)。',
+    '`aws-issue-credentials.sh`（manual-only）が、窓を開けるときにデプロイ context 3 変数を貼り付け用ブロックへ組み立てるのに使う CLI。窓を開ける操作の中でしか意味が無く、秘密の値を扱うので自動では走らせない (#989)。',
+  'admin-user-provision.sh':
+    '管理者 Cognito ユーザーを人が用意する入口そのもの (#1051)。クラウドセッションの資格情報は `claude-deploy-entry.json` の `DenyEverythingElseOutsideTheChain` により Cognito が明示 Deny（停止境界「Cognito・認可の境界変更」の機械強制）なので、Admin 資格情報を持つ人が手元で流すしかない。パスワードを対話で受け取るため自動では走らせない。',
+  'admin-user-credentials.ts':
+    '`admin-user-provision.sh`（manual-only）が、対話で集めた資格情報を検査して `--cli-input-json` の payload を組み立てるのに使う CLI (#1051)。パスワードを stdin で受け取るので自動では走らせない。',
   // ---- 以下は #681 で追加。すべて `aws-cloud-deploy.sh`（manual-only の入口）からのみ
   // 呼ばれる。以前は「manual-only の入口から呼ばれている」ことで配線済みと数えられており、
   // 手動である理由がどこにも記録されていなかった。
@@ -141,7 +152,7 @@ export const MANUAL_ONLY_ALLOWLIST: Readonly<Record<string, string>> = {
   'aws-command-preflight.ts':
     'deploy wrapper が AWS を呼ぶ前に依存コマンドの有無を確かめる CLI。デプロイ時にしか走らない。',
   'aws-deploy-context.ts':
-    'デプロイに必須の CDK context を解決する CLI。`diff` / `deploy` の実行時にしか意味が無い。',
+    'デプロイに必須の CDK context を解決する CLI。`diff` / `deploy` の実行時にしか意味が無い（`--retired-only` は deploy wrapper の全サブコマンドの先頭で廃止変数だけを見る。#1148）。',
   'aws-stack-selection.ts':
     '`--only` を解決してデプロイ対象を決める CLI。`diff` / `deploy` の実行時にしか意味が無い。',
 };
