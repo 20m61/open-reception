@@ -635,7 +635,7 @@ describe('the credential never appears in the template (scan runs with or withou
     const hashes = [
       'n4bQgYhMfWWaL+qgxVrQFaO/TxsrC4Is0V1sFbDwCgg=', // Lambda CodeSha256 shape
       'faa95a81ae7d7373f3e1f242268f904eb748d8d0fdd306e8a6fe515a1905a7d6.zip', // asset object key
-      'cdk-hnb659fds-assets-822063948773-ap-northeast-1',
+      'cdk-hnb659fds-assets-111122223333-ap-northeast-1',
       'AWSLambdaBasicExecutionRole',
       'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole',
       'dynamodb:ConditionCheckItem',
@@ -753,7 +753,7 @@ describe('ordering: a nested stack or assembly never reaches the S6c module unch
   ])('a %s is denied by the trusted policy and, independently, by this module', async (_l, mutate, policyRule) => {
     const policy = (await import(pathToFileURL(POLICY).href)) as { evaluateAssembly: (i: J) => J };
     const dir = realWith(mutate);
-    const p = policy.evaluateAssembly({ assemblyDir: dir, targetAccount: '822063948773' });
+    const p = policy.evaluateAssembly({ assemblyDir: dir, targetAccount: '111122223333' });
     expect(p.result).toBe('denied');
     expect((p.violations as J[]).map((v) => v.rule)).toContain(policyRule);
     for (const check of [null, all]) {
@@ -763,7 +763,7 @@ describe('ordering: a nested stack or assembly never reaches the S6c module unch
 
   it('the unmodified real assembly passes the trusted policy, so the denial above is the nesting', async () => {
     const policy = (await import(pathToFileURL(POLICY).href)) as { evaluateAssembly: (i: J) => J };
-    const v = (policy.evaluateAssembly({ assemblyDir: realWith(() => {}), targetAccount: '822063948773' }).violations as J[]).map((x) => x.rule);
+    const v = (policy.evaluateAssembly({ assemblyDir: realWith(() => {}), targetAccount: '111122223333' }).violations as J[]).map((x) => x.rule);
     expect(v).not.toContain('RESOURCE_TYPE_NOT_APPROVED');
     expect(v).not.toContain('NESTED_ASSEMBLY');
   });

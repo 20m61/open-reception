@@ -10,6 +10,7 @@ import { Template } from 'aws-cdk-lib/assertions';
 import { describe, expect, it } from 'vitest';
 import { cfnGeneratedNamePrefix } from '../../src/domain/governance/cfn-generated-name';
 import { DevDeployBrokerStack } from '../lib/stacks/dev-deploy-broker-stack';
+import { DEV_ACCOUNT_ID } from '../../src/domain/governance/dev-account';
 
 const RUNBOOK = readFileSync(resolve(__dirname, '../../docs/runbook-sparse-ledger-activation.md'), 'utf8');
 const STACK_NAME = 'OpenReception-DevDeployBroker';
@@ -49,7 +50,7 @@ describe('runbook step 4a: CloudFormation-generated name patterns cover the real
     const app = new cdk.App();
     const stack = new DevDeployBrokerStack(app, STACK_NAME, {
       stackName: STACK_NAME,
-      env: { account: '822063948773', region: 'ap-northeast-1' },
+      env: { account: `${DEV_ACCOUNT_ID}`, region: 'ap-northeast-1' },
     });
     return Template.fromStack(stack).toJSON().Resources as Record<string, { Type: string; Properties: Record<string, unknown> }>;
   })();
@@ -81,7 +82,7 @@ describe('runbook step 3.5a: the GitHub connection', () => {
     expect(create).toHaveLength(1);
     expect(create[0]).toContain('--region ap-northeast-1');
     expect(create[0]).toContain('--connection-name open-reception-github');
-    expect(RUNBOOK).toContain('arn:aws:codestar-connections:ap-northeast-1:822063948773:connection/262f84e8-b307-46c8-bafd-e5d5121d01b7');
+    expect(RUNBOOK).toContain('arn:aws:codestar-connections:ap-northeast-1:<DEV_ACCOUNT_ID>:connection/262f84e8-b307-46c8-bafd-e5d5121d01b7');
     expect(RUNBOOK).toContain('**repo ごとに 1 つの接続**');
     expect(RUNBOOK).not.toContain('1 つの接続を共有してよい');
   });

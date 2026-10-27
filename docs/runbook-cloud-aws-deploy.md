@@ -8,7 +8,7 @@ Claude Code on the cloud（クラウドセッション / cron routine）から�
 🔴 **本書を書いている時点で、この runbook のステップは 1 度も実行されていない。IAM は未適用、
 dev への `cdk deploy` も未実施。** ステップ 1〜11 は人間が実際に手を動かして初めて検証される。
 
-対象アカウント: `822063948773`（open-reception 以外に nodi / salon-loop / Kiaff が同居）。
+対象アカウント: `<DEV_ACCOUNT_ID>`（open-reception 以外に nodi / salon-loop / Kiaff が同居）。
 リージョン: `ap-northeast-1`（主）+ `us-east-1`（`OpenReception-CfMon-dev` のみ）。
 qualifier: `orcloud01`。
 
@@ -27,10 +27,10 @@ qualifier: `orcloud01`。
 [Claude Cloud サンドボックス]  scripts/aws-cloud-deploy.sh 経由でのみ cdk を実行
       │  cdk deploy -c env=dev -c @aws-cdk/core:bootstrapQualifier=orcloud01
       ▼
-  role/cdk-orcloud01-deploy-role-822063948773-<region>   ← ステップ 2 (bootstrap) で作成、
+  role/cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-<region>   ← ステップ 2 (bootstrap) で作成、
       │                                                     ステップ 3 で層 1 の Deny を上乗せ
       ▼
-  role/cdk-orcloud01-cfn-exec-role-822063948773-<region> ← ステップ 2 (bootstrap) で作成、
+  role/cdk-orcloud01-cfn-exec-role-<DEV_ACCOUNT_ID>-<region> ← ステップ 2 (bootstrap) で作成、
       │                                                     OpenReceptionClaudeCfnExec-dev +
       │                                                     OpenReceptionClaudeBoundary 付き
       ▼
@@ -170,16 +170,16 @@ boundary を重ねても実効的な差が無い。
 cd infra
 # cdk bootstrap も cdk.json の app（bin/open-reception.ts）を synth する。app は ap-northeast-1 以外を拒否する（#1221）
 export AWS_REGION=ap-northeast-1
-npx cdk bootstrap aws://822063948773/ap-northeast-1 aws://822063948773/us-east-1 \
+npx cdk bootstrap aws://<DEV_ACCOUNT_ID>/ap-northeast-1 aws://<DEV_ACCOUNT_ID>/us-east-1 \
   --qualifier orcloud01 \
   --toolkit-stack-name CDKToolkit-orcloud01 \
-  --cloudformation-execution-policies arn:aws:iam::822063948773:policy/OpenReceptionClaudeCfnExec-dev \
+  --cloudformation-execution-policies arn:aws:iam::<DEV_ACCOUNT_ID>:policy/OpenReceptionClaudeCfnExec-dev \
   --custom-permissions-boundary OpenReceptionClaudeBoundary \
-  --trust 822063948773
+  --trust <DEV_ACCOUNT_ID>
 ```
 
-これで `cdk-orcloud01-deploy-role-822063948773-<region>` /
-`cdk-orcloud01-cfn-exec-role-822063948773-<region>` / file-publishing / image-publishing /
+これで `cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-<region>` /
+`cdk-orcloud01-cfn-exec-role-<DEV_ACCOUNT_ID>-<region>` / file-publishing / image-publishing /
 lookup の各ロールが作成され、boundary と exec policy が結びつく。
 
 🔴 **`--custom-permissions-boundary` が boundary を付けるのは cfn-exec role 1 つだけである。**
@@ -215,12 +215,12 @@ bootstrap が作成した `cdk-orcloud01-deploy-role-*` へ、主境界となる
 
 ```bash
 aws iam put-role-policy \
-  --role-name cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
+  --role-name cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --policy-name OpenReceptionClaudeDeployRestriction \
   --policy-document file://scripts/aws-policies/claude-deploy-role-restriction.json
 
 aws iam put-role-policy \
-  --role-name cdk-orcloud01-deploy-role-822063948773-us-east-1 \
+  --role-name cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-us-east-1 \
   --policy-name OpenReceptionClaudeDeployRestriction \
   --policy-document file://scripts/aws-policies/claude-deploy-role-restriction.json
 ```
@@ -236,7 +236,7 @@ allowlist を足した等で `claude-deploy-role-restriction.json` を直した�
 for r in ap-northeast-1 us-east-1; do
   printf "%s: " "$r"
   aws iam get-role-policy \
-    --role-name "cdk-orcloud01-deploy-role-822063948773-$r" \
+    --role-name "cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-$r" \
     --policy-name OpenReceptionClaudeDeployRestriction \
     --query PolicyDocument --output json | rg -c 'CfMon-dev'
 done
@@ -268,9 +268,9 @@ done
 （原文のまま記録する ―― これが唯一の証拠である）:
 
 ```
-AccessDenied: User: arn:aws:sts::822063948773:assumed-role/OpenReceptionClaudeDeploy-dev/claude-cloud-20260814-0352
+AccessDenied: User: arn:aws:sts::<DEV_ACCOUNT_ID>:assumed-role/OpenReceptionClaudeDeploy-dev/claude-cloud-20260814-0352
 is not authorized to perform: cloudformation:DescribeChangeSet
-on resource: arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/f9c7aab0-8f6f-11f1-be9b-0a2cf2440d9f
+on resource: arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-Web-dev/f9c7aab0-8f6f-11f1-be9b-0a2cf2440d9f
 because no identity-based policy allows the cloudformation:DescribeChangeSet action
 ```
 
@@ -314,11 +314,11 @@ stack ARN で認可されると確定した。change set 系に未証明の資�
 `exit 2` で拒否する。** 実行は 1 回でよい（両リージョンを 1 回で回す）。
 
 ```bash
-SIMULATE_ENTRY_ROLE_ARN=arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev \
-SIMULATE_DEPLOY_ROLE_ARN_AP_NORTHEAST_1=arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
-SIMULATE_DEPLOY_ROLE_ARN_US_EAST_1=arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-us-east-1 \
-SIMULATE_EXEC_ROLE_ARN_AP_NORTHEAST_1=arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
-SIMULATE_EXEC_ROLE_ARN_US_EAST_1=arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-us-east-1 \
+SIMULATE_ENTRY_ROLE_ARN=arn:aws:iam::<DEV_ACCOUNT_ID>:role/OpenReceptionClaudeDeploy-dev \
+SIMULATE_DEPLOY_ROLE_ARN_AP_NORTHEAST_1=arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
+SIMULATE_DEPLOY_ROLE_ARN_US_EAST_1=arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-us-east-1 \
+SIMULATE_EXEC_ROLE_ARN_AP_NORTHEAST_1=arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-cfn-exec-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
+SIMULATE_EXEC_ROLE_ARN_US_EAST_1=arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-cfn-exec-role-<DEV_ACCOUNT_ID>-us-east-1 \
   npm run aws:negative-tests -- --simulate-only
 ```
 
@@ -415,7 +415,7 @@ boundary を渡すのは `exec` だけである（`--custom-permissions-boundary
 
 #### 実施記録: 2026-08-15（✅ 50/50 PASS。**PassRole については無効**）
 
-**実施済み。** 上のコマンドをそのまま Admin（`arn:aws:iam::822063948773:user/CDK`）から実行した。
+**実施済み。** 上のコマンドをそのまま Admin（`arn:aws:iam::<DEV_ACCOUNT_ID>:user/CDK`）から実行した。
 
 > 🔴 **この 50/50 を「PassRole も検証済み」と読まないこと（2026-09-05 追記）。**
 > 当時の S 系には S23（dev の Lambda 実行ロールへ渡せること）が無く、
@@ -561,17 +561,17 @@ FAIL した 3 本（`7` / `7u` / `11`）はいずれも
 ```bash
 # 1) entry role: DescribeStacks（自分の dev スタック） → allowed 期待
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/OpenReceptionClaudeDeploy-dev \
   --action-names cloudformation:DescribeStacks \
-  --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/dummy-id \
+  --resource-arns arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-Web-dev/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 2) entry role: DescribeChangeSet（自分の dev スタック。stack ARN で認可される。
 #    2026-08-13 実測で訂正 ―― 以前は changeSet ARN で叩いていた） → allowed 期待
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/OpenReceptionClaudeDeploy-dev \
   --action-names cloudformation:DescribeChangeSet \
-  --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/dummy-id \
+  --resource-arns arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-Web-dev/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 3) entry role: CreateChangeSet（entry role 自身は持つべきではない） → denied 期待
@@ -579,47 +579,47 @@ aws iam simulate-principal-policy \
 #      CreateChangeSet を叩く設計であり、entry role が直接持つ必要は無い。
 #      allowed が返ったら意図しない権限付与＝バグ）
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/OpenReceptionClaudeDeploy-dev \
   --action-names cloudformation:CreateChangeSet \
-  --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/dummy-id \
+  --resource-arns arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-Web-dev/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 4) entry role: ExecuteChangeSet（entry role 自身は持つべきではない） → denied 期待
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/OpenReceptionClaudeDeploy-dev \
   --action-names cloudformation:ExecuteChangeSet \
-  --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:changeSet/claude-gate-abc1234/dummy-id \
+  --resource-arns arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:changeSet/claude-gate-abc1234/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 5) CDK deploy role: CreateChangeSet（自分の dev スタック） → allowed 期待
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names cloudformation:CreateChangeSet \
-  --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/dummy-id \
+  --resource-arns arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-Web-dev/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 6) CDK deploy role: DescribeChangeSet（自分の dev スタック。stack ARN で認可される。
 #    2026-08-13 実測で訂正） → allowed 期待
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names cloudformation:DescribeChangeSet \
-  --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/dummy-id \
+  --resource-arns arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-Web-dev/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 7) CDK deploy role: ExecuteChangeSet（自分の dev スタック。**stack ARN** で認可される。
 #    2026-08-15 実測で訂正 ―― 以前は changeSet ARN で叩いており、資源型が一致しないため
 #    常に implicitDeny だった） → allowed 期待（IMPORTANT A の主眼）
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names cloudformation:ExecuteChangeSet \
-  --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/dummy-id \
+  --resource-arns arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-Web-dev/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 8) CDK deploy role: DescribeStacks（自分の dev スタック） → allowed 期待
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names cloudformation:DescribeStacks \
-  --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/dummy-id \
+  --resource-arns arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-Web-dev/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 9) CDK deploy role: 他プロジェクトのスタックへ ExecuteChangeSet → denied 期待
@@ -634,9 +634,9 @@ aws iam simulate-principal-policy \
 #    最小 Allow でも implicitDeny になることを probe で確認済み）。
 #    名前ではなく **foreign stack** を問う形へ置き換えた ―― これが主境界の本体である。
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names cloudformation:ExecuteChangeSet \
-  --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:stack/nodi-dev-app/dummy-id \
+  --resource-arns arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/nodi-dev-app/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 10) 上記 1〜9 のうち us-east-1 が関係するもの（stack/changeSet の region 部分を
@@ -648,18 +648,18 @@ aws iam simulate-principal-policy \
 #     （`cleanupOldChangeset` が実行時の deploy で必ず呼ぶため必須。名前が衝突した
 #     既存 change set を削除できないと `cdk deploy` の実行自体が失敗する）
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names cloudformation:DeleteChangeSet \
-  --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/dummy-id \
+  --resource-arns arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-Web-dev/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 12) CDK deploy role: DeleteStack（自分の dev スタック） → allowed 期待
 #     （`--no-execute` の no-op 実行が REVIEW_IN_PROGRESS のスタック殻を残すことがあり、
 #     人間が Admin から片付ける runbook 手順に DeleteStack 権限が要る）
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names cloudformation:DeleteStack \
-  --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/dummy-id \
+  --resource-arns arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-Web-dev/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 13) 🔴 entry role: lookup role への AssumeRole → denied 期待
@@ -668,9 +668,9 @@ aws iam simulate-principal-policy \
 #     ここが allowed だと、窓の間に nodi / salon-loop / Kiaff の DynamoDB・S3・
 #     Lambda 環境変数・Cognito をアカウント全体で読める＝主境界の完全な迂回）
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/OpenReceptionClaudeDeploy-dev \
   --action-names sts:AssumeRole \
-  --resource-arns arn:aws:iam::822063948773:role/cdk-orcloud01-lookup-role-822063948773-ap-northeast-1 \
+  --resource-arns arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-lookup-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # ---------------------------------------------------------------------------
@@ -708,9 +708,9 @@ aws iam simulate-principal-policy \
 #     🔴 渡す context は `iam:PassedToService` **だけ**。タグを注入すると、
 #        実リクエストでは起こらない条件で allowed を得てしまう（上記の空虚な検査）。
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-cfn-exec-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names iam:PassRole \
-  --resource-arns 'arn:aws:iam::822063948773:role/OpenReception-Web-dev-ServerFnServiceRoleDUMMY' \
+  --resource-arns 'arn:aws:iam::<DEV_ACCOUNT_ID>:role/OpenReception-Web-dev-ServerFnServiceRoleDUMMY' \
   --context-entries \
       'ContextKeyName=iam:PassedToService,ContextKeyValues=lambda.amazonaws.com,ContextKeyType=string' \
   --query 'EvaluationResults[0].EvalDecision' --output text
@@ -720,9 +720,9 @@ aws iam simulate-principal-policy \
 #      `OpenReception-*-dev-*` のスコープが機能しておらず、Important 4 は塞げていない）
 #     **14 と同じ context を渡す**ので、denied の理由が「context 不足」でないと言える。
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-cfn-exec-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names iam:PassRole \
-  --resource-arns 'arn:aws:iam::822063948773:role/salon-loop-staging-SomeRole' \
+  --resource-arns 'arn:aws:iam::<DEV_ACCOUNT_ID>:role/salon-loop-staging-SomeRole' \
   --context-entries \
       'ContextKeyName=iam:PassedToService,ContextKeyValues=lambda.amazonaws.com,ContextKeyType=string' \
   --query 'EvaluationResults[0].EvalDecision' --output text
@@ -731,9 +731,9 @@ aws iam simulate-principal-policy \
 #     （PassedToService 条件が効いていることの直接確認。渡し先は 14 と同じ ARN なので、
 #      違いは `iam:PassedToService` の値だけ ―― 条件そのものを問えている）
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-cfn-exec-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names iam:PassRole \
-  --resource-arns 'arn:aws:iam::822063948773:role/OpenReception-Web-dev-ServerFnServiceRoleDUMMY' \
+  --resource-arns 'arn:aws:iam::<DEV_ACCOUNT_ID>:role/OpenReception-Web-dev-ServerFnServiceRoleDUMMY' \
   --context-entries \
       'ContextKeyName=iam:PassedToService,ContextKeyValues=ec2.amazonaws.com,ContextKeyType=string' \
   --query 'EvaluationResults[0].EvalDecision' --output text
@@ -750,33 +750,33 @@ Allow している（CDK が自分のロール・ポリシーを更新するの�
 # 17) cfn-exec role: 共有 bootstrap の cfn-exec role を削除 → denied 期待
 #     （allowed だと 4 プロジェクト全部のデプロイを壊せる）
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-cfn-exec-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names iam:DeleteRole \
-  --resource-arns arn:aws:iam::822063948773:role/cdk-hnb659fds-cfn-exec-role-822063948773-ap-northeast-1 \
+  --resource-arns arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-hnb659fds-cfn-exec-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 18) cfn-exec role: 別プロジェクトの実行ポリシーを書き換える → denied 期待
 #     （`--set-as-default` 付きの CreatePolicyVersion は中身を丸ごと差し替えられる）
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-cfn-exec-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names iam:CreatePolicyVersion iam:SetDefaultPolicyVersion \
-  --resource-arns arn:aws:iam::822063948773:policy/SalonLoopStagingCfnExecution \
+  --resource-arns arn:aws:iam::<DEV_ACCOUNT_ID>:policy/SalonLoopStagingCfnExecution \
   --query 'EvaluationResults[*].EvalDecision' --output text
 
 # 19) cfn-exec role: **自分のチェーン**（deploy role）から層 1 のインラインポリシーを
 #     剥がす → denied 期待。これが allowed だと主境界そのものを外せる
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-cfn-exec-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names iam:DeleteRolePolicy \
-  --resource-arns arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
+  --resource-arns arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 20) cfn-exec role: 自分の（タグ付き）dev ロールの削除 → allowed 期待
 #     （19 の Deny が広すぎて通常のスタック更新まで壊していないことの対照）
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-cfn-exec-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names iam:DeleteRole \
-  --resource-arns 'arn:aws:iam::822063948773:role/OpenReception-Web-dev-ServerFnServiceRoleDUMMY' \
+  --resource-arns 'arn:aws:iam::<DEV_ACCOUNT_ID>:role/OpenReception-Web-dev-ServerFnServiceRoleDUMMY' \
   --context-entries \
       'ContextKeyName=aws:ResourceTag/Project,ContextKeyValues=open-reception,ContextKeyType=string' \
   --query 'EvaluationResults[0].EvalDecision' --output text
@@ -819,7 +819,7 @@ aws iam simulate-principal-policy \
 ステップ 4 を PASS させて初回デプロイを認可するとき、**あなたは次のことも一緒に
 承認している**。
 
-`arn:aws:iam::822063948773:role/OpenReception-*-dev-Custom*` は Permissions Boundary の
+`arn:aws:iam::<DEV_ACCOUNT_ID>:role/OpenReception-*-dev-Custom*` は Permissions Boundary の
 強制とタグ条件 Deny から**除外されている**（CDK の `crossRegionReferences` /
 `autoDeleteObjects` が作る provider role にはどちらも付かないため。理由と実測は
 ADR 0009 決定 8 と spec §4.2 層 4）。
@@ -1202,9 +1202,9 @@ SecurityGroup・IAM プリンシパルの変更 等）を検出したら非ゼ�
 返し、その `resource` は次のとおり **stack ARN** を名指しした（原文のまま記録する）:
 
 ```
-AccessDenied: User: arn:aws:sts::822063948773:assumed-role/OpenReceptionClaudeDeploy-dev/claude-cloud-20260814-0352
+AccessDenied: User: arn:aws:sts::<DEV_ACCOUNT_ID>:assumed-role/OpenReceptionClaudeDeploy-dev/claude-cloud-20260814-0352
 is not authorized to perform: cloudformation:DescribeChangeSet
-on resource: arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/f9c7aab0-8f6f-11f1-be9b-0a2cf2440d9f
+on resource: arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-Web-dev/f9c7aab0-8f6f-11f1-be9b-0a2cf2440d9f
 because no identity-based policy allows the cloudformation:DescribeChangeSet action
 ```
 
@@ -1278,7 +1278,7 @@ synth を突き合わせる」と書いていたが、`OpenReceptionClaudeDeploy
 `cloudformation:GetTemplate` を**明示 Deny** されている（2026-09-06 実測）:
 
 ```
-AccessDenied: User: arn:aws:sts::822063948773:assumed-role/OpenReceptionClaudeDeploy-dev/...
+AccessDenied: User: arn:aws:sts::<DEV_ACCOUNT_ID>:assumed-role/OpenReceptionClaudeDeploy-dev/...
 is not authorized to perform: cloudformation:GetTemplate ... with an explicit deny in an identity-based policy
 ```
 

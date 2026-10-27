@@ -30,7 +30,7 @@ type ElevationClaim = {
   breakGlass?: true;
 };
 
-function elevationSecret(): string {
+export function elevationSecret(): string {
   // 新規トラストルート。デプロイ環境で未設定なら **fail-closed**（throw）。公開 dev fallback で
   // 署名すると昇格 cookie を offline 偽造され得るため（Secrets Manager #194 で注入）。
   return serverSecret('PLATFORM_ELEVATION_SECRET', 'dev-insecure-elevation-secret', { failClosed: true });

@@ -164,7 +164,7 @@ describe('self-binding: this build is the pipeline-started build of the in-progr
 
   it.each([
     'alice@example.com',
-    'arn:aws:sts::822063948773:assumed-role/AWSReservedSSO_Admin/alice@example.com',
+    'arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_Admin/alice@example.com',
     'codepipeline/OpenReceptionSparseDevDeploy2',
   ])('never records a non-pipeline initiator verbatim (it can be a person: %s)', (who) => {
     const d = decide((o) => (build(o).initiator = who));
