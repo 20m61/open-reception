@@ -105,7 +105,29 @@ describe('bridgeCommittedTurn: 不在者と近い在席者を自動確定しな�
       t: 0,
     });
     expect(result.event.type).toBe('heardNeedsConfirmation');
-    expect(result.event).toMatchObject({ reason: 'ambiguous_candidates' });
+    expect(result.event).toMatchObject({ reason: 'ambiguous_candidates', displayName: '田中花子' });
+    // 同点は不在へ倒さない: 在席者を呼びたい来訪者に「不在です」と言わず、在席者を復唱する。
+    expect(result.event).not.toHaveProperty('unavailable');
+    expect(result.resolved).toMatchObject({ id: 'h' });
+  });
+
+  it('不在の断定にも在席の候補を比較相手に入れる（近ければ「不在です」と断定せず復唱する）', () => {
+    // 完全一致（1.0）と前方一致（0.8）の差 0.2 が、この margin（0.3）より小さい。
+    const result = bridgeCommittedTurn({
+      text: '田中太郎',
+      directory: dir([staff('m', '田中太郎丸', 'たなかたろうまる')]),
+      unavailableDirectory: dir([away('t', '田中太郎', 'たなかたろう')]),
+      sttConfidence: 0.95,
+      thresholds: { ...T, minMarginOverSecond: 0.3 },
+      t: 0,
+    });
+    expect(result.resolved).toBeNull();
+    expect(result.event).toMatchObject({
+      type: 'heardNeedsConfirmation',
+      displayName: '田中太郎',
+      reason: 'ambiguous_candidates',
+      unavailable: true,
+    });
   });
 
   it('不在の人の方がはっきり一致するなら、在席の別人を選ばない（「田中太郎」と、在席の田中太郎丸）', () => {
