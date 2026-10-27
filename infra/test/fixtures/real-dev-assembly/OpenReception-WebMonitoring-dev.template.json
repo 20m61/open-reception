@@ -1,0 +1,1103 @@
+{
+ "Description": "open-reception web monitoring (dev)",
+ "Resources": {
+  "AlarmTopicD01E77F9": {
+   "Type": "AWS::SNS::Topic",
+   "Properties": {
+    "DisplayName": "open-reception-dev web alarms",
+    "Tags": [
+     {
+      "Key": "Component",
+      "Value": "web-monitoring"
+     },
+     {
+      "Key": "Environment",
+      "Value": "dev"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Owner",
+      "Value": "open-reception-team"
+     },
+     {
+      "Key": "Project",
+      "Value": "open-reception"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-WebMonitoring-dev/AlarmTopic/Resource"
+   }
+  },
+  "ServerErrors4EF9A950": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "AlarmTopicD01E77F9"
+     }
+    ],
+    "AlarmDescription": "server Lambda のエラー発生",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefServerFn4F3A536E686CAA43"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "Component",
+      "Value": "web-monitoring"
+     },
+     {
+      "Key": "Environment",
+      "Value": "dev"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Owner",
+      "Value": "open-reception-team"
+     },
+     {
+      "Key": "Project",
+      "Value": "open-reception"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-WebMonitoring-dev/ServerErrors/Resource"
+   }
+  },
+  "ServerThrottlesE939091D": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "AlarmTopicD01E77F9"
+     }
+    ],
+    "AlarmDescription": "server Lambda のスロットル発生",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefServerFn4F3A536E686CAA43"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Throttles",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "Component",
+      "Value": "web-monitoring"
+     },
+     {
+      "Key": "Environment",
+      "Value": "dev"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Owner",
+      "Value": "open-reception-team"
+     },
+     {
+      "Key": "Project",
+      "Value": "open-reception"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-WebMonitoring-dev/ServerThrottles/Resource"
+   }
+  },
+  "ServerDurationP95B0C97837": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "AlarmTopicD01E77F9"
+     }
+    ],
+    "AlarmDescription": "server Lambda の p95 遅延がタイムアウト 80% を超過",
+    "ComparisonOperator": "GreaterThanThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefServerFn4F3A536E686CAA43"
+      }
+     }
+    ],
+    "EvaluationPeriods": 3,
+    "ExtendedStatistic": "p95",
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Tags": [
+     {
+      "Key": "Component",
+      "Value": "web-monitoring"
+     },
+     {
+      "Key": "Environment",
+      "Value": "dev"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Owner",
+      "Value": "open-reception-team"
+     },
+     {
+      "Key": "Project",
+      "Value": "open-reception"
+     }
+    ],
+    "Threshold": 24000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-WebMonitoring-dev/ServerDurationP95/Resource"
+   }
+  },
+  "ServerConcurrentExecutions3110DE12": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "AlarmTopicD01E77F9"
+     }
+    ],
+    "AlarmDescription": "server Lambda の同時実行数がアカウント既定上限 (1000) の 80% に到達（暴走/攻撃の兆候）",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefServerFn4F3A536E686CAA43"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "ConcurrentExecutions",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "Component",
+      "Value": "web-monitoring"
+     },
+     {
+      "Key": "Environment",
+      "Value": "dev"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Owner",
+      "Value": "open-reception-team"
+     },
+     {
+      "Key": "Project",
+      "Value": "open-reception"
+     }
+    ],
+    "Threshold": 800,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-WebMonitoring-dev/ServerConcurrentExecutions/Resource"
+   }
+  },
+  "AccountConcurrentExecutions39EDA9B8": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "AlarmTopicD01E77F9"
+     }
+    ],
+    "AlarmDescription": "リージョン全体の Lambda 同時実行数がアカウント既定上限 (1000) の 80% に到達（共有上限の枯渇兆候）",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "EvaluationPeriods": 1,
+    "MetricName": "ConcurrentExecutions",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Maximum",
+    "Tags": [
+     {
+      "Key": "Component",
+      "Value": "web-monitoring"
+     },
+     {
+      "Key": "Environment",
+      "Value": "dev"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Owner",
+      "Value": "open-reception-team"
+     },
+     {
+      "Key": "Project",
+      "Value": "open-reception"
+     }
+    ],
+    "Threshold": 800,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-WebMonitoring-dev/AccountConcurrentExecutions/Resource"
+   }
+  },
+  "ImageErrors2505B932": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "AlarmTopicD01E77F9"
+     }
+    ],
+    "AlarmDescription": "image Lambda のエラー発生",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefImageFnCD541B833F594573"
+      }
+     }
+    ],
+    "EvaluationPeriods": 1,
+    "MetricName": "Errors",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "Component",
+      "Value": "web-monitoring"
+     },
+     {
+      "Key": "Environment",
+      "Value": "dev"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Owner",
+      "Value": "open-reception-team"
+     },
+     {
+      "Key": "Project",
+      "Value": "open-reception"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-WebMonitoring-dev/ImageErrors/Resource"
+   }
+  },
+  "ImageDurationP95E655B61C": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "AlarmTopicD01E77F9"
+     }
+    ],
+    "AlarmDescription": "image Lambda の p95 遅延がタイムアウト 80% を超過",
+    "ComparisonOperator": "GreaterThanThreshold",
+    "Dimensions": [
+     {
+      "Name": "FunctionName",
+      "Value": {
+       "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefImageFnCD541B833F594573"
+      }
+     }
+    ],
+    "EvaluationPeriods": 3,
+    "ExtendedStatistic": "p95",
+    "MetricName": "Duration",
+    "Namespace": "AWS/Lambda",
+    "Period": 300,
+    "Tags": [
+     {
+      "Key": "Component",
+      "Value": "web-monitoring"
+     },
+     {
+      "Key": "Environment",
+      "Value": "dev"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Owner",
+      "Value": "open-reception-team"
+     },
+     {
+      "Key": "Project",
+      "Value": "open-reception"
+     }
+    ],
+    "Threshold": 24000,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-WebMonitoring-dev/ImageDurationP95/Resource"
+   }
+  },
+  "DdbReadThrottles03C936E2": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "AlarmTopicD01E77F9"
+     }
+    ],
+    "AlarmDescription": "DynamoDB 読み取りスロットル発生（オンデマンド上限/ホットパーティション）",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "EvaluationPeriods": 1,
+    "Metrics": [
+     {
+      "Expression": "getitem + batchgetitem + query + scan + transactgetitems",
+      "Id": "expr_1",
+      "Label": "Sum of throttled requests across all operations",
+      "ReturnData": true
+     },
+     {
+      "Id": "getitem",
+      "MetricStat": {
+       "Metric": {
+        "Dimensions": [
+         {
+          "Name": "Operation",
+          "Value": "GetItem"
+         },
+         {
+          "Name": "TableName",
+          "Value": {
+           "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefDataTable447BC44E7F3657BE"
+          }
+         }
+        ],
+        "MetricName": "ThrottledRequests",
+        "Namespace": "AWS/DynamoDB"
+       },
+       "Period": 300,
+       "Stat": "Sum"
+      },
+      "ReturnData": false
+     },
+     {
+      "Id": "batchgetitem",
+      "MetricStat": {
+       "Metric": {
+        "Dimensions": [
+         {
+          "Name": "Operation",
+          "Value": "BatchGetItem"
+         },
+         {
+          "Name": "TableName",
+          "Value": {
+           "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefDataTable447BC44E7F3657BE"
+          }
+         }
+        ],
+        "MetricName": "ThrottledRequests",
+        "Namespace": "AWS/DynamoDB"
+       },
+       "Period": 300,
+       "Stat": "Sum"
+      },
+      "ReturnData": false
+     },
+     {
+      "Id": "query",
+      "MetricStat": {
+       "Metric": {
+        "Dimensions": [
+         {
+          "Name": "Operation",
+          "Value": "Query"
+         },
+         {
+          "Name": "TableName",
+          "Value": {
+           "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefDataTable447BC44E7F3657BE"
+          }
+         }
+        ],
+        "MetricName": "ThrottledRequests",
+        "Namespace": "AWS/DynamoDB"
+       },
+       "Period": 300,
+       "Stat": "Sum"
+      },
+      "ReturnData": false
+     },
+     {
+      "Id": "scan",
+      "MetricStat": {
+       "Metric": {
+        "Dimensions": [
+         {
+          "Name": "Operation",
+          "Value": "Scan"
+         },
+         {
+          "Name": "TableName",
+          "Value": {
+           "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefDataTable447BC44E7F3657BE"
+          }
+         }
+        ],
+        "MetricName": "ThrottledRequests",
+        "Namespace": "AWS/DynamoDB"
+       },
+       "Period": 300,
+       "Stat": "Sum"
+      },
+      "ReturnData": false
+     },
+     {
+      "Id": "transactgetitems",
+      "MetricStat": {
+       "Metric": {
+        "Dimensions": [
+         {
+          "Name": "Operation",
+          "Value": "TransactGetItems"
+         },
+         {
+          "Name": "TableName",
+          "Value": {
+           "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefDataTable447BC44E7F3657BE"
+          }
+         }
+        ],
+        "MetricName": "ThrottledRequests",
+        "Namespace": "AWS/DynamoDB"
+       },
+       "Period": 300,
+       "Stat": "Sum"
+      },
+      "ReturnData": false
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Component",
+      "Value": "web-monitoring"
+     },
+     {
+      "Key": "Environment",
+      "Value": "dev"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Owner",
+      "Value": "open-reception-team"
+     },
+     {
+      "Key": "Project",
+      "Value": "open-reception"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-WebMonitoring-dev/DdbReadThrottles/Resource"
+   }
+  },
+  "DdbWriteThrottles371065AC": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "AlarmTopicD01E77F9"
+     }
+    ],
+    "AlarmDescription": "DynamoDB 書き込みスロットル発生（オンデマンド上限/ホットパーティション）",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "EvaluationPeriods": 1,
+    "Metrics": [
+     {
+      "Expression": "putitem + batchwriteitem + updateitem + deleteitem + transactwriteitems",
+      "Id": "expr_1",
+      "Label": "Sum of throttled requests across all operations",
+      "ReturnData": true
+     },
+     {
+      "Id": "putitem",
+      "MetricStat": {
+       "Metric": {
+        "Dimensions": [
+         {
+          "Name": "Operation",
+          "Value": "PutItem"
+         },
+         {
+          "Name": "TableName",
+          "Value": {
+           "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefDataTable447BC44E7F3657BE"
+          }
+         }
+        ],
+        "MetricName": "ThrottledRequests",
+        "Namespace": "AWS/DynamoDB"
+       },
+       "Period": 300,
+       "Stat": "Sum"
+      },
+      "ReturnData": false
+     },
+     {
+      "Id": "batchwriteitem",
+      "MetricStat": {
+       "Metric": {
+        "Dimensions": [
+         {
+          "Name": "Operation",
+          "Value": "BatchWriteItem"
+         },
+         {
+          "Name": "TableName",
+          "Value": {
+           "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefDataTable447BC44E7F3657BE"
+          }
+         }
+        ],
+        "MetricName": "ThrottledRequests",
+        "Namespace": "AWS/DynamoDB"
+       },
+       "Period": 300,
+       "Stat": "Sum"
+      },
+      "ReturnData": false
+     },
+     {
+      "Id": "updateitem",
+      "MetricStat": {
+       "Metric": {
+        "Dimensions": [
+         {
+          "Name": "Operation",
+          "Value": "UpdateItem"
+         },
+         {
+          "Name": "TableName",
+          "Value": {
+           "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefDataTable447BC44E7F3657BE"
+          }
+         }
+        ],
+        "MetricName": "ThrottledRequests",
+        "Namespace": "AWS/DynamoDB"
+       },
+       "Period": 300,
+       "Stat": "Sum"
+      },
+      "ReturnData": false
+     },
+     {
+      "Id": "deleteitem",
+      "MetricStat": {
+       "Metric": {
+        "Dimensions": [
+         {
+          "Name": "Operation",
+          "Value": "DeleteItem"
+         },
+         {
+          "Name": "TableName",
+          "Value": {
+           "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefDataTable447BC44E7F3657BE"
+          }
+         }
+        ],
+        "MetricName": "ThrottledRequests",
+        "Namespace": "AWS/DynamoDB"
+       },
+       "Period": 300,
+       "Stat": "Sum"
+      },
+      "ReturnData": false
+     },
+     {
+      "Id": "transactwriteitems",
+      "MetricStat": {
+       "Metric": {
+        "Dimensions": [
+         {
+          "Name": "Operation",
+          "Value": "TransactWriteItems"
+         },
+         {
+          "Name": "TableName",
+          "Value": {
+           "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefDataTable447BC44E7F3657BE"
+          }
+         }
+        ],
+        "MetricName": "ThrottledRequests",
+        "Namespace": "AWS/DynamoDB"
+       },
+       "Period": 300,
+       "Stat": "Sum"
+      },
+      "ReturnData": false
+     }
+    ],
+    "Tags": [
+     {
+      "Key": "Component",
+      "Value": "web-monitoring"
+     },
+     {
+      "Key": "Environment",
+      "Value": "dev"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Owner",
+      "Value": "open-reception-team"
+     },
+     {
+      "Key": "Project",
+      "Value": "open-reception"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-WebMonitoring-dev/DdbWriteThrottles/Resource"
+   }
+  },
+  "OriginVerifyMissingSecretFilterF07C03DC": {
+   "Type": "AWS::Logs::MetricFilter",
+   "Properties": {
+    "FilterPattern": "\"[origin-verify] ORIGIN_VERIFY_REQUIRED is set\"",
+    "LogGroupName": {
+     "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefServerFnLogs851AA92397744C9A"
+    },
+    "MetricTransformations": [
+     {
+      "MetricName": "OriginVerifyMissingSecret",
+      "MetricNamespace": "OpenReception/dev/OriginVerify",
+      "MetricValue": "1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-WebMonitoring-dev/OriginVerifyMissingSecretFilter/Resource"
+   }
+  },
+  "OriginVerifyMissingSecret5F5C8CA0": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "AlarmTopicD01E77F9"
+     }
+    ],
+    "AlarmDescription": "origin-verify のシークレットが未解決。全リクエストが 503（配備側の障害・即対応）",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "EvaluationPeriods": 1,
+    "MetricName": "OriginVerifyMissingSecret",
+    "Namespace": "OpenReception/dev/OriginVerify",
+    "Period": 300,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "Component",
+      "Value": "web-monitoring"
+     },
+     {
+      "Key": "Environment",
+      "Value": "dev"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Owner",
+      "Value": "open-reception-team"
+     },
+     {
+      "Key": "Project",
+      "Value": "open-reception"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-WebMonitoring-dev/OriginVerifyMissingSecret/Resource"
+   }
+  },
+  "OriginVerifyMismatchFilterA7F5972D": {
+   "Type": "AWS::Logs::MetricFilter",
+   "Properties": {
+    "FilterPattern": "\"[origin-verify] header mismatch\"",
+    "LogGroupName": {
+     "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefServerFnLogs851AA92397744C9A"
+    },
+    "MetricTransformations": [
+     {
+      "MetricName": "OriginVerifyMismatch",
+      "MetricNamespace": "OpenReception/dev/OriginVerify",
+      "MetricValue": "1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-WebMonitoring-dev/OriginVerifyMismatchFilter/Resource"
+   }
+  },
+  "OriginVerifyMismatch68C16A8C": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "AlarmTopicD01E77F9"
+     }
+    ],
+    "AlarmDescription": "origin-verify の mismatch が継続。ローテーションで CloudFront と Lambda がずれた疑い",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "EvaluationPeriods": 3,
+    "MetricName": "OriginVerifyMismatch",
+    "Namespace": "OpenReception/dev/OriginVerify",
+    "Period": 300,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "Component",
+      "Value": "web-monitoring"
+     },
+     {
+      "Key": "Environment",
+      "Value": "dev"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Owner",
+      "Value": "open-reception-team"
+     },
+     {
+      "Key": "Project",
+      "Value": "open-reception"
+     }
+    ],
+    "Threshold": 10,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-WebMonitoring-dev/OriginVerifyMismatch/Resource"
+   }
+  },
+  "KioskRealDialingUnavailableFilter3950C7C3": {
+   "Type": "AWS::Logs::MetricFilter",
+   "Properties": {
+    "FilterPattern": "\"kiosk_real_dialing_unavailable\"",
+    "LogGroupName": {
+     "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefServerFnLogs851AA92397744C9A"
+    },
+    "MetricTransformations": [
+     {
+      "MetricName": "KioskRealDialingUnavailable",
+      "MetricNamespace": "OpenReception/dev/Reception",
+      "MetricValue": "1"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-WebMonitoring-dev/KioskRealDialingUnavailableFilter/Resource"
+   }
+  },
+  "KioskRealDialingUnavailable96F08725": {
+   "Type": "AWS::CloudWatch::Alarm",
+   "Properties": {
+    "AlarmActions": [
+     {
+      "Ref": "AlarmTopicD01E77F9"
+     }
+    ],
+    "AlarmDescription": "実発信を設定したテナントで取り次げず、来訪者を追い返している（資格情報・ルート・設定ストアのいずれかの不備）",
+    "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+    "EvaluationPeriods": 1,
+    "MetricName": "KioskRealDialingUnavailable",
+    "Namespace": "OpenReception/dev/Reception",
+    "Period": 300,
+    "Statistic": "Sum",
+    "Tags": [
+     {
+      "Key": "Component",
+      "Value": "web-monitoring"
+     },
+     {
+      "Key": "Environment",
+      "Value": "dev"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Owner",
+      "Value": "open-reception-team"
+     },
+     {
+      "Key": "Project",
+      "Value": "open-reception"
+     }
+    ],
+    "Threshold": 1,
+    "TreatMissingData": "notBreaching"
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-WebMonitoring-dev/KioskRealDialingUnavailable/Resource"
+   }
+  },
+  "Dashboard9E4231ED": {
+   "Type": "AWS::CloudWatch::Dashboard",
+   "Properties": {
+    "DashboardBody": {
+     "Fn::Join": [
+      "",
+      [
+       "{\"widgets\":[{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":0,\"y\":0,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Server Lambda\",\"region\":\"",
+       {
+        "Ref": "AWS::Region"
+       },
+       "\",\"metrics\":[[\"AWS/Lambda\",\"Invocations\",\"FunctionName\",\"",
+       {
+        "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefServerFn4F3A536E686CAA43"
+       },
+       "\",{\"stat\":\"Sum\"}],[\"AWS/Lambda\",\"Errors\",\"FunctionName\",\"",
+       {
+        "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefServerFn4F3A536E686CAA43"
+       },
+       "\",{\"stat\":\"Sum\"}],[\"AWS/Lambda\",\"Throttles\",\"FunctionName\",\"",
+       {
+        "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefServerFn4F3A536E686CAA43"
+       },
+       "\",{\"stat\":\"Sum\"}],[\"AWS/Lambda\",\"Duration\",\"FunctionName\",\"",
+       {
+        "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefServerFn4F3A536E686CAA43"
+       },
+       "\",{\"stat\":\"p95\",\"yAxis\":\"right\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":6,\"y\":0,\"properties\":{\"view\":\"timeSeries\",\"title\":\"Image Lambda\",\"region\":\"",
+       {
+        "Ref": "AWS::Region"
+       },
+       "\",\"metrics\":[[\"AWS/Lambda\",\"Invocations\",\"FunctionName\",\"",
+       {
+        "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefImageFnCD541B833F594573"
+       },
+       "\",{\"stat\":\"Sum\"}],[\"AWS/Lambda\",\"Errors\",\"FunctionName\",\"",
+       {
+        "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefImageFnCD541B833F594573"
+       },
+       "\",{\"stat\":\"Sum\"}],[\"AWS/Lambda\",\"Duration\",\"FunctionName\",\"",
+       {
+        "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefImageFnCD541B833F594573"
+       },
+       "\",{\"stat\":\"p95\",\"yAxis\":\"right\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":12,\"y\":0,\"properties\":{\"view\":\"timeSeries\",\"title\":\"DynamoDB\",\"region\":\"",
+       {
+        "Ref": "AWS::Region"
+       },
+       "\",\"metrics\":[[\"AWS/DynamoDB\",\"ConsumedReadCapacityUnits\",\"TableName\",\"",
+       {
+        "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefDataTable447BC44E7F3657BE"
+       },
+       "\",{\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"ConsumedWriteCapacityUnits\",\"TableName\",\"",
+       {
+        "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefDataTable447BC44E7F3657BE"
+       },
+       "\",{\"stat\":\"Sum\"}],[{\"label\":\"Sum of throttled requests across all operations\",\"expression\":\"getitem + batchgetitem + query + scan + transactgetitems\",\"yAxis\":\"right\"}],[\"AWS/DynamoDB\",\"ThrottledRequests\",\"Operation\",\"GetItem\",\"TableName\",\"",
+       {
+        "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefDataTable447BC44E7F3657BE"
+       },
+       "\",{\"id\":\"getitem\",\"visible\":false,\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"ThrottledRequests\",\"Operation\",\"BatchGetItem\",\"TableName\",\"",
+       {
+        "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefDataTable447BC44E7F3657BE"
+       },
+       "\",{\"id\":\"batchgetitem\",\"visible\":false,\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"ThrottledRequests\",\"Operation\",\"Query\",\"TableName\",\"",
+       {
+        "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefDataTable447BC44E7F3657BE"
+       },
+       "\",{\"id\":\"query\",\"visible\":false,\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"ThrottledRequests\",\"Operation\",\"Scan\",\"TableName\",\"",
+       {
+        "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefDataTable447BC44E7F3657BE"
+       },
+       "\",{\"id\":\"scan\",\"visible\":false,\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"ThrottledRequests\",\"Operation\",\"TransactGetItems\",\"TableName\",\"",
+       {
+        "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefDataTable447BC44E7F3657BE"
+       },
+       "\",{\"id\":\"transactgetitems\",\"visible\":false,\"stat\":\"Sum\"}],[{\"label\":\"Sum of throttled requests across all operations\",\"expression\":\"putitem + batchwriteitem + updateitem + deleteitem + transactwriteitems\",\"yAxis\":\"right\"}],[\"AWS/DynamoDB\",\"ThrottledRequests\",\"Operation\",\"PutItem\",\"TableName\",\"",
+       {
+        "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefDataTable447BC44E7F3657BE"
+       },
+       "\",{\"id\":\"putitem\",\"visible\":false,\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"ThrottledRequests\",\"Operation\",\"BatchWriteItem\",\"TableName\",\"",
+       {
+        "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefDataTable447BC44E7F3657BE"
+       },
+       "\",{\"id\":\"batchwriteitem\",\"visible\":false,\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"ThrottledRequests\",\"Operation\",\"UpdateItem\",\"TableName\",\"",
+       {
+        "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefDataTable447BC44E7F3657BE"
+       },
+       "\",{\"id\":\"updateitem\",\"visible\":false,\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"ThrottledRequests\",\"Operation\",\"DeleteItem\",\"TableName\",\"",
+       {
+        "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefDataTable447BC44E7F3657BE"
+       },
+       "\",{\"id\":\"deleteitem\",\"visible\":false,\"stat\":\"Sum\"}],[\"AWS/DynamoDB\",\"ThrottledRequests\",\"Operation\",\"TransactWriteItems\",\"TableName\",\"",
+       {
+        "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefDataTable447BC44E7F3657BE"
+       },
+       "\",{\"id\":\"transactwriteitems\",\"visible\":false,\"stat\":\"Sum\"}]],\"yAxis\":{}}},{\"type\":\"metric\",\"width\":6,\"height\":6,\"x\":18,\"y\":0,\"properties\":{\"view\":\"timeSeries\",\"title\":\"CloudFront (us-east-1)\",\"region\":\"",
+       {
+        "Ref": "AWS::Region"
+       },
+       "\",\"metrics\":[[\"AWS/CloudFront\",\"Requests\",\"DistributionId\",\"",
+       {
+        "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefDistribution830FAC524DF81588"
+       },
+       "\",\"Region\",\"Global\",{\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/CloudFront\",\"BytesDownloaded\",\"DistributionId\",\"",
+       {
+        "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefDistribution830FAC524DF81588"
+       },
+       "\",\"Region\",\"Global\",{\"region\":\"us-east-1\",\"stat\":\"Sum\"}],[\"AWS/CloudFront\",\"5xxErrorRate\",\"DistributionId\",\"",
+       {
+        "Fn::ImportValue": "OpenReception-Web-dev:ExportsOutputRefDistribution830FAC524DF81588"
+       },
+       "\",\"Region\",\"Global\",{\"region\":\"us-east-1\",\"yAxis\":\"right\"}]],\"yAxis\":{}}}]}"
+      ]
+     ]
+    },
+    "DashboardName": "open-reception-dev-web",
+    "Tags": [
+     {
+      "Key": "Component",
+      "Value": "web-monitoring"
+     },
+     {
+      "Key": "Environment",
+      "Value": "dev"
+     },
+     {
+      "Key": "ManagedBy",
+      "Value": "cdk"
+     },
+     {
+      "Key": "Owner",
+      "Value": "open-reception-team"
+     },
+     {
+      "Key": "Project",
+      "Value": "open-reception"
+     }
+    ]
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-WebMonitoring-dev/Dashboard/Resource"
+   }
+  },
+  "CDKMetadata": {
+   "Type": "AWS::CDK::Metadata",
+   "Properties": {
+    "Analytics": "v2:deflate64:H4sIAAAAAAAA/02KwQrCMBBEv6X3dJUI3kXx5sV6l20S7bZpItnUHEL+XWJBhIGZNzMS5H4H2wYTt0pPraUechdRTQIT3zM7hnzzL1Li+HDfUISyftEJoxogHyyGuW5rOCEPvcega/WDIqx/MuSLiYHUmWw0oR7+uZQinNcGRt68pYSqZmSiNiwu0mzguvoH5GdbRrMAAAA="
+   },
+   "Metadata": {
+    "aws:cdk:path": "OpenReception-WebMonitoring-dev/CDKMetadata/Default"
+   }
+  }
+ },
+ "Parameters": {
+  "BootstrapVersion": {
+   "Type": "AWS::SSM::Parameter::Value<String>",
+   "Default": "/cdk-bootstrap/orcloud01/version",
+   "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+  }
+ },
+ "Rules": {
+  "CheckBootstrapVersion": {
+   "Assertions": [
+    {
+     "Assert": {
+      "Fn::Not": [
+       {
+        "Fn::Contains": [
+         [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5"
+         ],
+         {
+          "Ref": "BootstrapVersion"
+         }
+        ]
+       }
+      ]
+     },
+     "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+    }
+   ]
+  }
+ }
+}

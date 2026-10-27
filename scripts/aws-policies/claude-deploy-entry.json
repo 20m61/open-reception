@@ -20,7 +20,8 @@
       "Action": "sts:AssumeRole",
       "Resource": [
         "arn:aws:iam::822063948773:role/cdk-hnb659fds-*",
-        "arn:aws:iam::822063948773:role/cdk-staging-*"
+        "arn:aws:iam::822063948773:role/cdk-staging-*",
+        "arn:aws:iam::822063948773:role/cdk-orbrkr01-*"
       ]
     },
     {

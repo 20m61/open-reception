@@ -149,3 +149,149 @@ describe('instrumentation register() — Secrets Manager preload (#194)', () => 
     expect(process.env.ADMIN_SESSION_SECRET).toBe('');
   });
 });
+
+/**
+ * 🔴 **起動時の自己検査 (#1124)。** 管理 / 受付端末のセッション鍵が deploy で未設定、または
+ * 公開既定値のままなら、`register()` が throw して**サーバを動かさない**。
+ * 以前は warn-only で、公開既定値で署名した cookie が有効なセッションとして通った。
+ *
+ * 検査は Secrets Manager からの注入の**後**に行う（注入で埋まる鍵を「未設定」と誤判定しない）。
+ * また `APP_SECRETS_ARN` を使わない方式 A（Lambda env へ直接注入）でも検査する。
+ */
+describe('instrumentation register() — セッション鍵の起動時検査 (#1124)', () => {
+  const savedEnv = { ...process.env };
+
+  beforeEach(() => {
+    sendMock.mockReset();
+    delete process.env.APP_SECRETS_ARN;
+    delete process.env.NEXT_RUNTIME;
+    delete process.env.ADMIN_SESSION_SECRET;
+    delete process.env.KIOSK_SESSION_SECRET;
+    process.env.AWS_LAMBDA_FUNCTION_NAME = 'open-reception-server';
+  });
+
+  afterEach(() => {
+    process.env = { ...savedEnv };
+  });
+
+  it('🔴 方式 A（APP_SECRETS_ARN なし）で鍵が未設定なら起動を止める', async () => {
+    await expect(register()).rejects.toThrow(/ADMIN_SESSION_SECRET|KIOSK_SESSION_SECRET/);
+  });
+
+  it('🔴 方式 A で公開既定値のままなら起動を止める', async () => {
+    process.env.ADMIN_SESSION_SECRET = 'dev-insecure-admin-secret';
+    process.env.KIOSK_SESSION_SECRET = 'TEST-kiosk-session-secret';
+    await expect(register()).rejects.toThrow(/ADMIN_SESSION_SECRET/);
+  });
+
+  it('方式 A で両方設定済みなら起動する', async () => {
+    process.env.ADMIN_SESSION_SECRET = 'TEST-admin-session-secret';
+    process.env.KIOSK_SESSION_SECRET = 'TEST-kiosk-session-secret';
+    await expect(register()).resolves.toBeUndefined();
+  });
+
+  it('🔴 方式 B で Secrets Manager にも鍵が無ければ起動を止める', async () => {
+    process.env.APP_SECRETS_ARN = 'arn:secret';
+    sendMock.mockResolvedValue({
+      SecretString: JSON.stringify({ ADMIN_SESSION_SECRET: 'TEST-admin-session-secret' }),
+    });
+    await expect(register()).rejects.toThrow(/KIOSK_SESSION_SECRET/);
+  });
+
+  it('🔴 方式 B で Secrets Manager の値が公開既定値なら起動を止める', async () => {
+    process.env.APP_SECRETS_ARN = 'arn:secret';
+    sendMock.mockResolvedValue({
+      SecretString: JSON.stringify({
+        ADMIN_SESSION_SECRET: 'TEST-admin-session-secret',
+        KIOSK_SESSION_SECRET: 'dev-insecure-kiosk-secret',
+      }),
+    });
+    await expect(register()).rejects.toThrow(/KIOSK_SESSION_SECRET/);
+  });
+
+  /** 下界。注入の後に検査する（順序を逆にすると、ここが赤くなる）。 */
+  it('方式 B で Secrets Manager が両方を与えれば起動する', async () => {
+    process.env.APP_SECRETS_ARN = 'arn:secret';
+    sendMock.mockResolvedValue({
+      SecretString: JSON.stringify({
+        ADMIN_SESSION_SECRET: 'TEST-admin-session-secret',
+        KIOSK_SESSION_SECRET: 'TEST-kiosk-session-secret',
+      }),
+    });
+    await expect(register()).resolves.toBeUndefined();
+  });
+
+  /** 下界。ローカル `next start` / e2e（Lambda マーカー無し）は鍵が無くても起動する。 */
+  it('非 Lambda では鍵が無くても起動する', async () => {
+    delete process.env.AWS_LAMBDA_FUNCTION_NAME;
+    await expect(register()).resolves.toBeUndefined();
+  });
+
+  /** edge ランタイムでは検査しない（Node でだけ解決・検査する既存の分岐を保つ）。 */
+  it('edge ランタイムでは検査しない', async () => {
+    process.env.NEXT_RUNTIME = 'edge';
+    await expect(register()).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * 🔴 **残りの fail-closed 鍵も、公開既定値を貼ったら起動時に止める（PR #1273 レビュー important）。**
+ * 以前はセッション鍵 2 つしか起動時に検査しておらず、`ADMIN_PASSWORD=open-reception` のような
+ * デプロイは起動したうえで、**使った時点で**落ちた（ログインが 500）。
+ * 未設定は止めない（機能・provider によって不要な鍵があるため。`public-default-secrets.ts`）。
+ */
+describe('instrumentation register() — 公開既定値の起動時検査', () => {
+  const savedEnv = { ...process.env };
+  const OTHER_KEYS = [
+    'ADMIN_PASSWORD',
+    'KIOSK_ENROLLMENT_SECRET',
+    'CALL_ANSWER_SECRET',
+    'PLATFORM_ELEVATION_SECRET',
+    'VOICE_TRANSPORT_TOKEN_SECRET',
+  ];
+
+  beforeEach(() => {
+    sendMock.mockReset();
+    delete process.env.APP_SECRETS_ARN;
+    delete process.env.NEXT_RUNTIME;
+    for (const k of OTHER_KEYS) delete process.env[k];
+    process.env.AWS_LAMBDA_FUNCTION_NAME = 'open-reception-server';
+    process.env.ADMIN_SESSION_SECRET = 'TEST-admin-session-secret';
+    process.env.KIOSK_SESSION_SECRET = 'TEST-kiosk-session-secret';
+  });
+
+  afterEach(() => {
+    process.env = { ...savedEnv };
+  });
+
+  it('🔴 方式 A で ADMIN_PASSWORD が公開既定値なら起動を止める', async () => {
+    process.env.ADMIN_PASSWORD = 'open-reception';
+    await expect(register()).rejects.toThrow(/ADMIN_PASSWORD/);
+  });
+
+  it('🔴 方式 B で Secrets Manager の CALL_ANSWER_SECRET が公開既定値なら起動を止める', async () => {
+    process.env.APP_SECRETS_ARN = 'arn:secret';
+    sendMock.mockResolvedValue({
+      SecretString: JSON.stringify({ CALL_ANSWER_SECRET: 'dev-insecure-answer-secret' }),
+    });
+    await expect(register()).rejects.toThrow(/CALL_ANSWER_SECRET/);
+  });
+
+  /** 下界。セッション鍵だけ入れて他を入れないデプロイは、いままでどおり起動する。 */
+  it('未設定の鍵があっても起動する（使った時点で getter が fail-closed）', async () => {
+    await expect(register()).resolves.toBeUndefined();
+  });
+
+  /** 下界。独自の値なら起動する。 */
+  it('独自の値なら起動する', async () => {
+    for (const k of OTHER_KEYS) process.env[k] = `TEST-${k}`;
+    await expect(register()).resolves.toBeUndefined();
+  });
+
+  /** 下界。ローカル `next start` / e2e は既定値で起動する。 */
+  it('非 Lambda では公開既定値でも起動する', async () => {
+    delete process.env.AWS_LAMBDA_FUNCTION_NAME;
+    process.env.ADMIN_PASSWORD = 'open-reception';
+    await expect(register()).resolves.toBeUndefined();
+  });
+});

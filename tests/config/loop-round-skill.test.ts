@@ -48,13 +48,68 @@ describe('loop-round スキルと委譲プロンプトの整合', () => {
   /** 入口が変わっても同じでなければならないコマンド。 */
   const SHARED_COMMANDS = [
     'scripts/create-pull-request.ts',
-    'scripts/merge-pull-request.ts',
     'quality-gate.sh',
+    // #1198: Claude は `--full` の証拠を PR へ載せて止まる（#1195）。両方の入口が同じ手順を名指しする。
+    'npm run gate:evidence -- --number',
   ];
 
   it.each(SHARED_COMMANDS)('%s を両方の入口が名指ししている', (cmd) => {
     expect(skill, `スキルが ${cmd} を名指ししていない`).toContain(cmd);
     expect(prompt, `委譲プロンプトが ${cmd} を名指ししていない`).toContain(cmd);
+  });
+
+  /**
+   * 🔴 **merge は「owner の経路」としてだけ書く** (#1198 / #1195)。かつては両方の入口が
+   * `scripts/merge-pull-request.ts` を名指ししていたが、Claude は自分の PR を merge しない。
+   *
+   * - スキル: 名指しは残してよいが、**言及する行はすべて owner / 人の経路として書く**
+   *   （手順として無条件に並べると、読んだ Claude がそのまま merge する）
+   * - 委譲プロンプトの既定: **名指ししない**。`stopAfter: 'merge'` を明示したときだけ配る
+   */
+  describe('merge は owner の経路 (#1198)', () => {
+    it('スキルの merge-pull-request.ts への言及は、すべて owner / 人の経路として書かれている', () => {
+      const lines = skill.split('\n').filter((l) => l.includes('scripts/merge-pull-request.ts'));
+      expect(lines.length, 'スキルが merge の経路を書いていない（owner が探せない）').toBeGreaterThan(0);
+      for (const line of lines) {
+        expect(line, `owner / 人の経路と書かれていない: ${line}`).toMatch(/owner|人/);
+      }
+    });
+
+    it('スキルが「Claude は merge しない」を書いている', () => {
+      expect(skill).toMatch(/Claude[^\n]*merge しない/);
+    });
+
+    it('§6 は --full → gate:evidence をこの順で書き、merge の前に止まる', () => {
+      const from = skill.indexOf('## 6.');
+      const to = skill.indexOf('## 7.');
+      expect(from, '## 6. が見つからない').toBeGreaterThan(-1);
+      expect(to, '## 7. が ## 6. より後ろに無い').toBeGreaterThan(from);
+      const section = skill.slice(from, to);
+      const gate = section.indexOf('quality-gate.sh --full');
+      const evidence = section.indexOf('npm run gate:evidence -- --number');
+      expect(gate, '§6 に --full が無い').toBeGreaterThan(-1);
+      expect(evidence, '§6 に gate:evidence が無い（表の行だけでは手順にならない）').toBeGreaterThan(gate);
+      // 証拠は PASS でなければ PASS と言わせない。散文でも縛る（生成器側と同じ保証）。
+      expect(section).toContain('PASS でなければ PASS と言わない');
+      expect(section).toContain("stopAfter: 'pr'");
+    });
+
+    it('表のマージ行は Claude がしないことと owner の経路を書いている', () => {
+      const row = skill.split('\n').find((l) => l.startsWith('| マージ'));
+      expect(row, '表にマージ行が無い').toBeDefined();
+      expect(row).toContain('Claude はしない');
+      expect(row).toContain('owner');
+    });
+
+    it('委譲プロンプトの既定は merge を配らない', () => {
+      expect(prompt).not.toContain('scripts/merge-pull-request.ts');
+    });
+
+    it("委譲プロンプトは stopAfter: 'merge' を明示したときだけ merge を配る", () => {
+      expect(buildDelegationPrompt({ ...BASE, stopAfter: 'merge' })).toContain(
+        'scripts/merge-pull-request.ts',
+      );
+    });
   });
 
   /**

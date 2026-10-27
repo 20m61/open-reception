@@ -73,14 +73,12 @@ const customDomain =
 // `-c appSecretsName=open-reception/prod/app`。未指定なら appEnv 平文注入のまま。
 const appSecretsName = app.node.tryGetContext('appSecretsName') as string | undefined;
 
-// 任意: CloudFront 経由検証用シークレット。指定すると Function URL を NONE + 秘密ヘッダ方式にし、
-// OAC が POST ボディを署名しない制約（GET 可・POST 403）を回避する。`-c originVerifySecret=<高エントロピー値>`。
+// #1148: `originVerifySecret`（生値）は全環境で禁止。古い context を黙って無視せず
+// WebStack で明示エラーにするため、読み取りだけ残す。
 const originVerifySecret = app.node.tryGetContext('originVerifySecret') as string | undefined;
-// **dev 以外はこちら** (issue #612)。Secrets Manager シークレット名を渡すと、CloudFront ヘッダと
-// Lambda 環境変数の両方が CFN 動的参照になる（テンプレートに平文が載らない）。
-// `-c originVerifySecretName=open-reception/prod/app`（JSON キー `ORIGIN_VERIFY_SECRET`）。
-// dev 以外で生値を渡すと WebStack が synth 時点で止める。**空文字・`=` 無しの指定も止める**
-// （`-c originVerifySecret=$UNSET_VAR` を黙って無効化に落とすと全 POST が 403 になるため）。
+// CloudFront / Lambda へは Secrets Manager dynamic reference のみを渡す (issue #612 / #1148)。
+// `-c originVerifySecretName=open-reception/dev/app-v2`（JSON キー `ORIGIN_VERIFY_SECRET`）。
+// 通常の deploy wrapper は OR_APP_SECRETS_NAME と同じ名前からこの context を生成する。
 const originVerifySecretName = app.node.tryGetContext('originVerifySecretName') as
   | string
   | undefined;
@@ -174,28 +172,36 @@ if (account) {
   );
 }
 
-const notification = new NotificationStack(app, `OpenReception-Notification-${config.environment}`, {
-  env: { account, region },
-  config,
-  vonageSecretName,
-  siteTokenSecretName,
-  description: `open-reception notification subsystem (${config.environment})`,
-});
+// Promotion assembly (#1146 blocker 7): the dev deploy broker's Validation synth passes
+// `-c promotionStacksOnly=true` so the cloud assembly holds only the three stacks ADR 0009 admits
+// (Web / WebMonitoring / CfMon). The trusted policy denies any other stack in the assembly, and
+// `cdk synth <names>` alone still writes every stack of the app. Default (flag absent): unchanged.
+const promotionStacksOnly = String(app.node.tryGetContext('promotionStacksOnly') ?? '') === 'true';
 
-const monitoring = new MonitoringStack(app, `OpenReception-Monitoring-${config.environment}`, {
-  env: { account, region },
-  config,
-  notificationFn: notification.notificationFn.fn,
-  httpApi: notification.api.httpApi,
-  description: `open-reception notification monitoring (${config.environment})`,
-});
-overrideComponentTag(monitoring, COST_TAG_COMPONENTS.monitoring);
+if (!promotionStacksOnly) {
+  const notification = new NotificationStack(app, `OpenReception-Notification-${config.environment}`, {
+    env: { account, region },
+    config,
+    vonageSecretName,
+    siteTokenSecretName,
+    description: `open-reception notification subsystem (${config.environment})`,
+  });
+
+  const monitoring = new MonitoringStack(app, `OpenReception-Monitoring-${config.environment}`, {
+    env: { account, region },
+    config,
+    notificationFn: notification.notificationFn.fn,
+    httpApi: notification.api.httpApi,
+    description: `open-reception notification monitoring (${config.environment})`,
+  });
+  overrideComponentTag(monitoring, COST_TAG_COMPONENTS.monitoring);
+}
 
 // リアルタイム会話 EC2 基盤 (#366 Phase 0)。config.realtime.enabled が true の環境のみ synth 対象に
 // 含める（既定は全環境 false — 本プロジェクト初の実質的固定費のためユーザー承認後に true 化する）。
 // `-c realtimeHostedZoneId=... -c realtimeZoneName=... -c realtimeRecordName=...` で Route 53 連携を
 // 任意指定できる（未指定なら Route 53 リソースを作らない、customDomain と同じ任意 context の方針）。
-if (config.realtime.enabled) {
+if (config.realtime.enabled && !promotionStacksOnly) {
   const realtimeHostedZoneId = app.node.tryGetContext('realtimeHostedZoneId') as string | undefined;
   const realtimeZoneName = app.node.tryGetContext('realtimeZoneName') as string | undefined;
   const realtimeRecordName = app.node.tryGetContext('realtimeRecordName') as string | undefined;

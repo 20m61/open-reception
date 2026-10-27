@@ -7,6 +7,7 @@ import { KIOSK_COOKIE, readKioskSession } from '@/lib/auth/kiosk';
 import { resolveDefaultScope } from '@/lib/tenant/default-scope';
 import { getDeviceService } from '@/lib/tenant/store';
 import { resolveDeviceBinding } from '@/lib/product-context/device-binding';
+import { resolveKioskSessionToken } from '@/lib/kiosk/session-guard';
 import { recordDeploymentReport } from '@/lib/experience-version/deployment-store';
 
 /**
@@ -145,7 +146,10 @@ export async function GET(request: Request): Promise<NextResponse> {
   return NextResponse.json({
     active: effectiveKioskActive(active, security.emergencyStop),
     pinRequired: security.pinRequired,
-    authorized: session !== null,
+    // 🔴 `authorized` は共通ガードで判定する（失効・未登録端末の cookie を許可済みと答えない）。
+    //    上の記録・取り込みは署名だけで端末を識別する（旧レジストリのみの端末を Device へ
+    //    取り込む経路を、取り込み前に閉じないため）。記録は応答の権限に影響しない。
+    authorized: session !== null && (await resolveKioskSessionToken(token)) !== null,
     serverTime: new Date().toISOString(),
   });
 }

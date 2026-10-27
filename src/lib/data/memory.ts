@@ -138,6 +138,21 @@ class MemorySingleton<T> implements Singleton<T> {
     this.value = clone(value);
   }
 
+  async putIf(value: T, expected: Partial<T>): Promise<boolean> {
+    // 比較と書き込みの間に await を挟まない（単一スレッドなのでここが原子区間になる）。
+    const cur = this.value as Record<string, unknown> | undefined;
+    // dynamo と揃える: 条件の無い putIf は無条件 put と同じなので、呼び出しの誤りとして落とす。
+    if (Object.keys(expected).length === 0) throw new Error('Singleton.putIf: expected must not be empty');
+    for (const [key, want] of Object.entries(expected)) {
+      const have = cur === undefined ? undefined : cur[key];
+      // `Object.is`: `NaN` 同士を一致とみなす（`!==` だと `NaN` の記録が永久に書けなくなる。
+      // 独立レビュー 1 周目）。記録から読んだ生の値をそのまま期待値に渡す呼び出し元が頼る性質。
+      if (!Object.is(have, want)) return false;
+    }
+    this.value = clone(value);
+    return true;
+  }
+
   async reset(): Promise<void> {
     this.value = this.makeDefault ? clone(this.makeDefault()) : undefined;
   }
@@ -226,7 +241,7 @@ export class MemoryBackend implements DataBackend {
     return existing as unknown as Collection<T>;
   }
 
-  singleton<T>(name: string, opts?: { default?: () => T }): Singleton<T> {
+  singleton<T>(name: string, opts?: { default?: () => T; consistentRead?: boolean }): Singleton<T> {
     let existing = this.singletons.get(name);
     if (!existing) {
       existing = new MemorySingleton<unknown>(opts?.default as (() => unknown) | undefined);

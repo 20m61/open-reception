@@ -24,11 +24,13 @@ QR には氏名・会社名・担当者名などの個人情報を**直接埋め
 
 - 境界: `tenantId` / `siteId`（いずれも必須。#80 のブランド付き ID 型に乗せる）。
 - 来訪者情報（PII）: `visitorName`（必須）/ `companyName`（任意）/ `note`（任意・最小限）。
-- 予定: `visitAt`（ISO 8601）。`same_day` 判定の基準。
+- 予定: `visitAt`（ISO 8601）。`same_day` 判定の基準。日時は**オフセット必須**（`Z` / `±hh:mm`）。
+  日付のみ（`YYYY-MM-DD`、UTC と定義される）は可。オフセットの無い日時はローカル TZ で解釈されるので拒否する（`visitAt` / `expiresAt` / 再発行の `expiresAt` 共通）。
+  暦に無い日（`2026-02-31` 等。`Date.parse` は繰り上げて受理する）も拒否する。小数秒は 1〜9 桁。
 - 呼び出し先: `targetType`（`staff` / `department`）+ `targetId`。
 - トークン: `token` / `usagePolicy` / `expiresAt`。
 - 状態: `status`（後述）/ `usedAt`。
-- 保存期間: `retentionDays`（PII 破棄の根拠。実配線は increment 2）。
+- 保存期間: `retentionDays`（PII 破棄の根拠。起点は**来訪の終わり** = `max(visitAt, expiresAt)`。#1022）。
 
 ### 状態遷移
 
@@ -121,7 +123,37 @@ route（`src/app/api/admin/reservations/**`）は薄く保つ。
 - token は **256bit のランダム値**（`crypto`）。推測・総当り不可。
 - 原則 **1 回利用（single_use）または当日内利用（same_day）**に制限。`expiresAt` も併用。
 - 予約 PII（氏名/会社名/メモ）は**必要最小限**。`retentionDays` で保存期間を持ち、
-  超過分の破棄を increment 2 で配線（バッチ / TTL）。
+  **`max(visitAt, expiresAt) + retentionDays`** を期限として破棄する（#1022。規則は
+  `src/domain/reservation/retention.ts`）。作成・更新日時は起点にしない。
+  - 書き込み時: DynamoDB TTL 属性 `ttl`（epoch 秒・秒へ切り上げ）を期限から計算して載せる。
+    編集・再発行で期限が動けば `put` のたびに計算し直す。テーブルの TTL は `ttl` で有効化済み。
+  - 読み取り時: 期限を過ぎた予約は `list` / `get` / `findByTokenHash` のどれからも返さない
+    （TTL 削除は遅延するため。memory / dynamodb 両 backend で同じ）。
+  - `ttl` は任意属性。本変更より前の予約は持たないが、読み取り判定は業務フィールドから
+    計算するので期限どおりに不可視になる。**既存レコードへの `ttl` の後付け（物理削除）は
+    本番データ操作なので範囲外**（owner 判断）。owner が別途回す backfill の手順書には次を要件とする:
+    - **dry-run を先に回し、件数を出す**（後付けする件数／すでに `ttl` を持つ件数／対象外の件数）。
+    - 🔴 **`reservationTtlSeconds` が undefined になるレコード（期限を計算できない）を黙って飛ばさない。**
+      件数と id を報告する。これらは `retentionDays` が正の安全整数でない（例: 2^53 以上を API から
+      直接入れた）か、日付を解釈できないレコードで、6ddab6f 以降は**どの読み取り経路からも返らず、
+      `ttl` も無いので物理削除もされない**（a0ab44e までは既定 30 日で読めていた）。backfill が
+      飛ばすと「読めず消えない PII」がそのまま残る。扱い（削除するか、値を直して `ttl` を付けるか）は
+      件数を見て owner が決める。
+    - `ttl` は `reservationTtlSeconds(record)`（アプリの書き込みと同じ関数）で計算し、`now` を使わない。
+      期限がすでに過ぎたレコードの `ttl` は過去の値になり、TTL 削除の対象になる（読み取りからは既に外れている）。
+  - **保存済みの値を厳しくした検証器へ戻さない。** 日時の形（オフセット必須・暦どおり）の検証は
+    呼び出し側の**入力**にだけ掛ける。検証を厳しくする前に保存された値（オフセット無し・暦に無い日・
+    ISO 以外の形）は、読み取り・保存期限・TTL と同じ `Date.parse` で解釈する。書き込み経路の棚卸し:
+    作成（入力のみ）／編集（パッチの値だけを検証し、保存値は `Date.parse` で比較）／再発行（`expiresAt`
+    省略時は保存値を `Date.parse` で正規化して `toISOString()` で書き戻す。管理 UI は常に省く）／
+    キャンセル・失効・受付確定・期限切れ反映（保存値をそのまま書き戻す）。
+  - 入力検証: 作成・編集・再発行の結果、期限がすでに `now` 以前になる入力は `invalid_input`（400）で
+    拒否する（成功した直後に読み取りから外れ、予約が消えたように見えるため）。
+  - 期限を計算できない予約（`retentionDays` が正の安全整数でない／日付を解釈できない）は
+    **保持しない側**に倒す: 読み取りから外し、TTL を付けず、リポジトリは書き込みを拒否する
+    （書けば「読めず物理削除もされない PII」になるため）。`retentionDays` の**欠落**だけは
+    既定 30 日で補う（旧レコード互換）。値があって不正なら補わない（既定は入力より長いことがある）。
+    `retentionDays` の上限（保存期間の値そのもの）は未決のポリシー判断で、この規則とは独立。
 - 監査ログに来訪者 PII を残さない（`docs/audit-logging.md` / `docs/security-checklist.md` V7/V8）。
 - secret（管理セッション）は server-only。client へ流出させない。
 
@@ -186,8 +218,8 @@ SVG 生成の中核（モジュール行列 → `<svg>` 文字列）はライブ
   （`src/app/admin/reservations`・`src/components/admin/ReservationsManager.tsx`：一覧・作成・
   キャンセル・失効・QR 表示/DL/再発行）。受付端末のチェックイン（token 検証 → `markUsed`）は
   別トラック（#98）。
-- **increment 3**: DynamoDB シングルテーブル実装 + `getBackend()` 接続 + 保存期間（retention）
-  に基づく PII 破棄バッチ / TTL。
+- **increment 3**: DynamoDB シングルテーブル実装 + `getBackend()` 接続（#736）+ 保存期間
+  （retention）に基づく PII 破棄 = TTL + 読み取り時の除外（#1022）。既存レコードの backfill は未実施。
 - **後続**: カレンダー連携・退館管理（本 Issue 非スコープ）。
 
 ---

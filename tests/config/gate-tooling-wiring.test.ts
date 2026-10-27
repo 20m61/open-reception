@@ -1,8 +1,8 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { makeTempDir } from '../helpers/temp';
 
 const ROOT = join(import.meta.dirname, '../..');
 
@@ -120,6 +120,45 @@ describe('gate-tooling の復旧 (#985)', () => {
     expect(restoreVersion).toBe(setupVersion);
   });
 
+  /**
+   * 🔴 **semgrep は system の site-packages へ入れない。** 2026-10 に Cloud の Python で
+   * `mcp` 1.29.0 と 2.2.0 が重なり、semgrep 1.180.0 が import で落ちた。`command -v semgrep`
+   * は成功するので欠落として報告されず、sast を走らせるまで壊れていることが見えない。
+   * 専用 venv へ入れ、`cloud-setup.sh`（環境ダイアログの写し）と復旧の**両方**が同じ venv を
+   * 使うことを縛る（片方だけ直すと、もう片方の経路で system へ戻る）。
+   */
+  it('🔴 semgrep は両経路とも同じ専用 venv へ入れ、system pip へ入れない', () => {
+    const restore = readFileSync(RESTORE, 'utf8');
+    const setup = readFileSync(join(ROOT, 'scripts/cloud-setup.sh'), 'utf8');
+    const venv = /SEMGREP_VENV=(\S+)/.exec(restore)?.[1];
+    expect(venv, '復旧スクリプトから venv の場所を読めない').toBeDefined();
+    expect(setup).toContain(`python3 -m venv ${venv}`);
+    expect(setup).toContain(`${venv}/bin/pip install`);
+    // pysemgrep も張る: semgrep は PATH 経由で pysemgrep を呼ぶので、片方だけだと
+    // system 側の壊れた pysemgrep が拾われて同じ ImportError で落ちる（実測）
+    for (const bin of ['semgrep', 'pysemgrep']) {
+      expect(setup).toContain(`ln -sf ${venv}/bin/${bin} /usr/local/bin/${bin}`);
+      expect(restore).toContain(`ln -sf "\${SEMGREP_VENV}/bin/${bin}" /usr/local/bin/${bin}`);
+    }
+    expect(restore).toMatch(/python3 -m venv "\$\{SEMGREP_VENV\}"/);
+    expect(restore).toMatch(/"\$\{SEMGREP_VENV\}\/bin\/pip" install/);
+    // system の site-packages へ入れる経路が残っていないこと（コメントは除いて見る）
+    const code = (src: string) =>
+      src
+        .split('\n')
+        .filter((l) => !l.trimStart().startsWith('#'))
+        .join('\n');
+    for (const [name, src] of [
+      ['cloud-setup.sh', setup],
+      ['restore-gate-tools.sh', restore],
+    ] as const) {
+      expect(code(src), `${name} が system pip で semgrep を入れている`).not.toMatch(/(^|[\s;&(])pip3? install/m);
+      expect(code(src), `${name} が system の site-packages を壊す指定を残している`).not.toContain(
+        '--break-system-packages',
+      );
+    }
+  });
+
   it('道具が揃っていれば何もしない（毎セッションの起動を延ばさない）', () => {
     const r = spawnSync('bash', [RESTORE], {
       encoding: 'utf8',
@@ -131,7 +170,7 @@ describe('gate-tooling の復旧 (#985)', () => {
   });
 
   it('🔴 欠けていたら両方を戻しにいく', () => {
-    const stub = mkdtempSync(join(tmpdir(), 'no-tools-'));
+    const stub = makeTempDir('no-tools-');
     try {
       const r = spawnSync('bash', [RESTORE], {
         encoding: 'utf8',
@@ -157,28 +196,61 @@ describe('gate-tooling の復旧 (#985)', () => {
    * セッションごと起動しない（`scripts/cloud-setup.sh` 冒頭の制約と同じ理由）。
    * ただし**黙って緑にしない** ―― 失敗したことは stderr に出し、直後の
    * `gate_tool_report` が欠落を名指しする。
+   *
+   * 🔴 **本物の `sudo` に届かせない。** 非 root では `as_root` が `sudo pip install …` を呼ぶ。
+   * `sudo` を stub しないと、開発機（Mac の一般ユーザー）ではパスワード待ちで止まり、
+   * 認証がキャッシュされていれば root で実際に semgrep を入れにいく。`id` も stub して、
+   * 実行する人が root かどうかに関係なく、root と非 root の両方の枝をどの環境でも通す。
    */
-  it('🔴 取得に失敗しても exit 0（ただし黙らない）', () => {
-    const stub = mkdtempSync(join(tmpdir(), 'broken-curl-'));
+  it.each([
+    { who: 'root', uid: '0', sudoCalls: '' },
+    // 非 root では venv の作成が sudo を通る（stub の sudo は失敗するので、後段へは進まない）
+    { who: '非 root', uid: '501', sudoCalls: 'python3 -m venv /opt/semgrep-venv\n' },
+  ])('🔴 取得に失敗しても exit 0（ただし黙らない）— $who', ({ uid, sudoCalls }) => {
+    const stub = makeTempDir('broken-curl-');
     try {
       writeFileSync(join(stub, 'curl'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
       writeFileSync(join(stub, 'pip'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+      // 🔴 python3 も stub する。root の枝は sudo を通らず直接 venv を作りにいくので、
+      // 本物に届くと /opt/semgrep-venv を実際に作り semgrep を取得しにいく。
+      writeFileSync(join(stub, 'python3'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+      writeFileSync(join(stub, 'id'), `#!/bin/sh\n[ "$1" = "-u" ] && { echo ${uid}; exit 0; }\nexit 1\n`, {
+        mode: 0o755,
+      });
+      const sudoLog = join(stub, 'sudo.log');
+      writeFileSync(join(stub, 'sudo'), `#!/bin/sh\necho "$*" >> '${sudoLog}'\nexit 1\n`, { mode: 0o755 });
+      // env は開発者のシェルから引き継がず最小に組む: `BASH_ENV` / `export -f` の関数は
+      // PATH の stub より先に効き、復旧を止める 2 つの変数は枝を変えてしまう。
       const r = spawnSync('bash', [RESTORE], {
         encoding: 'utf8',
-        env: { ...process.env, PATH: `${stub}:/usr/bin:/bin` },
+        env: {
+          NODE_ENV: 'test',
+          PATH: `${stub}:/usr/bin:/bin`,
+          HOME: stub,
+          OPEN_RECEPTION_TOOL_RESTORE_DRY_RUN: '0',
+          OPEN_RECEPTION_SKIP_TOOL_RESTORE: '0',
+        },
       });
       expect(r.status, 'SessionStart を落としてはいけない').toBe(0);
       // 🔴 **どちらの道具が戻せなかったかまで見る。** `FAILED` の有無だけを見ると、
       // 片方の報告を消す変異が生存する（実測）。
       expect(r.stderr, 'gitleaks の失敗を黙って飲み込んでいる').toContain('gitleaks: restore FAILED');
       expect(r.stderr, 'semgrep の失敗を黙って飲み込んでいる').toContain('semgrep: restore FAILED');
+      // stub の sudo だけが、非 root のときだけ呼ばれる（root では直接 pip を呼ぶ）
+      let calls = '';
+      try {
+        calls = readFileSync(sudoLog, 'utf8');
+      } catch {
+        calls = '';
+      }
+      expect(calls).toBe(sudoCalls);
     } finally {
       rmSync(stub, { recursive: true, force: true });
     }
   });
 
   it('明示的に止められる（オフライン環境向け）', () => {
-    const stub = mkdtempSync(join(tmpdir(), 'no-tools-'));
+    const stub = makeTempDir('no-tools-');
     try {
       const r = spawnSync('bash', [RESTORE], {
         encoding: 'utf8',

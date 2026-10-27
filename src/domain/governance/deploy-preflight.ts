@@ -6,6 +6,7 @@
  * **判定不能を PASS にしない。** `credentialSecondsRemaining` が `null`（取得失敗）なら
  * 止める。空文字や null を「問題なし」と読む実装は、塞ぐはずの穴を自分で開ける。
  */
+import { DEV_ACCOUNT_ID } from './dev-account';
 
 export type PreflightObservation = {
   /** `sts:GetCallerIdentity` の Arn。 */
@@ -52,7 +53,7 @@ export type PreflightRequirement = {
 };
 
 export const DEFAULT_PREFLIGHT_REQUIREMENT: PreflightRequirement = {
-  accountId: '822063948773',
+  accountId: DEV_ACCOUNT_ID,
   // us-east-1 のスタックは CDK CLI が内部で扱う。CLI 自身の region は ap-northeast-1 に固定する。
   allowedRegions: ['ap-northeast-1'],
   qualifier: 'orcloud01',

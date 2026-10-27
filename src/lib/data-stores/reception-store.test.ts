@@ -291,3 +291,34 @@ describe('startCall — 実 PSTN 発信の相関キー (#647)', () => {
     expect(r.value.providerCallId).toBeUndefined();
   });
 });
+
+/**
+ * Video セッションの所有テナントの記録。トークン発行はこの値のテナントの設定で行うので
+ * （`lib/call/vonage-session-access.ts`）、作成に使ったテナントと同じ値が保存されること。
+ */
+describe('startCall — Video セッションの所有テナントを記録する', () => {
+  it('セッションを作ったテナント（呼び出し点から渡された値）を保存する', async () => {
+    const created = await createReception(baseInput);
+    if (!created.ok) throw new Error('fixture');
+    const r = await startCall(
+      created.value.id,
+      { call: async () => ({ status: 'calling', sessionId: 'TEST-session' }) },
+      'TEST-tenant-owner',
+    );
+    expect(r.ok && r.value.vonageTenantId).toBe('TEST-tenant-owner');
+    const stored = await getReception(created.value.id);
+    expect(stored.ok && stored.value.vonageTenantId).toBe('TEST-tenant-owner');
+  });
+
+  it('PSTN 経路（セッション無し）では記録しない', async () => {
+    const created = await createReception(baseInput);
+    if (!created.ok) throw new Error('fixture');
+    const r = await startCall(
+      created.value.id,
+      { call: async () => ({ status: 'calling', providerCallId: 'TEST-provider-call-id' }) },
+      'TEST-tenant-owner',
+    );
+    expect(r.ok).toBe(true);
+    expect(r.ok && r.value.vonageTenantId).toBeUndefined();
+  });
+});
