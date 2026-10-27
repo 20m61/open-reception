@@ -9,24 +9,30 @@
  * 必ず嘘をつく。`PATH` を差し替えて**観測そのものを固定**する。
  */
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { makeTempDir } from '../helpers/temp';
 
 const SCRIPT = resolve(process.cwd(), 'scripts/url-quality-gate.sh');
 /** 接続拒否になるアドレス。DNS も外部ネットワークも使わない。 */
 const UNREACHABLE = 'http://127.0.0.1:1';
 const TIMEOUT = 120_000;
 
-/** node / npx は要るので、それらのディレクトリだけを残した PATH を組む。 */
-function pathWithoutDocker(extraDir?: string): string {
-  const kept = (process.env.PATH ?? '')
-    .split(':')
-    .filter((dir) => dir.length > 0 && !dir.includes('docker'));
-  const nodeDir = resolve(process.execPath, '..');
-  return [extraDir, nodeDir, ...kept].filter(Boolean).join(':');
-}
+/**
+ * 「docker が入っていない」を作る。
+ *
+ * 🔴 **PATH からディレクトリを外す方法では作れない（2026-09-14 に判明）。**
+ * 旧実装はディレクトリ名に "docker" を含む要素を落としていたが、実体は
+ * `/usr/bin/docker` にあり **`/usr/bin` は落ちない**（落としたらスクリプトが要る
+ * `curl` / `mktemp` まで消える）。結果、このヘルパは不在を再現できておらず、
+ * **デーモンが停止している環境でだけ偶然期待どおりに見えていた**。
+ * `scripts/local-aws.sh` がデーモンを起動するようになって、この嘘が表面化した。
+ *
+ * スクリプト側の `DOCKER_BIN` を存在しないパスへ向けることで、ホスト環境に関係なく
+ * 不在を**固定**する（テスト冒頭の「観測そのものを固定する」という方針どおり）。
+ */
+const ABSENT_DOCKER = '/nonexistent/urlgate-absent-docker';
 
 /**
  * `docker` を名乗る偽物を置く。
@@ -38,7 +44,7 @@ function pathWithoutDocker(extraDir?: string): string {
  * ―― 変異検証で M2（終了コードだけで判定へ戻す）が生存して分かった。
  */
 function fakeDockerDir(infoOk: boolean): string {
-  const dir = mkdtempSync(join(tmpdir(), 'urlgate-docker-'));
+  const dir = makeTempDir('urlgate-docker-');
   const bin = join(dir, 'docker');
   // run は必ず exit 1 —— zap-baseline.py の「高リスク検出」と同じコード。
   // レポートは書かない（＝ zap は一度も走っていない）。
@@ -98,7 +104,7 @@ describe('url-quality-gate.sh', () => {
   describe('任意ツールの SKIP 規約', () => {
     it('docker が無ければ ZAP は SKIP で、high-risk とは言わない', () => {
       const { stdout } = run([UNREACHABLE, '--no-lighthouse'], {
-        PATH: pathWithoutDocker(),
+        DOCKER_BIN: ABSENT_DOCKER,
       });
       expect(stdout).toContain('ZAP: SKIP');
       expect(stdout).not.toContain('high-risk');
@@ -115,7 +121,7 @@ describe('url-quality-gate.sh', () => {
      */
     it('docker デーモンが落ちているだけのとき high-risk と報告しない', () => {
       const { stdout } = run([UNREACHABLE, '--no-lighthouse'], {
-        PATH: pathWithoutDocker(fakeDockerDir(false)),
+        DOCKER_BIN: join(fakeDockerDir(false), 'docker'),
       });
       expect(stdout).not.toContain('high-risk');
       expect(stdout).toMatch(/ZAP: (SKIP|実行できませんでした)/);
@@ -135,7 +141,7 @@ describe('url-quality-gate.sh', () => {
      */
     it('docker run が exit 1 でもレポートが無ければ high-risk と報告しない', () => {
       const { stdout } = run([UNREACHABLE, '--no-lighthouse'], {
-        PATH: pathWithoutDocker(fakeDockerDir(true)),
+        DOCKER_BIN: join(fakeDockerDir(true), 'docker'),
       });
       // plan 層では止まっていない（＝分類層まで来ている）ことを先に確かめる。
       expect(stdout).not.toContain('ZAP: SKIP');
@@ -149,14 +155,14 @@ describe('url-quality-gate.sh', () => {
      */
     it('SKIP があれば RESULT 行に併記される', () => {
       const { stdout } = run([UNREACHABLE, '--no-lighthouse'], {
-        PATH: pathWithoutDocker(),
+        DOCKER_BIN: ABSENT_DOCKER,
       });
       expect(stdout).toMatch(/RESULT: .*SKIP: .*zap/);
     }, TIMEOUT);
 
     it('--strict では未導入が SKIP ではなく FAIL になる', () => {
       const { stdout, status } = run([UNREACHABLE, '--no-lighthouse', '--strict'], {
-        PATH: pathWithoutDocker(),
+        DOCKER_BIN: ABSENT_DOCKER,
       });
       expect(stdout).toContain('ZAP: FAIL');
       expect(stdout).not.toContain('ZAP: SKIP');
@@ -172,7 +178,7 @@ describe('url-quality-gate.sh', () => {
      * @param writesReport lhci が outputDir に結果を書いたことにするか
      */
     function fakeNpxDir(writesReport: boolean): string {
-      const dir = mkdtempSync(join(tmpdir(), 'urlgate-npx-'));
+      const dir = makeTempDir('urlgate-npx-');
       const realNpx = spawnSync('bash', ['-lc', 'command -v npx'], {
         encoding: 'utf8',
       }).stdout.trim();

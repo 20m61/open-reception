@@ -16,4 +16,7 @@ regexes = [
   # 開発既定値（本番では環境変数で上書き）。
   '''dev-insecure-(admin|kiosk)-secret''',
   '''open-reception''',
+  # CDK の asset object key（中身の SHA-256 + .zip / .json）。trusted policy のテストが使う
+  # 実 dev assembly の fixture に並ぶ（#1146）。generic-api-key が誤検出する。hash 以外は通さない。
+  '''^[0-9a-f]{64}\.(zip|json)$''',
 ]

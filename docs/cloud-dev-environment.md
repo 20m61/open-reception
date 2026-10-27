@@ -81,6 +81,64 @@ Cursor の Cloud Agent は claude.ai/code とは**別環境**。install / start 
    git push origin --delete <branch> && git branch -D <branch>
    ```
 
+### 0-B2. PR に `--full` の証拠を残し、owner が merge する（#1195）
+
+**Claude が Cloud で `--full` を回して証拠を PR に載せ、owner は証拠を読んで merge する。**
+Claude は自分の PR を merge しない。owner の手元で `--full` を回し直す必要はない。
+
+ゲートのスタンプ（`pr-gate-guard.sh` が見るもの）は `.git` 配下の**ローカル記録**なので、
+Cloud で green を取っても owner からは見えない。そこで、ゲートが同じく `.git` 配下へ書く
+**証拠ファイル**を PR のコメントへ載せる。
+
+**Claude がやること（Cloud・通常の checkout で。worktree ではない）**
+
+```bash
+git add -A && git commit ...            # 1. 先にコミットする（dirty では PASS にならない）
+git push -u origin HEAD                  # 2. push して PR の head をこのコミットにする
+./scripts/quality-gate.sh --full         # 3. clean なツリーで回す
+npm run gate:evidence -- --number <PR>   # 4. 証拠をコメントとして載せる（2 回目以降は同じコメントを更新）
+```
+
+- 文書だけの PR は `--full --no-skip-docs` で回す（docs スコープの SKIP も PASS と認めないため）
+- `--dry-run` を付けると投稿せず本文だけを出す
+- 終了コード: 0 = PASS として投稿 / 1 = PASS でないものとして投稿 / 2 = 証拠ファイルや引数の誤り（投稿しない）/
+  4 = GitHub に届かない
+
+**PASS と書かない条件（fail-closed）** —— 判定は `src/domain/governance/gate-evidence.ts`（純関数）:
+
+| 条件 | 理由 |
+| --- | --- |
+| 作業ツリーが dirty（開始時・終了時。測れなかったときも） | 検証したのがコミットではなく作業ツリーになる |
+| 証拠の SHA が PR の head と違う / head を読めない / 実行中に HEAD が動いた | 古い、または別のコミットの証拠 |
+| 実行したステップが 0 件 | 「見ていない」は「問題なし」ではない |
+| SKIP・FAIL・知らない状態のステップが 1 つでもある | SKIP は「このコミットで green だった」の根拠にならない |
+| e2e に flaky が 1 件でもある（`FLAKY` の行） | retry で通った試行はアサーションに届いていない。ゲート自体の合否は変えていない |
+| tier が `full` でない / 完走していない / スタンプを書いていない | ゲートの PASS そのものが無い |
+
+証拠ファイルはゲートの**開始時に**「未完了」の記録で上書きされる。途中で死んだ実行の後に、
+前回の PASS が読まれることはない。投稿できるのは、ゲートが書いたファイルだけである
+（`--evidence` は `--dry-run` 専用）。
+
+**owner がやること**
+
+1. PR の証拠コメント（`<!-- open-reception:gate-evidence -->`）の**見出しが ✅** であることを見る
+2. 「検証したコミット」が **PR の現在の head と一致**していることを見る（投稿後に push があれば無効）
+3. merge する（GitHub の UI でも `gh pr merge --squash --delete-branch` でもよい）
+
+**限界（証拠が見ていないもの）**: dirty の判定は `git status`（未追跡を含む・ignore を除く）で、
+`.env.local` のような **ignore 済みのファイル**や `skip-worktree` の変更は見えない。
+結果を左右しうる ignore 済みファイルを置いたまま回さないこと。
+
+owner が Claude Code の中から `gh pr merge` を打つと、`pr-gate-guard.sh` は**その端末の**
+`--full` スタンプを要求して止める（フックは変えていない）。証拠を見て merge するなら
+GitHub の UI か、Claude Code の外の端末から行う。
+
+**これは記録であって強制ではない。** PR コメントは merge を機械的には止めない
+（この repo は GitHub Actions を使わず、commit status も書かない）。強制は、owner が
+この証拠を読むことが担う。`pr-gate-guard.sh`（スタンプによるローカルの merge ガード）は
+**そのまま**である。緩めてもいないし、迂回もしていない。証拠の投稿は PR にコメントを書くだけで、
+フックの対象（PR 作成・merge）には当たらない。
+
 ### 0-C. AWS の窓を開ける／閉じる — デプロイのときだけ
 
 **短命 STS の発行はローカル macOS 限定**（`guard-destructive.sh` がクラウドでブロックする / #675）。
@@ -187,6 +245,70 @@ Chrome から dev の CloudFront → ERR_CONNECTION_RESET（curl は同じプロ
 > 版は `cloud-setup.sh` と一致していることを `tests/config/gate-tooling-wiring.test.ts` が縛る。入れ忘れると `secrets` と `sast` が**黙って SKIP** になり、マージゲートが
 弱くなる（#545 と同型）。§0-A 2. の貼り直しが恒久的な対処。
 
+### 0-H. 実測の記録（2026-09-28・main の `--full`・#1195）
+
+open-reception を起点にした Cloud session で、**worktree ではなく通常の checkout** から
+`./scripts/quality-gate.sh --full`（bootstrap あり）を回した結果。
+
+- main: `da56a99dc5f6f7aea9b91bd0ab8cc262f6bce31b`
+- 実行: 2026-09-28 19:08〜19:37 UTC（約 29 分）
+- 前提: SessionStart の `gate-tooling: all optional tools present`
+  （gitleaks / semgrep / aws / Playwright chromium が揃っていた）
+- ゲート後の `git status --porcelain --untracked-files=all` は空（ゲートはツリーを汚さない）
+
+| ステップ | 結果 | 備考 |
+| --- | --- | --- |
+| loop halt / typecheck / lint / lint suppressions | PASS | 39s / 42s / 81s |
+| **unit (vitest)** | **FAIL（11 件）** | 9,249 passed。原因は下記 1（環境）。修正後は 0 件 |
+| build (next) / build (open-next) | PASS | 67s / 34s |
+| infra typecheck / infra (cdk vitest) | PASS | 420 passed |
+| e2e (playwright) | PASS | **607 passed・flaky 0**（635s） |
+| **secrets (gitleaks)** | **FAIL（34 件）** | 原因は下記 2（main 以外の ref） |
+| sast / audit / lighthouse / vrm | PASS | 7s / 2s / 41s / 58s |
+
+**1. unit の 11 件は、環境に残っていた廃止変数が原因だった。**
+
+- 落ちたのは `tests/hooks/aws-cloud-deploy.test.ts` の 6 件と
+  `tests/hooks/aws-issue-credentials.test.ts` の 5 件。**全件**が、wrapper の先頭にある
+  「廃止された変数が残っています（#1148）: OR_ORIGIN_VERIFY_SECRET」で止まっていた
+- この session の環境に `OR_ORIGIN_VERIFY_SECRET` が**在った**（名前だけを確認し、値は読んでいない）。
+  wrapper が止まるのは #1148 の狙いどおりで、壊れていたのは**テストの前提**だった。
+  テストが `{ ...process.env }` をそのまま子へ渡していたため、credential 解決・`aws` の有無・
+  VITEST インターロックなど**別の経路を測るテストが、全部その先頭の検査で止まっていた**
+- **対処（テストの前提）**: 子へ渡す環境から廃止変数を落とす `tests/helpers/deploy-env.ts` を足し、
+  両ファイルで使う。一覧は正本（`RETIRED_DEPLOY_CONTEXT_VARS`）から取る。
+  廃止変数の検査そのものは、値を**明示的に足して**起動する #1148 節のテストが引き続き縛る
+  （wrapper の検査を外す変異の kill は修正前後とも 7 件で、減っていない）
+- 🔴 **対処（環境・人がやる）**: 環境ダイアログから `OR_ORIGIN_VERIFY_SECRET` を削除し、
+  値は露出したものとして入れ替える（`docs/runbook-cloud-aws-deploy.md`）。
+  同じ session には §0-C の 5 変数（`AWS_ACCESS_KEY_ID` は STS 形式）も在った。窓が開いたままなら閉じる
+  （`AWS_CA_BUNDLE` は proxy の CA で、資格情報ではない）
+- 前回の診断（#1195 のコメント）が「unit の失敗」に数えていた
+  `tests/config/isolation-escape-probe.spec.ts` は**失敗ではなかった**。
+  `temp-cleanup-guard.test.ts` が**わざと落とす子 vitest**を起動しており、`execFileSync` が
+  子の stderr を親のログへそのまま流していた（親は PASS）。「os.tmpdir() が /root」は
+  probe が意図して書き換えた値である。子の stdio を捕まえるよう直した
+- 前回の `aws-cloud-deploy.test.ts`「AWS 認証情報が無い状態で…」の失敗も、
+  今回の実測では同じ原因（廃止変数）で落ちていた。`AWS_*` の在否は、テストが空文字で
+  上書きしているので効いていない（廃止変数だけを外すと 75 件すべて PASS）
+
+**2. secrets の 34 件は、main ではなく未マージのブランチから出ている。**
+
+- `gitleaks detect` は**既定で全 ref を走査する**。clone に未マージのブランチの
+  remote-tracking ref（`origin/claude/arming-b1-trusted-policy`・`…-b7a-awscli-layer`、
+  PR #1182 / #1191）があり、その CDK asset の object key（SHA-256 hex + `.zip` / `.json`）が
+  `generic-api-key` に誤検出されていた
+- **main の履歴だけなら出ない**: `gitleaks detect --no-banner --redact --log-opts=HEAD` →
+  `734 commits scanned … no leaks found`
+- 誤検出を通す allowlist は #1182 自身に入っている（`df37f46`）。gitleaks は**作業ツリーの**
+  `.gitleaks.toml` を全 ref に当てるので、#1182 が main に入れば main の `--full` でも消える
+- **ゲートの走査範囲（全 ref / HEAD のみ）は変えていない。** 全 ref の走査は「どこかに push
+  された鍵」を拾う側に倒れており、範囲を狭めるかは owner の判断にする
+
+**「Cloud では測れない」ものは、今回は無かった。** 残る赤は 2 だけで、Cloud 固有ではない
+（同じ ref を fetch した clone なら Mac でも同じ結果になる）。**#1182 が main に入るまでの
+代替確認**は、上の `--log-opts=HEAD` の走査で「main の履歴に鍵が無い」ことを見ること。
+
 ---
 
 ## 1. 環境ダイアログ側の設定（claude.ai/code）
@@ -224,7 +346,7 @@ Trusted の既定許可リストに**入っていない**。Trusted のままだ
 
 | 対象 | なぜ要るか |
 | --- | --- |
-| `gh` CLI | プリインストールされていない。ループ workflow が PR 作成（REST 経由・§4）と `gh pr merge` に全面依存する |
+| `gh` CLI | プリインストールされていない。**2026-09-15 以降、ループ workflow は `gh` に依存しない** —— PR 作成・マージ・取りこぼし検査はすべて `curl` で REST を直接叩く（#1117 / §4） |
 | `gitleaks` / `semgrep` | 無いと `quality-gate.sh` が SKIP する。SKIP は FAIL にならないので**マージゲートが黙って弱くなる** |
 | Playwright chromium | イメージに同梱されない場合の保険（同梱時は `playwright.config.ts` が `/opt/pw-browsers` を自動検出する） |
 | `aws` CLI v2（#680） | プリインストールされていない。`scripts/aws-cloud-deploy.sh`（`docs/runbook-cloud-aws-deploy.md` の verify → preflight → diff → deploy → smoke）が preflight/diff/deploy の全経路で直接シェルアウトする。無いと `aws: command not found` で失敗し、しかも旧実装はそれを「AWS 認証情報を解決できません」という**誤った層**のせいにしていた ―― 実際に初回の cloud deploy 試行で踏んだ。今は `scripts/aws-cloud-deploy.sh` 側に `aws` の有無を先に確認する preflight（`src/domain/governance/command-preflight.ts`）を入れてあるので、入れ忘れても診断メッセージは正しい層を指す（が、動かないことに変わりはない） |
@@ -330,7 +452,8 @@ GitHub の署名で `verified: true` になっている（`gh api repos/:owner/:
 | **VRT ベースライン（linux）** | ✅ 解消（第 94 wave）。欠落 4 枚を生成し、stale だった 5 枚を取り直した。詳細は §6 |
 | **VRT ベースライン（darwin）** | ⚠️ 逆に darwin 側が stale になった。`kiosk-idle` 3 枚が待機カードの並び順を #422 inc5-b 以前のまま持つ。**macOS でしか取り直せない**。詳細は §6 |
 | **VRT の自動生成** | `playwright.config.ts` で `updateSnapshots: 'none'` にしてある。既定の `'missing'` は欠落分をその場の描画で自動生成し、`retries: 1` と組み合わさると**1 回目が書いて落ち retry が通る**ため、レビューされていない描画が「正」として焼き付く。取り直すときは `--update-snapshots` を明示し、**差分を見てからコミットする** |
-| **`gh` の GraphQL**（routine セッション） | 🔴 **PR レビュー用の pinned な操作セットしか通らない。** `gh pr list` / `gh pr view` に加えて **`gh pr create`（2026-08-10 実測 / #678）も `gh pr merge`（2026-08-18・PR #701 で実測 / #702）も 403**。PR #665 の時点では作成もマージも通っていた ―― **通っていたことを根拠に残さない**。作成は `npx tsx scripts/create-pull-request.ts --head … --title …`、マージは `npx tsx scripts/merge-pull-request.ts --number …`、照会は `gh api repos/{owner}/{repo}/…`（すべて REST のみ） |
+| **`gh` の GraphQL**（routine セッション） | 🔴 **PR レビュー用の pinned な操作セットしか通らない。** `gh pr list` / `gh pr view` に加えて **`gh pr create`（2026-08-10 実測 / #678）も `gh pr merge`（2026-08-18・PR #701 で実測 / #702）も 403**。PR #665 の時点では作成もマージも通っていた ―― **通っていたことを根拠に残さない**。作成は `npx tsx scripts/create-pull-request.ts --head … --title …`、マージは `npx tsx scripts/merge-pull-request.ts --number …`（すべて REST のみ） |
+| **`gh` の存在**（web セッション） | 🔴 **無い。** 2026-09-15 実測: `command -v gh` が空。上の「GraphQL が絞られている」は `gh` が在る前提の話で、web セッションではその回避策ごと成立しない（#1117）。PR 作成・マージ・照会は `curl` で REST を直接叩く（`scripts/lib/github-api.ts`）。**`gh` が在るかどうかを前提にした手順を書かない** |
 | **`gh` の GraphQL**（web セッション） | ⚠️ **未検証。** 上の 403 はすべて **routine セッション**での観測で、人が claude.ai/code で開くインタラクティブなセッションで同じ制限がかかるかは**測っていない**。§0 の手順 3 で判別する。**どちらであれ REST 経路（上記スクリプト）は動く**ので、迷ったらそちらを使う |
 | **`git push`** | セッションの作業ブランチに対してのみ可。force push と remote 削除は不可（非 fast-forward を作らない運用で回避する）。**マージ後のブランチ削除もできない**ので、ローカルの後始末として扱う（下記） |
 | **`.open-next/`** | fresh checkout には無い。以前は `infra WebStack synth` が SKIP → `--strict` で FAIL になっていたが、**`quality-gate.sh` が自分でビルドするようになった**（#677）。手で `npm run build:open-next` を先に打つ必要はもう無い |
@@ -507,6 +630,16 @@ pip install --break-system-packages --ignore-installed PyJWT semgrep
 ```
 
 → `semgrep 1.172.0` が入り `sast` PASS（23s）。
+
+> 🔴 **2026-10 追記: system の site-packages へ入れる方式自体をやめ、専用 venv
+> （`/opt/semgrep-venv`）へ移した。** Cloud の Python で `mcp` 1.29.0 と 2.2.0 が重なり、
+> semgrep 1.180.0 が `ImportError: cannot import name 'TASK_STATUS_COMPLETED' from 'mcp.types'`
+> で落ちた。`command -v semgrep` は成功するので欠落として報告されず、sast を走らせるまで
+> 見えない。`cloud-setup.sh` と `restore-gate-tools.sh` の両方が venv へ入れて
+> `/usr/local/bin/{semgrep,pysemgrep}` を張る（`pysemgrep` も要る ―― semgrep は PATH 経由で
+> 呼ぶので、張らないと system 側の壊れた方が拾われる）。venv はイメージのパッケージを
+> 見ないので、上の `--ignore-installed PyJWT` も不要になった。**環境ダイアログの Setup
+> script も貼り替えること。**
 
 ### 6.2 shallow clone が `.gitleaksignore` の指紋を無効化する（→ `quality-gate.sh` 修正済み）
 

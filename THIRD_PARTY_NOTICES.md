@@ -71,20 +71,18 @@ SOFTWARE.
 
 ---
 
-## 受付アバター既定VRMモデル: AvatarSample_A
+## 受付アバター既定VRMモデル: receptiom（owner 作成）
 
 - 配置先: `public/avatar/default.vrm`
-- 権利者 / 配布者: VRoid Project / pixiv
-- ライセンス: 独自利用条件（**CC0ではなく、著作権は放棄されていない**）
-- 許諾: 法人利用、商用利用、再配布、改変
-- クレジット表記: 不要
-- 公式モデル: https://hub.vroid.com/characters/2843975675147313744/models/5644550979324015604
-- 公式利用条件: https://vroid.pixiv.help/hc/ja/articles/4402394424089-AvatarSample-A-Z
+- 作者: 20m61（このリポジトリの owner）。VRoid Studio 2.11.0 で作成（VRM 0.0）
+- 埋め込みメタデータ: `allowedUserName: OnlyAuthor` / `commercialUssageName: Disallow` /
+  `licenseName: Redistribution_Prohibited`
 - 用途: 受付端末（kiosk）の既定アバター表示。管理画面または `KIOSK_DEFAULT_VRM_URL` で差し替え可能。
-- provenance: `public/avatar/provenance.json` に取得日、SHA-256、検証状態を記録する。
+- provenance: `public/avatar/provenance.json`（SHA-256、埋め込みメタデータ、owner 判断）
 
-> AvatarSample_Aは再配布可能だがCC0ではない。配布前に公式条件とVRM埋め込みメタデータを
-> 再確認し、`provenance.json` の `verificationStatus` が検証済みであることを必須とする。
+> 作者本人である owner の判断（2026-10-05）で、メタデータを変えずに public リポジトリへ置いている。
+> **第三者にライセンスされたものではない。** 第三者は埋め込みメタデータの条件に従うこと。
+> 旧既定の Rose（Polygonal Mind、CC0）と、計画していた AvatarSample_A（VRoid Project）は同梱しない。
 
 ---
 

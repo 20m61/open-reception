@@ -428,6 +428,217 @@ test.describe('管理: 書き込み失敗が運用者に見える (#870 増分 0
   });
 
   /**
+   * 🔴 **保存は表示の版を付けて送り、409 を「保存しなかった」と言い切る (#1158 AC2)。**
+   *
+   * store / route の unit は「版が古ければ 409」までしか言えず、**画面が版を送らない**
+   * （＝古い表示から他人の変更を黙って上書きする）変異や、409 を汎用の失敗に畳む変異は
+   * 素通りする。応答は注入で返すので共有 seed を変えない。
+   */
+  for (const status of [409, 428] as const) {
+    test(`セキュリティ設定: 保存は表示の版を送り、${status} なら保存しなかったと伝える (#1158)`, async ({ page }) => {
+      const view = (rev: number, emergencyStop = false): string =>
+        JSON.stringify({ pinRequired: false, ipAllowlist: [], pinConfigured: false, emergencyStop, rev });
+      const sent: Array<Record<string, unknown>> = [];
+      await page.route('**/api/admin/security**', (route) => {
+        if (route.request().method() === 'GET') {
+          return route.fulfill({ status: 200, contentType: 'application/json', body: view(4) });
+        }
+        sent.push(route.request().postDataJSON() as Record<string, unknown>);
+        return route.fulfill({ status, contentType: 'application/json', body: '{"error":"conflict"}' });
+      });
+      await page.goto('/admin/security');
+      await expect(page.getByTestId('security-save')).toBeVisible();
+
+      await page.getByTestId('security-save').click();
+
+      await expect(page.getByTestId('security-error')).toContainText('保存しませんでした');
+      await expect(page.getByTestId('security-view-stale')).toBeVisible();
+      await expect(page.getByTestId('security-saved')).toHaveCount(0);
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toMatchObject({ rev: 4 });
+    });
+  }
+
+  /**
+   * 🔴 **緊急停止の 409 も保存と同じ結論にする (#1158)。** 緊急停止は版を付けずに送り、
+   * サーバが当て直しても負け続けたときだけ 409 になる＝表示を読んでから記録が書かれた証拠。
+   * 「できませんでした」に加えて表示が古いことを伝える（保存の 409 と非対称にしない）。
+   */
+  test('緊急停止: 409 なら失敗を伝え、表示が古いことも伝える (#1158)', async ({ page }) => {
+    await page.route('**/api/admin/security**', (route) => {
+      if (route.request().method() === 'GET') return route.continue();
+      return route.fulfill({ status: 409, contentType: 'application/json', body: '{"error":"conflict"}' });
+    });
+    await page.goto('/admin/security');
+    await expect(page.getByTestId('emergency-stop')).toBeVisible();
+    await expect(page.getByTestId('security-view-stale')).toHaveCount(0);
+
+    await page.getByTestId('emergency-stop').click();
+    await page.getByTestId('emergency-confirm').click();
+
+    await expect(page.getByTestId('emergency-error')).toContainText('緊急停止を有効にできませんでした');
+    await expect(page.getByTestId('security-view-stale')).toBeVisible();
+    await expect(page.getByTestId('emergency-saved')).toHaveCount(0);
+  });
+
+  /**
+   * 🔴 **緊急停止の応答で表示の版を進めるのは「自分の書き込みだけ」と言えるときだけ (#1158)。**
+   *
+   * - 応答の版が表示の版のちょうど次 ⟹ 表示を読んでから書かれたのは自分の緊急停止だけ。
+   *   次の保存は新しい版を送る（据え置くと、自分の操作のせいで毎回 409 になる）
+   * - それより先（他人も書いた）⟹ 据え置く。進めると、他人が変えた項目を古い表示のまま
+   *   保存して黙って消す
+   */
+  for (const [label, emergencyRev, expectedSaveRev, staleShown] of [
+    ['自分の書き込みだけなら版を進める', 5, 5, false],
+    ['他人も書いていれば版を据え置き、表示が古いと伝える', 6, 4, true],
+  ] as const) {
+    test(`緊急停止の応答と版: ${label} (#1158)`, async ({ page }) => {
+      const view = (rev: number, emergencyStop = false): string =>
+        JSON.stringify({ pinRequired: false, ipAllowlist: [], pinConfigured: false, emergencyStop, rev });
+      const saves: Array<Record<string, unknown>> = [];
+      await page.route('**/api/admin/security**', (route) => {
+        const req = route.request();
+        if (req.method() === 'GET') {
+          return route.fulfill({ status: 200, contentType: 'application/json', body: view(4) });
+        }
+        const body = req.postDataJSON() as Record<string, unknown>;
+        if ('emergencyStop' in body) {
+          return route.fulfill({ status: 200, contentType: 'application/json', body: view(emergencyRev, true) });
+        }
+        saves.push(body);
+        return route.fulfill({ status: 200, contentType: 'application/json', body: view(emergencyRev + 1, true) });
+      });
+      await page.goto('/admin/security');
+      await expect(page.getByTestId('emergency-stop')).toBeVisible();
+
+      await page.getByTestId('emergency-stop').click();
+      await page.getByTestId('emergency-confirm').click();
+      await expect(page.getByTestId('emergency-saved')).toBeVisible();
+      // 版が飛んだ（他人も書いた）ときだけ「表示が古い」を出す。自分だけなら出さない（下界）。
+      await expect(page.getByTestId('security-view-stale')).toHaveCount(staleShown ? 1 : 0);
+
+      await page.getByTestId('security-save').click();
+      await expect(page.getByTestId('security-saved')).toBeVisible();
+      expect(saves).toHaveLength(1);
+      expect(saves[0]).toMatchObject({ rev: expectedSaveRev });
+      // 保存は緊急停止を送らない（#973 の不変条件を崩していない）。
+      expect(saves[0]).not.toHaveProperty('emergencyStop');
+    });
+  }
+
+  /**
+   * 🔴 **読めない PIN 記録（fail closed で締め出し中）を運用者へ見せ、この画面で復旧できる (#1160)。**
+   *
+   * store / route の unit は「API が true を返す」までしか言えず、**画面が読まない**
+   * （`asSecurityView` で落とす・描画しない・ラベルが「既定値が有効」と嘘をつく）変異は
+   * 素通りする。応答は注入で返すので共有 seed を変えない。サーバの振る舞い（PIN を送らない
+   * 保存では直らない／PIN を送れば直る）を注入側で再現する。
+   * **下界**: 実サーバの GET（読める記録）では出ない。
+   */
+  test('セキュリティ設定: 読めない PIN 記録を画面に出し、PIN の再設定で消える (#1160)', async ({ page }) => {
+    await page.goto('/admin/security');
+    await expect(page.getByTestId('security-save')).toBeVisible();
+    // 下界: 読める記録では出ない。
+    await expect(page.getByTestId('security-pin-unreadable')).toHaveCount(0);
+
+    // 🔴 実サーバと同じく版（`rev`, #1158）を返し、保存が版を送っていることも見る。版を返さない
+    //    注入では、版なしの保存（実サーバでは 428）が成功する経路を検証してしまう。
+    const view = (storedPinUnreadable: boolean, rev: number): string =>
+      JSON.stringify({ pinRequired: true, ipAllowlist: [], pinConfigured: !storedPinUnreadable, emergencyStop: false, storedPinUnreadable, rev });
+    const sentRevs: unknown[] = [];
+    await page.route('**/api/admin/security**', (route) => {
+      const req = route.request();
+      if (req.method() === 'GET') {
+        return route.fulfill({ status: 200, contentType: 'application/json', body: view(true, 3) });
+      }
+      const body = req.postDataJSON() as { pin?: string; rev?: number };
+      sentRevs.push(body.rev);
+      return route.fulfill({ status: 200, contentType: 'application/json', body: view(!body.pin, (body.rev ?? 0) + 1) });
+    });
+    await page.reload();
+    const warning = page.getByTestId('security-pin-unreadable');
+    await expect(warning).toBeVisible();
+    await expect(warning).toHaveAttribute('role', 'alert');
+    await expect(warning).toContainText('どの PIN でも許可されません');
+    // ラベルが「既定値が有効」と嘘をつかない（既定値では通らない）。
+    await expect(page.getByText('未設定（既定値が有効）')).toHaveCount(0);
+
+    // PIN を送らない保存では直らない。
+    await page.getByTestId('security-save').click();
+    await expect(page.getByTestId('security-saved')).toBeVisible();
+    await expect(page.getByTestId('security-pin-unreadable')).toBeVisible();
+
+    // PIN を設定し直すと消える（復旧経路）。
+    await page.getByTestId('security-pin').fill('5839');
+    await page.getByTestId('security-save').click();
+    await expect(page.getByTestId('security-pin-unreadable')).toHaveCount(0);
+    // 保存は表示の版を送っている（GET の 3 → 1 回目の応答の 4）。
+    expect(sentRevs).toEqual([3, 4]);
+  });
+
+  /**
+   * 🔴 **読めないセキュリティ設定（閉じる側で運用中）を運用者へ見せ、この画面で復旧できる (#1172 AC4)。**
+   *
+   * store / route の unit は「API が `unreadableSettings` を返す」までしか言えず、画面が読まない
+   * （`asSecurityView` で落とす・描画しない）変異は素通りする。応答は注入で返すので共有 seed を
+   * 変えない。サーバの振る舞い（緊急停止だけでは直らない／フォームの保存で許可リストと PIN 必須が
+   * 直る）を注入側で再現する。**下界**: 実サーバの GET（読める記録）では出ない。
+   */
+  test('セキュリティ設定: 読めない設定を画面に出し、保存で消える (#1172)', async ({ page }) => {
+    await page.goto('/admin/security');
+    await expect(page.getByTestId('security-save')).toBeVisible();
+    // 下界: 読める記録では出ない。
+    await expect(page.getByTestId('security-settings-unreadable')).toHaveCount(0);
+
+    const view = (unreadableSettings: string[], rev: number, emergencyStop: boolean): string =>
+      JSON.stringify({ pinRequired: true, ipAllowlist: [], pinConfigured: true, emergencyStop, storedPinUnreadable: false, unreadableSettings, rev });
+    let rev = 3;
+    await page.route('**/api/admin/security**', (route) => {
+      const req = route.request();
+      if (req.method() === 'GET') {
+        // 読めない緊急停止は停止中（閉じる側）として返る。
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: view(['ipAllowlist', 'emergencyStop', 'pinRequired'], rev, true),
+        });
+      }
+      const body = req.postDataJSON() as { rev?: number; emergencyStop?: boolean };
+      rev += 1;
+      // 緊急停止だけの PUT では、緊急停止だけが直る（他の項目は読めないまま）。
+      if (body.emergencyStop !== undefined) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: view(['ipAllowlist', 'pinRequired'], rev, body.emergencyStop),
+        });
+      }
+      // フォームの保存（許可リストと PIN 必須を明示）で残りも直る。
+      return route.fulfill({ status: 200, contentType: 'application/json', body: view([], rev, false) });
+    });
+    await page.reload();
+    const warning = page.getByTestId('security-settings-unreadable');
+    await expect(warning).toBeVisible();
+    await expect(warning).toHaveAttribute('role', 'alert');
+    await expect(warning).toContainText('どの IP からの PIN 許可も拒否しています');
+    await expect(warning).toContainText('停止中（全端末で受付を停止）として扱っています');
+    await expect(warning).toContainText('PIN による許可も受け付けていません');
+    await expect(warning).toContainText('設定し直してください');
+
+    // 受付の再開（緊急停止を明示）で、緊急停止の行だけが消える。
+    await page.getByTestId('emergency-resume').click();
+    await expect(page.getByTestId('emergency-saved')).toBeVisible();
+    await expect(warning).not.toContainText('停止中（全端末で受付を停止）として扱っています');
+    await expect(warning).toContainText('どの IP からの PIN 許可も拒否しています');
+
+    await page.getByTestId('security-ip').fill('203.0.113.7');
+    await page.getByTestId('security-save').click();
+    await expect(page.getByTestId('security-saved')).toBeVisible();
+    await expect(page.getByTestId('security-settings-unreadable')).toHaveCount(0);
+  });
+
+  /**
    * 🔴 **順序が逆でも巻き戻さない** (#973)。
    *
    * 「保存が先に飛行中」だけを塞ぐと、**緊急停止が先に飛行中**（その間に保存を押す）で

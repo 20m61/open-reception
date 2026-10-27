@@ -17,6 +17,31 @@ import { DynamoBackend } from './dynamodb';
 
 export type Item = Record<string, unknown>;
 
+/**
+ * 式が参照する `:name` が `ExpressionAttributeValues` に**無い**、または値が `undefined` なら
+ * ValidationException を投げる（#1270 独立レビュー N1）。
+ *
+ * 本番の DocumentClient は `removeUndefinedValues: true` なので、undefined の値は marshall で
+ * 落ち、実 DynamoDB には「定義されていない値を参照する式」として届く。これは条件不成立
+ * （ConditionalCheckFailedException）ではなく、**記録の有無によらず**リクエストごと拒否される
+ * （仕様からの推定。実 DynamoDB では未測定）。fake が `undefined === undefined` を「一致」と
+ * 読むと、`attribute_not_exists(#c)` を `#c = :c`（`:c` は undefined）へ化けさせる変異が
+ * unit で生き残る。だから**条件を評価する前に**検査する。
+ */
+function assertValuesDefined(input: Item, ...exprs: (string | undefined)[]): void {
+  const values = (input.ExpressionAttributeValues as Item | undefined) ?? {};
+  for (const expr of exprs) {
+    for (const ref of expr?.match(/:\w+/g) ?? []) {
+      if (!Object.hasOwn(values, ref) || values[ref] === undefined) {
+        throw Object.assign(
+          new Error(`An expression attribute value used in expression is not defined: ${ref}`),
+          { name: 'ValidationException' },
+        );
+      }
+    }
+  }
+}
+
 /** PK/SK をキーにした最小の DynamoDB エミュレータ。 */
 export class FakeDoc {
   store = new Map<string, Item>();
@@ -50,6 +75,7 @@ export class FakeDoc {
        * PutCommand を投げるようになった。ここで無条件に成功させると、条件を外す変異も
        * `attribute_exists` へ反転する変異も緑のまま通り、**本番だけが壊れる**。
        */
+      assertValuesDefined(input, input.ConditionExpression as string | undefined);
       const item = input.Item as Item;
       const k = this.key(item.PK, item.SK);
       const cur = this.store.get(k);
@@ -62,6 +88,12 @@ export class FakeDoc {
           if (notExists) return cur === undefined || cur[names[notExists[1] ?? ''] ?? ''] === undefined;
           const exists = t.match(/^attribute_exists\((#\w+)\)$/);
           if (exists) return cur != null && cur[names[exists[1] ?? ''] ?? ''] !== undefined;
+          // 値の一致（`Singleton.putIf` #1158）。記録が無ければ不成立（DynamoDB と同じ）。
+          const eq = t.match(/^(#\w+) = (:\w+)$/);
+          if (eq) {
+            const values = (input.ExpressionAttributeValues as Item) ?? {};
+            return cur != null && cur[names[eq[1] ?? ''] ?? ''] === values[eq[2] ?? ''];
+          }
           // 未対応の式を「条件不成立」に倒すと、次に別の条件式を使ったとき**偽の 409**になる。
           throw new Error(`FakeDoc: unsupported ConditionExpression '${t}'`);
         });
@@ -79,6 +111,11 @@ export class FakeDoc {
       return { Item: this.store.get(this.key(k.PK, k.SK)) };
     }
     if (command instanceof UpdateCommand) {
+      assertValuesDefined(
+        input,
+        input.ConditionExpression as string | undefined,
+        input.UpdateExpression as string,
+      );
       const k = input.Key as Item;
       const names = (input.ExpressionAttributeNames as Record<string, string>) ?? {};
       const values = (input.ExpressionAttributeValues as Item) ?? {};

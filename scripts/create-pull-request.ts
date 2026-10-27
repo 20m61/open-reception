@@ -2,10 +2,10 @@
 /**
  * PR を **REST だけ**で作る (issue #678)。
  *
- * ## なぜ `gh pr create` を呼ばないのか
+ * ## なぜ GitHub CLI (`gh`) を呼ばないのか
  *
- * クラウドのサンドボックス（Claude Code on the web / Routine）の `gh` は、PR レビュー用の
- * pinned な操作セットしか GraphQL を通さない。`gh pr create` は本体の POST の前に
+ * 当初の理由は GraphQL だった。クラウドのサンドボックスの `gh` は PR レビュー用の
+ * pinned な操作セットしか GraphQL を通さず、`gh pr create` は本体の POST の前に
  * repo info の GraphQL preamble（`RepositoryInfo`）を撃つため、**内容が正しくても
  * 作成に到達せず 403 で落ちる**。2026-08-10 の週次ゲートで実測した:
  *
@@ -14,9 +14,18 @@
  * is not enabled for this session ... Use REST via `gh api repos/{owner}/{repo}/...` instead.
  * ```
  *
+ * 🔴 **2026-09-15、その前提ごと外れた (#1117)。** Claude Code on the web の
+ * サンドボックスには **`gh` が無い**（`command -v gh` が空）。`gh api` へ寄せた回避策は
+ * `gh` が在ることを前提にしていたので、まるごと成立しない。PR #1115 / #1116 は
+ * どちらもここで落ち、GitHub MCP へ手で切り替えて作成した。
+ *
+ * したがって **CLI ごとやめ、REST を HTTP でそのまま叩く**（`scripts/lib/github-api.ts`）。
+ * `gh` の有無にも認証方式にも依らなくなる。経緯と `curl` を選んだ実測は
+ * `src/domain/governance/github-rest.ts` の冒頭。
+ *
  * このとき記録は push 済みで PR だけが無い ―― **#656（FAIL が main に載らない）そのもの**が
  * 再生産される。開発をクラウドへ移した以上、PR 作成は全周回の通り道なので、
- * ここを REST に寄せておかないと同じ形の取りこぼしが毎周回起こりうる。
+ * ここを塞いでおかないと同じ形の取りこぼしが毎周回起こりうる。
  *
  * ## 使い方
  *
@@ -38,18 +47,9 @@
  *    到達しない原因を 3 周にわたって当て推量した実績がある（PR #665）。
  */
 import { readFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
-import { describeCommandFailure } from '../src/domain/governance/command-failure';
-import { parseGitHubRepo, pullCreateArgs, pullsQueryPath } from '../src/domain/governance/git-base';
-
-/** 外部コマンドを実行する。失敗したら理由（stderr）まで載せて投げ直す。 */
-function run(cmd: string, args: string[]): string {
-  try {
-    return execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-  } catch (e) {
-    throw new Error(describeCommandFailure(`${cmd} ${args.join(' ')}`, e));
-  }
-}
+import { callGitHubArray, callGitHubJson, resolveRepoFromOrigin } from './lib/github-api';
+import type { GitHubRepo } from '../src/domain/governance/git-base';
+import { pullCreateRequest, pullsQueryRequest } from '../src/domain/governance/github-rest';
 
 /** 受け付ける引数。**ここに無いキーはエラーにする**（下記 `rejectUnknownOptions`）。 */
 const KNOWN_OPTIONS = ['head', 'base', 'title', 'body', 'body-file'] as const;
@@ -63,7 +63,7 @@ const KNOWN_OPTIONS = ['head', 'base', 'title', 'body', 'body-file'] as const;
  *
  * 実装して直さないのは、**クラウドから draft を解除できない**ため（2026-08-27 実測）:
  *
- * - `gh pr ready` … proxy が GraphQL を 403 で止める
+ * - `gh pr ready` … proxy が GraphQL を 403 で止める（そもそも `gh` が無い環境もある / #1117）
  * - REST `PATCH .../pulls/<n> -f draft=false` … **黙って無視**（`draft: true` のまま返る）
  * - `mcp__github__update_pull_request` … 唯一通る経路だが GitHub App 側のレート制限で
  *   落ちうる。`gh api rate_limit` は**別のバケツ**を映すので事前に判定できない
@@ -151,34 +151,31 @@ function main(): number {
   }
 
   // owner/repo は remote URL から取る。**追加のネットワークも GraphQL も要らない。**
-  let remoteUrl: string;
+  // 読めなければ推測で組み立てない（誤った owner/repo は 404 になり「PR が無い」と誤読される）。
+  let repo: GitHubRepo;
   try {
-    remoteUrl = run('git', ['ls-remote', '--get-url', 'origin']);
+    repo = resolveRepoFromOrigin();
   } catch (e) {
-    console.error(`❌ origin の URL を取得できませんでした: ${e instanceof Error ? e.message : String(e)}`);
-    return 2;
-  }
-  const repo = parseGitHubRepo(remoteUrl);
-  if (repo === undefined) {
-    // 推測で組み立てない。誤った owner/repo は 404 になり「PR が無い」と誤読される。
-    console.error(`❌ origin の URL から owner/repo を読み取れませんでした: ${remoteUrl}`);
+    console.error(`❌ ${e instanceof Error ? e.message : String(e)}`);
     return 2;
   }
 
   let created: string | undefined;
   let createError: string | undefined;
   try {
-    created = run('gh', pullCreateArgs(repo, { head, base, title, body }));
+    created = callGitHubJson<{ html_url?: string }>(
+      pullCreateRequest(repo, { head, base, title, body }),
+    ).html_url;
   } catch (e) {
     // ここでは終わらせない。**既に PR が在るなら目的は達成されている**（422 の再実行）。
     createError = e instanceof Error ? e.message : String(e);
   }
 
   // 🔴 **作成できたと言われても信じない (#656)。** ブランチを head に持つ PR を REST で引き直す。
-  // `gh pr list` / `gh pr view` は GraphQL なのでクラウドでは 403 になる。使わない。
   let existing: unknown[];
   try {
-    existing = JSON.parse(run('gh', ['api', pullsQueryPath(repo, head)])) as unknown[];
+    // **形まで確かめる。** `length === 0` だけでは配列でない 2xx を「PR がある」と読む。
+    existing = callGitHubArray(pullsQueryRequest(repo, head));
   } catch (e) {
     console.error(`❌ PR の実在を確認できませんでした: ${e instanceof Error ? e.message : String(e)}`);
     if (createError !== undefined) console.error(`   作成時のエラー: ${createError}`);

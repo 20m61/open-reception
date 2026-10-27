@@ -10,11 +10,11 @@
  * #709 / #712 が繰り返し踏んでいるのがまさにこれ ——「判定は正しいのに、それが機械へ
  * 伝わる経路が黙って落ちる」。落ちたときの症状は**検証を飛ばしたまま green**。
  */
-import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { makeTempDir } from '../helpers/temp';
 
 const REPO = process.cwd();
 
@@ -24,15 +24,28 @@ const REPO = process.cwd();
  * `exitCode` を非 0 にすると、`quality-gate.sh` のフォールバック（`|| echo "scope=code"`）が
  * **後から**流れる状況を作れる。
  */
-function runGate(options: { scopeOutput: string; exitCode?: number; withBase?: boolean }): {
+function runGate(options: {
+  scopeOutput: string;
+  exitCode?: number;
+  withBase?: boolean;
+  /** 🔴 AC4 の**正の対照**用。false にすると `gate-tooling.sh` を持ち込まない。 */
+  withTooling?: boolean;
+}): {
   status: number;
   stdout: string;
+  stderr: string;
   stamp: string;
 } {
-  const dir = mkdtempSync(join(tmpdir(), 'gate-scope-'));
+  const dir = makeTempDir('gate-scope-');
   mkdirSync(join(dir, 'scripts', 'lib'), { recursive: true });
   mkdirSync(join(dir, 'bin'), { recursive: true });
   cpSync(resolve(REPO, 'scripts/quality-gate.sh'), join(dir, 'scripts/quality-gate.sh'));
+  // 🔴 **`gate-tooling.sh` も持っていく (#1136 AC4)。** 無いと temp 側の
+  //    `quality-gate.sh` が毎回 `No such file or directory` を stderr へ出し、
+  //    「どのテストが落ちたか分からない FAIL」の読み解きを難しくする（実測で 19 行）。
+  if (options.withTooling !== false) {
+    cpSync(resolve(REPO, 'scripts/lib/gate-tooling.sh'), join(dir, 'scripts/lib/gate-tooling.sh'));
+  }
   cpSync(resolve(REPO, 'scripts/lib/gate-stamp.sh'), join(dir, 'scripts/lib/gate-stamp.sh'));
   execFileSync('git', ['init', '-q', '--initial-branch=main'], { cwd: dir });
   // 🔴 **既定では起点が解決できる状態にする。** コミットが無いと `merge-base` が失敗し、
@@ -61,21 +74,25 @@ esac
   );
   writeFileSync(join(dir, 'bin', 'npm'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
 
-  let status = 0;
-  let stdout = '';
-  try {
-    stdout = execFileSync(join(dir, 'scripts/quality-gate.sh'), ['--pr', '--no-bootstrap'], {
-      cwd: dir,
-      encoding: 'utf8',
-      env: { ...process.env, PATH: `${join(dir, 'bin')}:${process.env.PATH ?? ''}` },
-    });
-  } catch (e) {
-    const err = e as { status?: number; stdout?: string };
-    status = err.status ?? -1;
-    stdout = err.stdout ?? '';
-  }
+  // 🔴 **`spawnSync` で取る（レビュー 2 周目 MAJOR 1）。**
+  //
+  // 以前は `execFileSync` ＋ `stdio: ['ignore','pipe','pipe']` で、成功パスの `stderr` を
+  // **どこにも入れていなかった**（`execFileSync` の戻り値は stdout だけ。実測で確認）。
+  // つまり `not.toContain('gate-tooling.sh: No such file')` は**常に空虚に通っていた** ——
+  // `cpSync` の 1 行を消しても 9 passed で、1 周目の指摘に対して kill が 1 つも増えて
+  // いなかった。さらに悪いことに、`stdio` を pipe へ変えたことで child の stderr が
+  // **画面からも消え**、AC4 が消そうとした騒音を「直したから消えた」のか
+  // 「捕まえて捨てたから消えた」のか区別できなくしていた（沈黙の誤動作への変換）。
+  const proc = spawnSync(join(dir, 'scripts/quality-gate.sh'), ['--pr', '--no-bootstrap'], {
+    cwd: dir,
+    encoding: 'utf8',
+    env: { ...process.env, PATH: `${join(dir, 'bin')}:${process.env.PATH ?? ''}` },
+  });
+  const status = proc.status ?? -1;
+  const stdout = proc.stdout ?? '';
+  const stderr = proc.stderr ?? '';
   const stampPath = join(dir, '.git', 'open-reception-gate-stamp');
-  return { status, stdout, stamp: existsSync(stampPath) ? readFileSync(stampPath, 'utf8') : '' };
+  return { status, stdout, stderr, stamp: existsSync(stampPath) ? readFileSync(stampPath, 'utf8') : '' };
 }
 
 /**
@@ -94,6 +111,34 @@ esac
 vi.setConfig({ testTimeout: 30_000 });
 
 describe('quality-gate: 変更範囲の読み取り配線 (#712)', () => {
+  /**
+   * 🔴 **AC4 の下界（#1136 レビュー 1 周目 MINOR 3）。**
+   *
+   * temp ツリーへ `scripts/lib/gate-tooling.sh` を持ち込む変更を入れたが、
+   * **それを縛るものが何も無かった** —— 実測で `cpSync` を 1 行消しても 8 passed。
+   * 「stderr 19 行 → 0 行」は測ったのに回帰では守られていなかったので、
+   * 撤回が沈黙する。ここで倒れ方を見る。
+   */
+  it('🔴 temp ツリーの gate は gate-tooling.sh を見つけられる（stderr が黙る）', () => {
+    const r = runGate({ scopeOutput: '{"total":1,"files":["src/a.ts"]}' });
+    expect(r.stderr).not.toContain('gate-tooling.sh: No such file');
+    // 下界 1: gate を実際に起動できたこと（起動できていなければ stderr は空で空虚に通る）。
+    expect(r.stdout).toContain('quality-gate');
+  }, 30_000);
+
+  /**
+   * 🔴 **正の対照（レビュー 2 周目 MAJOR 1）。**
+   *
+   * 「出ない」だけを主張するテストは、**stderr を一度も観測していない世界でも通る**
+   * ——実際に通っていた。持ち込まなければ**検出されること**を併せて縛る。
+   * これが在ると、`stderr` の配線を落とす変異も倒れる。
+   */
+  it('🔴 gate-tooling.sh を持ち込まなければ、その stderr が実際に観測される', () => {
+    const r = runGate({ scopeOutput: '{"total":1,"files":["src/a.ts"]}', withTooling: false });
+    expect(r.stderr).toContain('gate-tooling.sh');
+    expect(r.stderr).toContain('No such file');
+  }, 30_000);
+
   it('docs 判定なら省略する（既存の契約）', () => {
     const { stdout } = runGate({ scopeOutput: 'scope=docs\nskip=build' });
     expect(stdout).toContain('SKIP  build (next build)');

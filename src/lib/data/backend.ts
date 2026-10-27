@@ -81,6 +81,18 @@ export interface Singleton<T> {
   /** 未保存なら undefined。呼び出し側が DEFAULTS にフォールバックする。 */
   get(): Promise<T | undefined>;
   put(value: T): Promise<void>;
+  /**
+   * 条件付き**置換** (#1158)。書き込みの直前の記録が `expected` を満たすときだけ `value` で
+   * 置き換え、true を返す。満たさなければ何も書かず false。
+   *
+   * - `expected` の値が `undefined` のキーは「その属性が無い」を要求する（**記録そのものが
+   *   無い場合も満たす**。版を持たない旧レコードと未作成を同じ条件で扱うため）
+   * - それ以外は値の一致（プリミティブ前提。dynamo の比較と揃える）
+   *
+   * read-modify-write の lost update を避けるために使う。memory は同期比較、dynamo は
+   * `PutItem` + `ConditionExpression`。意味論は `singleton-put-if-contract.test.ts` が両方で縛る。
+   */
+  putIf(value: T, expected: Partial<T>): Promise<boolean>;
   reset(): Promise<void>;
 }
 
@@ -123,6 +135,11 @@ export interface LogOpts<T extends { id: string }> {
 
 export interface DataBackend {
   collection<T extends { id: string }>(name: string, opts?: CollectionOpts<T>): Collection<T>;
-  singleton<T>(name: string, opts?: { default?: () => T }): Singleton<T>;
+  /**
+   * `consistentRead`: dynamo の読み出しを強い整合性にする（memory は常に強整合なので無視）。
+   * 条件付き書き込みの版を読む singleton で使う (#1158)。結果整合性の読みで古い版を掴むと、
+   * 直前に自分が書いた直後の保存が 409 になり、緊急停止の当て直し予算も無駄に消費する。
+   */
+  singleton<T>(name: string, opts?: { default?: () => T; consistentRead?: boolean }): Singleton<T>;
   log<T extends { id: string }>(name: string, opts: LogOpts<T>): LogStore<T>;
 }

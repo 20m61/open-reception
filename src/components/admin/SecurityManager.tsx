@@ -5,7 +5,36 @@ import { Button, Field, Form, SaveFeedback, saveFailureMessage, useSaveFeedback 
 import { space } from '@/components/admin/ui/tokens';
 import { AdminReadGate } from './AdminReadGate';
 
-export type SecurityView = { pinRequired: boolean; ipAllowlist: string[]; pinConfigured: boolean; emergencyStop: boolean };
+export type SecurityView = {
+  pinRequired: boolean;
+  ipAllowlist: string[];
+  pinConfigured: boolean;
+  emergencyStop: boolean;
+  /**
+   * 保存されていた PIN を読めず、PIN 認可を誰にも通さない状態（fail closed）か (#1160 AC2)。
+   * 🔴 **欠けていたら false として読む（ほかの 4 つと扱いが違う）。** これは既存 4 つの
+   * 表示を**足す**だけの警告で、欠けた応答（#1160 以前のサーバ）はそれ以前と同じ画面になる。
+   * 他の 4 つを欠いた応答を通すと表示が嘘をつくが、これを欠いても「警告が出ない」以上には
+   * ならない。**型が違う**なら壊れた応答として扱う（他と同じ）。
+   */
+  storedPinUnreadable: boolean;
+  /**
+   * 保存値を読めず、閉じる側（全 IP 拒否・停止・PIN 必須）へ倒しているフィールド名 (#1172 AC4)。
+   * 🔴 **欠けていたら空として読む**（`storedPinUnreadable` と同じ理由: 警告を**足す**だけなので、
+   * #1172 以前のサーバの応答はそれ以前と同じ画面になる）。配列でない・要素が文字列でないなら
+   * 壊れた応答として扱う。
+   */
+  unreadableSettings: readonly string[];
+  /**
+   * 表示している記録の版 (#1158)。保存に付けて送り、読んだ後に誰かが書いていれば 409 になる。
+   * 欠けていれば（#1158 以前のサーバ）版を付けずに送る＝それ以前と同じ振る舞い。
+   */
+  rev?: number;
+};
+
+/** 保存が競合した（この画面を開いた後に記録が書かれた）ときの文言 (#1158 AC2)。 */
+export const SECURITY_CONFLICT_MESSAGE =
+  'この画面を開いた後に設定が変更されたため、保存しませんでした。画面を再読み込みして現在の設定を確かめてから、もう一度保存してください。';
 
 /**
  * 緊急停止の送信に張る締切 (#973)。応答が返らない経路でボタンが恒久的に無効化されるのを防ぐ。
@@ -33,7 +62,35 @@ export function asSecurityView(value: unknown): SecurityView | null {
   if (typeof v.pinConfigured !== 'boolean') return null;
   if (typeof v.emergencyStop !== 'boolean') return null;
   if (!Array.isArray(v.ipAllowlist) || v.ipAllowlist.some((x) => typeof x !== 'string')) return null;
-  return v as unknown as SecurityView;
+  // 版は任意（欠けたら付けずに送るだけ）。在るなら版の形でなければ壊れた応答として扱う ——
+  // 壊れた版を送ると、正しい保存まで 400 / 409 になる。
+  if (v.rev !== undefined && !(typeof v.rev === 'number' && Number.isInteger(v.rev) && v.rev >= 0)) {
+    return null;
+  }
+  if (v.storedPinUnreadable !== undefined && typeof v.storedPinUnreadable !== 'boolean') return null;
+  const unreadable = v.unreadableSettings;
+  if (unreadable !== undefined && !(Array.isArray(unreadable) && unreadable.every((x) => typeof x === 'string'))) {
+    return null;
+  }
+  return {
+    ...(v as unknown as SecurityView),
+    storedPinUnreadable: v.storedPinUnreadable === true,
+    unreadableSettings: unreadable === undefined ? [] : [...(unreadable as string[])],
+  };
+}
+
+/**
+ * 読めないフィールドごとの「今どう扱っているか」(#1172)。値は出さない。
+ * 知らない名前（将来のサーバが足したもの）は汎用の 1 文で出す —— 黙って落とさない。
+ */
+const UNREADABLE_SETTING_EFFECT: Readonly<Record<string, string>> = {
+  ipAllowlist: 'IP 許可リスト: 読めないため、どの IP からの PIN 許可も拒否しています。',
+  emergencyStop: '緊急停止: 読めないため、停止中（全端末で受付を停止）として扱っています。',
+  pinRequired: 'PIN 必須: 読めないため、受付端末に許可を求め、PIN による許可も受け付けていません。',
+};
+
+function unreadableSettingEffect(field: string): string {
+  return UNREADABLE_SETTING_EFFECT[field] ?? `${field}: 読めないため、安全側で扱っています。`;
 }
 
 /** セキュリティ設定 (issue #23, #29)。PIN 必須・PIN 変更・IP 許可リストを編集する。 */
@@ -145,7 +202,33 @@ export function SecurityManager() {
   const applyEmergencyResult = useCallback(
     (applied: SecurityView) => {
       const shown = viewRef.current;
-      setView(shown === null ? applied : { ...shown, emergencyStop: applied.emergencyStop });
+      /*
+        🔴 **版を進めてよいのは、表示の全フィールドがその版の記録と一致すると言えるときだけ**
+        (#1158)。応答の版が表示の版の**ちょうど次**なら、表示を読んでから書かれたのは
+        この緊急停止だけで、ほかのフィールドは表示のままである。それ以外（他人も書いた・
+        版が無い）は表示の版を据え置く —— 次の保存は 409 になり、再読み込みを案内する。
+        据え置かずに進めると、他人が変えたフィールドを古い表示のまま保存して**黙って消す**。
+      */
+      const ownWriteOnly = shown?.rev !== undefined && applied.rev === shown.rev + 1;
+      setView(
+        shown === null
+          ? applied
+          : {
+              ...shown,
+              emergencyStop: applied.emergencyStop,
+              // 🔴 読めない設定の警告も**緊急停止の分だけ**載せ替える (#1172)。緊急停止を明示的に
+              //    書いたので、その項目は応答どおり直っている。他の項目の権威はこの応答に無い。
+              unreadableSettings: [
+                ...shown.unreadableSettings.filter((f) => f !== 'emergencyStop'),
+                ...applied.unreadableSettings.filter((f) => f === 'emergencyStop'),
+              ],
+              ...(ownWriteOnly ? { rev: applied.rev } : {}),
+            },
+      );
+      // 🔴 **据え置いたことを黙らない**（`applySaveResult` と鏡像。独立レビュー 2 周目 MAJOR）。
+      //    版が飛んでいる＝表示を読んでから他の書き込みがあった証拠なので、表示が古いことを伝える。
+      //    版を持たない応答（#1158 以前のサーバ）では判定できないので何もしない。
+      if (shown?.rev !== undefined && applied.rev !== undefined && !ownWriteOnly) setViewStale(true);
       // `viewStale` は触らない（下ろせるのは GET だけ。上の解説を見ること）。
     },
     [setView],
@@ -189,12 +272,25 @@ export function SecurityManager() {
       const ipAllowlist = ipText.split('\n').map((s) => s.trim()).filter(Boolean);
       const body: Record<string, unknown> = { pinRequired, ipAllowlist };
       if (pin.trim() !== '') body.pin = pin.trim();
+      // 🔴 **表示している版を付ける (#1158)。** このフォームは触っていない項目も含めて
+      //    全部送るので、版が無いと古い表示のまま他人の変更を黙って上書きする。
+      const rev = viewRef.current?.rev;
+      if (rev !== undefined) body.rev = rev;
       const res = await fetch('/api/admin/security', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
       });
       if (!res.ok) {
+        // 🔴 **競合は「何も書いていない」と言い切れる (#1158 AC2)。** 表示は古いので
+        //    `viewStale` も立てる（下ろせるのは GET だけ。上の解説を見ること）。
+        // 🔴 **428（版が無い）も同じ結論にする（fresh-context review L3）。** 古いバンドルが版を
+        //    送らないときに出る。どちらも何も書いておらず、再読み込みすれば直る。
+        if (res.status === 409 || res.status === 428) {
+          setViewStale(true);
+          failure(SECURITY_CONFLICT_MESSAGE);
+          return;
+        }
         // 緊急停止と同じ規則（5xx は適用済みかもしれない）。同じ条件に別の結論を出さない。
         if (res.status >= 500) setViewStale(true);
         failure(res.status >= 500 ? saveFailureMessage('server-error') : undefined);
@@ -261,6 +357,10 @@ export function SecurityManager() {
             setViewStale(true);
             setEmergencyFailed(saveFailureMessage('server-error', label));
           } else {
+            // 🔴 **409 は保存と同じ結論にする (#1158)。** 緊急停止の 409 は「当て直しても
+            //    他の書き込みに負け続けた」＝表示を読んでから記録が書かれた証拠なので、
+            //    表示が古いことも伝える（同じ条件に別の結論を出さない。独立レビュー 1 周目）。
+            if (res.status === 409) setViewStale(true);
             setEmergencyFailed(
               emergencyStop ? '緊急停止を有効にできませんでした。' : '緊急停止を解除できませんでした。',
             );
@@ -340,6 +440,31 @@ export function SecurityManager() {
   return (
     <section style={{ maxWidth: 480 }}>
       <h1 style={{ marginTop: 0 }}>セキュリティ設定</h1>
+
+      {/*
+        🔴 **読めない設定を閉じる側へ倒していることを、運用者が気づける形で出す (#1172 AC4)。**
+        fail closed（owner 判断）なので、IP 許可リストが読めなければ**どの端末も PIN 許可できず**、
+        緊急停止が読めなければ**全端末が止まる**。画面を見なければ原因に辿り着けない。
+        文言は「今どう扱っているか」と「どうすれば直るか」だけで、値・壊れ方は出さない。
+        緊急停止だけを送る操作では他のフィールドは直らない（サーバが生のまま書き戻す）ので、
+        残っていても嘘にならない。
+        🔴 **IP 許可リストの欄は空で表示される**（読めない値は返さない）。空のまま保存すると
+        「制限なし」で上書きされるので、そのことも書く（保存は運用者の明示的な設定＝復旧経路）。
+      */}
+      {view.unreadableSettings.length > 0 ? (
+        <div data-testid="security-settings-unreadable" role="alert" className="notice notice--danger" style={{ marginBottom: 24 }}>
+          <strong>保存されているセキュリティ設定の一部を読めません（安全側で運用中）</strong>
+          <ul style={{ margin: '8px 0' }}>
+            {view.unreadableSettings.map((field) => (
+              <li key={field}>{unreadableSettingEffect(field)}</li>
+            ))}
+          </ul>
+          <p style={{ margin: 0 }}>
+            復旧するには、各項目を設定し直してください。IP 許可リストと PIN 必須は下のフォームで保存すると上書きされます
+            （IP 許可リストを空欄のまま保存すると制限なしになります）。緊急停止は「受付を再開する」を押すと解除として設定し直されます（停止を続ける場合は、その後もう一度緊急停止してください）。
+          </p>
+        </div>
+      ) : null}
 
       <div
         data-testid="emergency-section"
@@ -445,8 +570,26 @@ export function SecurityManager() {
           />
           受付端末の表示に PIN 許可を必須にする
         </label>
+        {/*
+          🔴 **保存されていた PIN を読めなかったことを、運用者が気づける形で出す (#1160 AC2)。**
+          読めない記録は fail closed（ユーザー判断）なので、PIN 必須のサイトでは受付端末が
+          **どの PIN でも許可されない（締め出し）**。画面を見なければ原因に辿り着けない。
+          文言は「今どうなっているか」と「何をすればよいか（この画面で PIN を設定し直す）」だけ。
+          読めなかった値そのもの・壊れ方は出さない（`rules/pii-secret-minimization.md`）。
+          PIN を送らない保存・緊急停止では記録は直らない（サーバが生のまま書き戻す）ので、
+          残っていても嘘にならない。
+        */}
+        {view.storedPinUnreadable ? (
+          <p data-testid="security-pin-unreadable" role="alert" style={{ margin: 0 }}>
+            保存されている PIN の設定を読めません。PIN を必須にしている場合、受付端末はどの PIN でも許可されません。
+            下の欄で PIN を設定し直して保存してください。
+          </p>
+        ) : null}
         <Field
-          label={`PIN を変更（空欄なら変更しない／現在: ${view.pinConfigured ? '設定済み' : '未設定'}）`}
+          label={`PIN を変更（空欄なら変更しない／現在: ${
+            // 🔴 読めない記録を「未設定（既定値が有効）」と言わない —— 既定値では通らない (#1160)。
+            view.storedPinUnreadable ? '読めません（どの PIN でも許可されません）' : view.pinConfigured ? '設定済み' : '未設定（既定値が有効）'
+          }）`}
           htmlFor="security-pin"
         >
           <input type="password" id="security-pin" data-testid="security-pin" value={pin} onChange={(e) => setPin(e.target.value)} style={input} />
