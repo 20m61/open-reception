@@ -16,6 +16,10 @@
 #   --infra          infra/test/** の CDK アサーションを含める（--pr 以上は既定で ON）
 #   --no-infra       infra/test/** を省く
 #   --e2e            Playwright E2E を含める
+#   --aws-local      ローカル AWS エミュレータ統合テストを含める（ADR 0010）
+#                    🔴 --full には**入れない**。エミュレータの green は release evidence
+#                    ではないし（#1103 条件 6）、マージゲートをエミュレータの起動に
+#                    依存させると偽の赤を招く。回すときは明示する。
 #   --secrets        gitleaks による秘密情報スキャンを含める
 #   --sast           semgrep による SAST を含める
 #   --audit          npm audit（本番依存）を含める
@@ -45,6 +49,7 @@ ROOT="$(pwd)"
 # ---- 引数解析 -------------------------------------------------------------
 RUN_TYPECHECK=1 RUN_LINT=1 RUN_UNIT=1 RUN_BUILD=0
 RUN_E2E=0 RUN_SECRETS=0 RUN_SAST=0 RUN_AUDIT=0 RUN_LH=0 RUN_VRM=0 RUN_INFRA=0
+RUN_AWS_LOCAL=0
 STRICT=0
 BOOTSTRAP=1
 SKIP_BY_SCOPE=1
@@ -60,6 +65,7 @@ for arg in "$@"; do
     --infra)      RUN_INFRA=1 ;;
     --no-infra)   RUN_INFRA=0 ;;
     --e2e)        RUN_E2E=1 ;;
+    --aws-local)  RUN_AWS_LOCAL=1 ;;
     --secrets)    RUN_SECRETS=1 ;;
     --vrm)        RUN_VRM=1 ;;
     --sast)       RUN_SAST=1 ;;
@@ -88,6 +94,14 @@ if [[ "${QUALITY_GATE_DRY_RUN:-0}" == "1" ]]; then
   done
   exit 0
 fi
+
+# 証拠ファイルへ載せる実行計画 (#1195)。上の --dry-run と同じ一覧から作る。
+GATE_EVIDENCE_PLAN=""
+for pair in "typecheck:$RUN_TYPECHECK" "lint:$RUN_LINT" "unit:$RUN_UNIT" "build:$RUN_BUILD" \
+            "infra:$RUN_INFRA" "e2e:$RUN_E2E" "secrets:$RUN_SECRETS" "sast:$RUN_SAST" \
+            "audit:$RUN_AUDIT" "lighthouse:$RUN_LH" "vrm:$RUN_VRM"; do
+  GATE_EVIDENCE_PLAN+="${pair%%:*}=${pair##*:} "
+done
 
 # ---- 実行ヘルパ -----------------------------------------------------------
 declare -a SUMMARY
@@ -226,6 +240,9 @@ echo "================================================================"
 # shellcheck source=lib/gate-stamp.sh
 . "${ROOT}/scripts/lib/gate-stamp.sh"
 GATE_FINGERPRINT="$(gate_tree_fingerprint || true)"
+# 証拠ファイルを開始時の記録で上書きする (#1195)。完走しなければ `exit` を持たないまま残り、
+# `scripts/publish-gate-evidence.ts` は「完走していない」として PASS と書かない。
+gate_evidence_begin "${TIER}" || true
 # 開始時の空きを控える (#721 レビュー m3)。終了時は掃除の**後**なので、
 # 周回中に沈んだピークが見えない。2 点あれば落ち込みに気づける。
 GATE_DISK_START="$(df -Pk "${TMPDIR:-/tmp}" 2>/dev/null | awk 'NR==2 {printf "%.1fG", $4/1048576}')"
@@ -249,19 +266,85 @@ GATE_DISK_START="$(df -Pk "${TMPDIR:-/tmp}" 2>/dev/null | awk 'NR==2 {printf "%.
 # リンク自身しか見ない）。また macOS の `os.tmpdir()` は `$TMPDIR` なので、対象も
 # `${TMPDIR:-/tmp}` に揃える。
 report_workspace_state() {
-  local tmp_root leftovers roots avail_kb avail_h
+  local tmp_root leftovers roots vitest_roots entries top warn_at avail_kb avail_h
   tmp_root="${TMPDIR:-/tmp}"
   # 素の cdk.out（別の生成元・古い残骸）と、周回 root（kill されたときに残る）を分けて数える。
   leftovers=$(find "${tmp_root}/" -maxdepth 1 -name 'cdk.out*' 2>/dev/null | wc -l | tr -d ' ')
   roots=$(find "${tmp_root}/" -maxdepth 1 -name 'open-reception-cdk-*' 2>/dev/null | wc -l | tr -d ' ')
+  # 🔴 **unit の隔離 root は 1 段下を数える (#1136)。** テストファイルごとの一時領域は
+  # `<tmp>/or-vitest/XXXXXX` に入るので、**直下の総数からは 1 件にしか見えない**
+  # —— つまり kill された run の残骸が、いちばん見せたい状況で不可視になる。
+  # ここだけ 1 段潜って数える（隔離の setup が 6 時間より古いものを掃く）。
+  vitest_roots=$(find "${tmp_root}/or-vitest" -maxdepth 1 -mindepth 1 2>/dev/null | wc -l | tr -d ' ')
+  # 🔴 **空き容量だけを見ていると、この族は見えない (#1136)。** 2026-09-17、
+  # `/tmp` に **18,726 エントリ**（うち 10,317 件が 1 つのテストファイル由来）が積もり、
+  # `capability-doc-sync.test.ts` が `Test timed out in 5000ms`（実測 8751ms）で落ちた。
+  # **ディスクは 22G 空いていたので、この節は「正常」と表示した** ——
+  # 単独実行では 663ms で通り、掃除したら green。#721 と同じ「症状が原因を指さない」型である。
+  # **件数も出す。** 数え上げではなくエントリ総数なので、新しい prefix が増えても追随する。
+  entries=$(find "${tmp_root}/" -maxdepth 1 -mindepth 1 2>/dev/null | wc -l | tr -d ' ')
   avail_kb=$(df -Pk "${tmp_root}" 2>/dev/null | awk 'NR==2 {print $4}')
   avail_h=$(df -Pk "${tmp_root}" 2>/dev/null | awk 'NR==2 {printf "%.1fG", $4/1048576}')
-  echo "  ${tmp_root} の空き: ${avail_h:-不明}（開始時: ${GATE_DISK_START:-不明}）"
-  echo "  残骸: cdk.out ${leftovers} 件 / 周回 root ${roots} 件"
+  # 🔴 **内訳はしきい値に関係なく常に出す（レビュー 1 周目 MAJOR 3）。**
+  # AC3 は「族をパターンで数える」だったが、当初はしきい値超えのときだけ出していたので、
+  # **issue が実測した 2,118 件の状況では何も出なかった** ——「多いのかどうか」が判断できない。
+  # find は 1 回で済むので常に出す。しきい値の役割は「⚠ を付けるか」だけに縮める。
+  #
+  # 🔴 **`-printf` は GNU 専用（同 MINOR 2）。** macOS の BSD find には無く、
+  # `2>/dev/null` で潰していたので **darwin では内訳が空のまま出ていた**。
+  # ローカル macOS は `--fast` の既定レーンなので、`sed` で basename を取る形に替える。
+  #
+  # 🔴 **族の括り方は 3 段（2026-09-17 実測。2 度作り替えた）。**
+  #
+  # 1. 最初は `sed 's/[0-9].*//'`（最初の数字で切る）。`mkdtemp` の接尾辞は英数 6 文字の
+  #    ランダムなので数字の位置が毎回違い、**数字を含まない接尾辞では族が砕ける** ——
+  #    実 `/tmp` 7,753 件でバケット 5,900・上位 3 の被覆 6%。
+  # 2. 次に「最後の `-`/`.` 以降を落とす」へ替えた。実 `/tmp` では改善したが、
+  #    🔴 **#1136 の当事者の族で退行した** —— 支配的な漏洩形は
+  #    `aws-preflight-test-<pid>-<rand>.json` で、拡張子だけが落ちて
+  #    `aws-preflight-test-13939-zwid…` がラベルに残り、**1,000 件の族が `1` と出た**
+  #    （レビュー 2 周目 MAJOR 2。合成 2,000 件で実測）。
+  #    **置き換えた側が守っていた分布を測らずに替えたのが誤り。**
+  # 3. 現在: 拡張子 → 末尾トークン → 数字列の順に落とす。両方の分布で正しく出る:
+  #    - `aws-preflight-test-<pid>-<rand>.json` × 1,000 → `1000 aws-preflight-test-#-`
+  #    - `gate-scope-<rand6>` × 300 → `300 gate-scope-`（2 と同等）
+  #    - `vitest`（区切り無し）→ `vitest`（空ラベルへ落とさない）
+  #    実 `/tmp` 1,322 件でバケット 44。
+  top=$(find "${tmp_root}/" -maxdepth 1 -mindepth 1 2>/dev/null \
+    | sed 's#.*/##' \
+    | sed -E 's/\.[A-Za-z0-9]{1,6}$//; s/([-._])[A-Za-z0-9]*$/\1/; s/[0-9]+/#/g' \
+    | sort | uniq -c | sort -rn | head -3 | tr '\n' ' ')
+  echo "  ${tmp_root} の空き: ${avail_h:-不明}（開始時: ${GATE_DISK_START:-不明}）/ エントリ: ${entries} 件"
+  echo "  内訳: ${top:-（無し）}"
+  echo "  残骸: cdk.out ${leftovers} 件 / 周回 root ${roots} 件 / unit 隔離 root ${vitest_roots} 件"
   # 🔴 **算術評価に非数値を渡さない。** `set -u` 下で `[[ unknown -lt N ]]` は
   # **unbound variable で即死**し、summary も判定も出ないまま終わる（レビュー m2 で実測）。
   if [[ "${avail_kb:-}" =~ ^[0-9]+$ ]] && [[ "${avail_kb}" -lt 2097152 ]]; then
     echo "  ⚠ 空きが 2GB を切っています。ビルドやブラウザが不可解に落ちる原因になります"
+  fi
+  # 🔴 **件数のしきい値 (#1136)。** 2026-09-17 の実測では 18,726 件で
+  # `tests/config/**` の 1 本が 5s の timeout に触れた（単独では 663ms）。
+  # 余裕を取って 5,000 件で警告する —— **容量が正常なまま赤くなる**型なので、
+  # 「資源を見た」で終わらせずここを読ませるのが目的である。
+  #
+  # 🔴 **注入できるようにした（レビュー 1 周目 MAJOR 2）。** テストが
+  # `expect(src).toContain('-gt 5000')` で縛っていたが、それは `-gt 500000` を
+  # **部分文字列として満たす** —— しきい値を 100 倍に緩める変更が無検出で通った。
+  # env で差し替えられるようにして、**両側を実走で**縛る。
+  # 🔴 しきい値の妥当性そのものは 1 点（18,726 件）しか測っていない。
+  # 害が出始める点がこれより下でも、上の「内訳を常に出す」が効く。
+  # 🔴 **非数値を算術比較へ渡さない（レビュー 2 周目 MAJOR 3）。** `set -u` 下で
+  # `[[ 7 -gt abc ]]` は **unbound variable でスクリプトごと死ぬ** —— しかも
+  # `finish()` が最初に呼ぶ関数なので、**全ステップ PASS のまま summary もスタンプも
+  # 出ないまま exit 1** になり、以後 `pr-gate-guard` が PR もマージも止める（実測）。
+  # 直上の `avail_kb` に同じガードが在るのに、注入できるようにした側に付け忘れていた。
+  # **不正値では黙って既定へ戻す**（ここで死なせる理由が無い）。
+  # `local` は関数先頭の宣言一覧に在るので、ここでは付けない（二重宣言だった）。
+  warn_at="${TEMP_ENTRY_WARN_THRESHOLD:-5000}"
+  [[ "${warn_at}" =~ ^[0-9]+$ ]] || warn_at=5000
+  if [[ "${entries:-}" =~ ^[0-9]+$ ]] && [[ "${entries}" -gt "${warn_at}" ]]; then
+    echo "  ⚠ ${tmp_root} のエントリが ${entries} 件あります（しきい値 ${warn_at}）。**容量が空いていても**"
+    echo "    unit が \`Test timed out\` で落ちる原因になります（#1136。単独実行で通るなら偽の赤）。"
   fi
   if [[ "${leftovers}" != "0" ]] || [[ "${roots}" != "0" ]]; then
     echo "  ⚠ 残骸があります。infra テストは正常終了・テスト失敗・SIGINT では残しませんが、"
@@ -281,6 +364,7 @@ finish() {
   echo "================================================================"
 
   if [[ "$FAILED" -eq 1 ]]; then
+    gate_evidence_finish "${TIER}" 1 0 ${SUMMARY[@]+"${SUMMARY[@]}"} || true
     echo "❌ quality-gate FAILED"
     exit 1
   fi
@@ -295,14 +379,46 @@ finish() {
     echo "    検査できなかったステップ: ${UNVERIFIED[*]}"
     echo "    落ちてはいませんが「通った」根拠がありません。前提を整えて再実行してください。"
     echo "    よくある原因: .open-next/ が src/ より古い → npm run build:open-next"
+    gate_evidence_finish "${TIER}" 1 0 ${SUMMARY[@]+"${SUMMARY[@]}"} || true
     exit 1
   fi
 
-  gate_write_stamp "${TIER}" "${GATE_FINGERPRINT}" "${GATE_SCOPE_RECORD:-${GATE_SCOPE:-code}}"
+  # スタンプ書き込みの終了コードを証拠へ運ぶ（git 外などで黙って書かない場合は 0 を返すので、
+  # これは「書こうとして失敗しなかった」の記録である。HEAD と clean は別に見ている）。
+  local stamped=0
+  gate_write_stamp "${TIER}" "${GATE_FINGERPRINT}" "${GATE_SCOPE_RECORD:-${GATE_SCOPE:-code}}" && stamped=1
+  gate_evidence_finish "${TIER}" 0 "${stamped}" ${SUMMARY[@]+"${SUMMARY[@]}"} || true
   echo "✅ quality-gate PASSED  (tier=${TIER} を green として記録しました)"
+  if [[ "${TIER}" == "full" ]]; then
+    echo "   PR へ証拠を載せる: npm run gate:evidence -- --number <PR 番号>（#1195）"
+  fi
   # **finish は必ず終端する。** 呼び出し口が複数あるので、戻ると呼び出し元の続きが
   # 走ってしまう（seam から呼んだときに全ステップが実行された）。
   exit 0
+}
+
+# run_e2e_counting_flaky <cmd...>
+#
+# e2e を走らせ、playwright の集計の `N flaky` を summary へ別の行として出す (#1195)。
+#
+# 🔴 **retry で通った試行は、アサーションに一度も届いていない。** playwright は flaky を
+# 含んでも exit 0 を返すので、`PASS  e2e` だけでは「全部 1 回で通った」と区別できない
+# （CLAUDE.md「緑を読むときは flaky を数える」）。ゲートの合否は変えない（赤にするかは
+# 運用の判断）が、証拠の判定（`gate-evidence.ts`）は `FLAKY` の行があれば PASS と書かない。
+# 終了コードは e2e のものをそのまま返す。
+run_e2e_counting_flaky() {
+  local log code flaky
+  log="$(mktemp)"
+  "$@" 2>&1 | tee "${log}"
+  code=${PIPESTATUS[0]}
+  flaky="$(gate_count_flaky < "${log}")"
+  rm -f "${log}"
+  if [[ "${code}" -eq 0 && "${flaky}" == "unknown" ]]; then
+    SUMMARY+=("FLAKY  e2e (playwright)  (集計を読めず flaky を数えられなかった)")
+  elif [[ "${flaky}" != "0" && "${flaky}" != "unknown" ]]; then
+    SUMMARY+=("FLAKY  e2e (playwright)  (${flaky} 件が retry で通った)")
+  fi
+  return "${code}"
 }
 
 # ---- 自己テスト用の seam --------------------------------------------------
@@ -319,6 +435,9 @@ if [[ -n "${QUALITY_GATE_SELFTEST:-}" ]]; then
     # #713: **実際の呼び出し経路**（終了コードを拾う 1 行を含む）を通す。
     # 検出器の中身は `QUALITY_GATE_DETECTOR_CMD` で差し替える。
     change-risk-invoke) run_change_risk_detector ;;
+    # #1195: e2e の flaky の数え方を、**本物の配線**（run_e2e_counting_flaky）で通す。
+    # 集計の出力は QUALITY_GATE_E2E_FIXTURE（ファイル）から流す。
+    e2e-flaky) step "e2e (playwright)" run_e2e_counting_flaky cat "${QUALITY_GATE_E2E_FIXTURE:?}" ;;
     *) echo "unknown QUALITY_GATE_SELFTEST: ${QUALITY_GATE_SELFTEST}" >&2; exit 2 ;;
   esac
   finish
@@ -602,6 +721,19 @@ fi
 # --full を回せない環境を、e2e が 1ms 全滅する前に名指しする (#838 AC5)。
 # バイナリ欠落は「任意ツール未導入の SKIP」ではなく「検査できなかった」なので
 # skip_unverified（記録しない）。gitleaks/semgrep は従来どおり skip_or_fail。
+if [[ "$RUN_AWS_LOCAL" -eq 1 ]]; then
+  # ローカル AWS エミュレータ（既定 MiniStack / Docker 不要）に対して、本番の
+  # DynamoDB backend をそのまま通す。install → start → bootstrap → seed → test を
+  # `aws-local.sh test` が 1 コマンドで行う。
+  if ! command -v python3 >/dev/null 2>&1; then
+    skip_or_fail "aws local integration" "python3 が無い（エミュレータは pure Python）"
+  elif ! command -v aws >/dev/null 2>&1; then
+    skip_or_fail "aws local integration" "aws CLI が無い（bootstrap に必要）"
+  else
+    step "aws local integration (${AWS_RUNTIME:-ministack})" npm run --silent aws:local:test
+  fi
+fi
+
 if [[ "$RUN_E2E" -eq 1 || "$RUN_VRM" -eq 1 ]]; then
   if ! gate_tool_playwright_chromium_present; then
     echo ""
@@ -615,7 +747,7 @@ if [[ "$RUN_E2E" -eq 1 ]]; then
   if scope_skips e2e; then scope_skip "e2e (playwright)"
   elif ! gate_tool_playwright_chromium_present; then
     skip_unverified "e2e (playwright)" "playwright chromium not installed (npx playwright install chromium)"
-  else step "e2e (playwright)" npm run --silent test:e2e; fi
+  else step "e2e (playwright)" run_e2e_counting_flaky npm run --silent test:e2e; fi
 fi
 
 if [[ "$RUN_SECRETS" -eq 1 ]]; then

@@ -2,9 +2,9 @@
 /**
  * PR を **REST だけ**で squash マージする (issue #702)。
  *
- * ## なぜ `gh pr merge` を呼ばないのか
+ * ## なぜ GitHub CLI (`gh`) を呼ばないのか
  *
- * クラウドのサンドボックス（Claude Code on the web / Routine）の `gh` は、PR レビュー用の
+ * 当初の理由は GraphQL だった。クラウドのサンドボックスの `gh` は PR レビュー用の
  * pinned な操作セットしか GraphQL を通さない。2026-08-18 の PR #701 のマージで実測:
  *
  * ```
@@ -15,7 +15,12 @@
  * ```
  *
  * PR 作成を REST へ移した #678 と**同じ理由が同じようにマージ側にも当てはまった**。
- * 開発がクラウド既定になった以上、マージも全周回の通り道なのでここへ寄せる。
+ *
+ * 🔴 **2026-09-15、その前提ごと外れた (#1117)。** Claude Code on the web の
+ * サンドボックスには **`gh` が無い**ので、`gh api` へ寄せた回避策も成立しない。
+ * したがって **CLI ごとやめ、REST を HTTP でそのまま叩く**（`scripts/lib/github-api.ts`）。
+ * 作成側と**同じ 1 経路**に揃える ―― 経路が 2 つあると、片方だけが動く環境で
+ * 「動いたはず」の誤読が起きる。
  *
  * ## 使い方
  *
@@ -36,17 +41,13 @@
  * マージの主経路を移したことがそのままゲートの抜け道にならないようにするため
  * （#678 で作成側について同じ手当てをした）。
  */
-import { execFileSync } from 'node:child_process';
-import { describeCommandFailure } from '../src/domain/governance/command-failure';
-import { parseGitHubRepo, pullMergeArgs } from '../src/domain/governance/git-base';
-
-function run(cmd: string, args: string[]): string {
-  try {
-    return execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-  } catch (e) {
-    throw new Error(describeCommandFailure(`${cmd} ${args.join(' ')}`, e));
-  }
-}
+import { callGitHubJson, resolveRepoFromOrigin } from './lib/github-api';
+import type { GitHubRepo } from '../src/domain/governance/git-base';
+import {
+  pullMergeRequest,
+  pullReadRequest,
+  type GitHubRequest,
+} from '../src/domain/governance/github-rest';
 
 function readOption(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -70,22 +71,11 @@ function main(): number {
   }
   const pullNumber = Number(raw);
 
-  let remoteUrl: string;
+  let repo: GitHubRepo;
+  let mergeRequest: GitHubRequest;
   try {
-    remoteUrl = run('git', ['ls-remote', '--get-url', 'origin']);
-  } catch (e) {
-    console.error(`❌ origin の URL を取得できませんでした: ${e instanceof Error ? e.message : String(e)}`);
-    return 2;
-  }
-  const repo = parseGitHubRepo(remoteUrl);
-  if (repo === undefined) {
-    console.error(`❌ origin の URL から owner/repo を読み取れませんでした: ${remoteUrl}`);
-    return 2;
-  }
-
-  let mergeArgs: string[];
-  try {
-    mergeArgs = pullMergeArgs(repo, pullNumber);
+    repo = resolveRepoFromOrigin();
+    mergeRequest = pullMergeRequest(repo, pullNumber);
   } catch (e) {
     console.error(`❌ ${e instanceof Error ? e.message : String(e)}`);
     return 2;
@@ -93,26 +83,25 @@ function main(): number {
 
   let mergeError: string | undefined;
   try {
-    console.error(run('gh', mergeArgs));
+    console.error(JSON.stringify(callGitHubJson<unknown>(mergeRequest)));
   } catch (e) {
     // ここで終わらせない。**既にマージ済みなら目的は達成されている**（再実行は 405 になる）。
     mergeError = e instanceof Error ? e.message : String(e);
   }
 
   // 🔴 **マージできたと言われても信じない。** 状態を REST で引き直す。
-  const owner = encodeURIComponent(repo.owner);
-  const name = encodeURIComponent(repo.repo);
-  let merged: string;
+  // `merged !== true` を落とす向きに倒す（読めなかったことを「マージ済み」と読まない）。
+  let merged: boolean;
   try {
-    merged = run('gh', ['api', `repos/${owner}/${name}/pulls/${pullNumber}`, '--jq', '.merged']);
+    merged = callGitHubJson<{ merged?: boolean }>(pullReadRequest(repo, pullNumber)).merged === true;
   } catch (e) {
     console.error(`❌ マージ結果を確認できませんでした: ${e instanceof Error ? e.message : String(e)}`);
     if (mergeError !== undefined) console.error(`   マージ時のエラー: ${mergeError}`);
     return 4;
   }
 
-  if (merged !== 'true') {
-    console.error(`❌ PR #${pullNumber} はマージされていません（merged=${merged}）。`);
+  if (!merged) {
+    console.error(`❌ PR #${pullNumber} はマージされていません。`);
     if (mergeError !== undefined) console.error(`   理由: ${mergeError}`);
     return 4;
   }

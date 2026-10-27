@@ -14,10 +14,9 @@
  * コメントが 2 度書いていることを、3 度目に踏んだ。
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { makeSharedTempDir } from '../helpers/temp';
 
 const HOOK = resolve('scripts/hooks/pr-gate-guard.sh');
 
@@ -35,7 +34,7 @@ const HOOK = resolve('scripts/hooks/pr-gate-guard.sh');
 let repoWithoutStamp: string;
 
 beforeAll(() => {
-  repoWithoutStamp = mkdtempSync(join(tmpdir(), 'gate-guard-'));
+  repoWithoutStamp = makeSharedTempDir('gate-guard-');
   execFileSync('git', ['init', '-q'], { cwd: repoWithoutStamp });
 });
 

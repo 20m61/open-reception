@@ -33,6 +33,7 @@ import type { Collection, CollectionOpts } from '@/lib/data/backend';
 import { DataBackedAdminUserRepository } from './admin-user-store';
 import type {
   AdminUserRepository,
+  DeviceFieldChanges,
   DeviceRepository,
   RepoResult,
   SiteRepository,
@@ -178,6 +179,32 @@ class DataBackedDeviceRepository implements DeviceRepository {
     await this.col().put(device);
   }
 
+  async updateDeviceFields(deviceId: DeviceId, changes: DeviceFieldChanges): Promise<boolean> {
+    // expected なし = 無条件の部分更新。status / credentialGeneration は書かない（巻き戻さない）。
+    return this.col().updateIf(String(deviceId), changes, {});
+  }
+
+  async changeDeviceStatus(
+    deviceId: DeviceId,
+    change: {
+      expectedGeneration: number | undefined;
+      status: Device['status'];
+      credentialGeneration?: number;
+      updatedAt: string;
+    },
+  ): Promise<boolean> {
+    const changes: Partial<Device> = {
+      status: change.status,
+      enrollmentTokenId: undefined,
+      updatedAt: change.updatedAt,
+    };
+    if (change.credentialGeneration !== undefined)
+      changes.credentialGeneration = change.credentialGeneration;
+    return this.col().updateIf(String(deviceId), changes, {
+      credentialGeneration: change.expectedGeneration,
+    });
+  }
+
   async touchLastSeen(deviceId: DeviceId, lastSeenAt: string): Promise<void> {
     // lastSeenAt のみ部分更新（expected なし = 無条件）。存在しない id は updateIf が false で no-op。
     await this.col().updateIf(String(deviceId), { lastSeenAt }, {});
@@ -187,12 +214,14 @@ class DataBackedDeviceRepository implements DeviceRepository {
     deviceId: DeviceId,
     expectedJti: string,
     lastSeenAt: string,
+    generation: { expected: number | undefined; next: number },
   ): Promise<boolean> {
-    // 条件付き部分更新: enrollmentTokenId === expectedJti のときのみ消去 + lastSeenAt 更新。
+    // 条件付き部分更新: enrollmentTokenId === expectedJti（かつ世代が読んだ時点のまま）のときのみ
+    // 消去 + lastSeenAt 更新 + 端末証明の世代を上げる (#1237)。
     return this.col().updateIf(
       String(deviceId),
-      { enrollmentTokenId: undefined, lastSeenAt },
-      { enrollmentTokenId: expectedJti },
+      { enrollmentTokenId: undefined, lastSeenAt, credentialGeneration: generation.next },
+      { enrollmentTokenId: expectedJti, credentialGeneration: generation.expected },
     );
   }
 }

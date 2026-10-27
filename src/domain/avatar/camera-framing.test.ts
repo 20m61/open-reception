@@ -104,10 +104,12 @@ describe('resolveCameraFraming / 非現実的なスケール (#578 レビュー 
     expect(f.position.z).toBeGreaterThan(NEAR);
   });
 
-  it('実測の既定モデル（1.3035m）は素通しする（クランプが常用域を歪めない）', () => {
-    // public/avatar/default.vrm の head ワールド Y を実測した値。
-    const f = resolveCameraFraming({ headHeight: 1.3035, aspect: 3 / 4 });
-    expect(f.position.y).toBeCloseTo(1.3035, 4);
+  it('実測の既定モデル（1.4046m）は素通しする（クランプが常用域を歪めない）', () => {
+    // public/avatar/default.vrm（receptiom）の head ワールド Y を実測した値。
+    // glTF の親子を辿って translation の Y を積算した（回転・拡大なし）。同じ方法で旧既定
+    // （Rose）を測ると旧値 1.3035 を再現する。vrm:check の data-camera-framing は eye=1.40。
+    const f = resolveCameraFraming({ headHeight: 1.4046, aspect: 3 / 4 });
+    expect(f.position.y).toBeCloseTo(1.4046, 4);
   });
 });
 
