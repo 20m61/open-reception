@@ -55,7 +55,31 @@ export type BridgeCommittedTurnResult = {
 export function bridgeCommittedTurn(input: BridgeCommittedTurnInput): BridgeCommittedTurnResult {
   const thresholds = input.thresholds ?? DEFAULT_ENTITY_RESOLUTION_THRESHOLDS;
   const resolution = resolveEntities(input.directory, input.text);
-  const confirmation = decideEntityConfirmation(input.sttConfidence, resolution.top3, thresholds, input.t);
+  const absent =
+    input.unavailableDirectory === undefined ? null : resolveEntities(input.unavailableDirectory, input.text);
+
+  /*
+   * 🔴 不在の担当者も「近い候補」の比較相手に入れる (#1284)。
+   *
+   * 在席の辞書だけで曖昧さを判定すると、不在の人が比較相手から消え、同じ姓の在席者が
+   * 単独の高信頼候補として**復唱なしで自動確定**していた（来訪者が呼びたい人と別人を呼ぶ）。
+   * 選択肢として渡すのは引き続き在席者だけで、不在の人は判定の比較相手として見るだけ。
+   *
+   * 不在の人の方がはっきり一致するなら、在席の別人は選ばず、不在の名指しとして扱う。
+   * 同点は不在側へ倒さない（在席者を呼びたい来訪者に「不在です」と言わない）。下の合算で
+   * 曖昧と判定され、復唱確認へ回る。
+   */
+  const absentTop1 = absent?.top1 ?? null;
+  if (absentTop1 !== null && absentTop1.entityConfidence > (resolution.top1?.entityConfidence ?? 0)) {
+    return unavailableResult(input, thresholds, absentTop1, mergeTop3(absent?.top3 ?? [], resolution.top3));
+  }
+
+  const confirmation = decideEntityConfirmation(
+    input.sttConfidence,
+    mergeTop3(resolution.top3, absent?.top3 ?? []),
+    thresholds,
+    input.t,
+  );
 
   if (confirmation === null) {
     // 高信頼 → 自動採用（復唱なし）。top1 を選択対象として持ち回す。
@@ -63,16 +87,8 @@ export function bridgeCommittedTurn(input: BridgeCommittedTurnInput): BridgeComm
   }
 
   if (resolution.top1 === null) {
-    /*
-     * 在席者に当たらなかった。**不在の相手を名指しされていないか**を見てから聞き直す (#803)。
-     *
-     * これを見ないと、タッチが「本日不在です」と理由を言う場面で音声だけが黙り、
-     * 来訪者には「聞き取れなかった」に見えて**同じ名前を言い直し続ける**。
-     */
-    const unavailable = matchUnavailable(input, thresholds);
-    if (unavailable !== null) return unavailable;
-
-    // 候補ゼロ → 復唱できる対象が無いので聞き直し。
+    // 在席にも不在にも当たらなかった（不在だけに当たった場合は上で不在の名指しとして返している。
+    // #803: 不在を見ずに聞き直すと、来訪者は同じ名前を言い直し続ける）。復唱できる対象が無いので聞き直し。
     return { event: { type: 'listenStart' }, resolved: null };
   }
 
@@ -91,34 +107,28 @@ export function bridgeCommittedTurn(input: BridgeCommittedTurnInput): BridgeComm
 }
 
 /**
- * 不在の担当者に当たったか。当たっていなければ `null`（呼び出し側は従来どおり聞き直す）。
+ * 不在の担当者を名指しされたときの結果 (#803)。
  *
  * 🔴 **低信頼で「不在です」と断定しない。** 聞き違えた名前に対して「◯◯は本日不在です」と
  * 言うのは、このプロジェクトが繰り返し塞いできた「果たせないことを言う」の裏返し —— **事実で
  * ないことを言う**形になる。断定は高信頼のときだけで、低信頼なら既存の復唱を挟んで来訪者に
  * 確かめてもらう（`unavailable: true` を載せ、確定しても選択へは進ませない）。
+ * 確信の判定には、在席の候補も比較相手として含めた top3 を使う（#1284: 在席の近い名前を
+ * 不在と断定しない）。
  *
  * 🔴 **どちらの場合も `resolved` は null。** タッチが押させない相手を音声が呼べてはいけない。
  */
-function matchUnavailable(
+function unavailableResult(
   input: BridgeCommittedTurnInput,
   thresholds: EntityResolutionThresholds,
-): BridgeCommittedTurnResult | null {
-  if (input.unavailableDirectory === undefined) return null;
-
-  const resolution = resolveEntities(input.unavailableDirectory, input.text);
-  if (resolution.top1 === null) return null;
-
-  const confirmation = decideEntityConfirmation(
-    input.sttConfidence,
-    resolution.top3,
-    thresholds,
-    input.t,
-  );
+  top1: EntityCandidate,
+  top3: readonly EntityCandidate[],
+): BridgeCommittedTurnResult {
+  const confirmation = decideEntityConfirmation(input.sttConfidence, top3, thresholds, input.t);
 
   if (confirmation === null) {
     return {
-      event: { type: 'heardUnavailable', displayName: resolution.top1.displayName },
+      event: { type: 'heardUnavailable', displayName: top1.displayName },
       resolved: null,
     };
   }
@@ -126,11 +136,22 @@ function matchUnavailable(
   return {
     event: {
       type: 'heardNeedsConfirmation',
-      displayName: resolution.top1.displayName,
+      displayName: top1.displayName,
       reason: confirmation.reason,
-      kind: resolution.top1.kind === 'department' ? 'department' : 'staff',
+      kind: top1.kind === 'department' ? 'department' : 'staff',
       unavailable: true,
     },
     resolved: null,
   };
+}
+
+/**
+ * 2 つの候補列を確信度の降順で合わせ、上位 3 件を返す。同点では先に渡した列の候補を前に置く
+ * （`Array.prototype.sort` は安定）。
+ */
+function mergeTop3(
+  first: readonly EntityCandidate[],
+  second: readonly EntityCandidate[],
+): EntityCandidate[] {
+  return [...first, ...second].sort((a, b) => b.entityConfidence - a.entityConfidence).slice(0, 3);
 }
