@@ -41,6 +41,13 @@ describe('dev のアカウント ID の置き場所 (#1238)', () => {
     expect(holders.filter((f) => f.startsWith(POLICY_DIR)).length).toBeGreaterThanOrEqual(5);
   });
 
+  it('negative test のスクリプトは、検査するアカウントをこの module から取る', () => {
+    // 変更前から、ここを別の値に変えても既存のテストは落ちなかった（変異 M5 が生存）。配線を直接縛る。
+    const source = readFileSync(join(ROOT, 'scripts/aws-negative-tests.ts'), 'utf8');
+    expect(source).toMatch(/^const ACCOUNT = DEV_ACCOUNT_ID;$/m);
+    expect(source).toContain("from '../src/domain/governance/dev-account'");
+  });
+
   it('短命 credential の発行スクリプトは、値を書かずにこの module から読む', () => {
     const script = readFileSync(join(ROOT, 'scripts/aws-issue-credentials.sh'), 'utf8');
     expect(script).not.toMatch(/\b\d{12}\b/);
