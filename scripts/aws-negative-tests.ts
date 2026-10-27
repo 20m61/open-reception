@@ -37,8 +37,9 @@ import {
   type SimulationPrincipal,
   type SimulationRegion,
 } from '../src/domain/governance/negative-test-outcome';
+import { DEV_ACCOUNT_ID } from '../src/domain/governance/dev-account';
 
-const ACCOUNT = '822063948773';
+const ACCOUNT = DEV_ACCOUNT_ID;
 
 /**
  * 🔴 **Permissions Boundary を simulate へ明示的に渡す (#680 R10 / D)。**

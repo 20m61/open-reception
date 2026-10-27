@@ -37,6 +37,7 @@ import {
 } from '../../src/domain/governance/cfn-generated-name';
 import { REVIEWED_CDK_GENERATED_LOGICAL_IDS } from '../../src/domain/governance/deploy-diff-gate';
 import { appWithoutAssetStaging } from './support/app-without-asset-staging';
+import { DEV_ACCOUNT_ID } from '../../src/domain/governance/dev-account';
 
 // `.open-next/` が **在るだけ**では足りない（古いと WebStack の synth が凍結ガードで throw
 // する）。`fresh` のときだけ実 WebStack を synth し、それ以外は理由付きで describe ごと
@@ -49,7 +50,7 @@ if (!OPEN_NEXT_READY) {
   );
 }
 
-const ACCOUNT = '822063948773';
+const ACCOUNT = DEV_ACCOUNT_ID;
 /**
  * CDK は boundary ARN を partition 疑似パラメータ込みで組み立てるため、合成後の
  * テンプレートでは平文文字列ではなく `Fn::Join` になる。**形ごと固定する** ——

@@ -5,11 +5,12 @@ import {
   DEV_DEPLOY_PROMOTION_BRANCH,
   DevDeployBrokerStack,
 } from '../lib/stacks/dev-deploy-broker-stack';
+import { DEV_ACCOUNT_ID } from '../../src/domain/governance/dev-account';
 
 const synth = () => {
   const app = new cdk.App();
   const stack = new DevDeployBrokerStack(app, 'TestDevDeployBroker', {
-    env: { account: '822063948773', region: 'ap-northeast-1' },
+    env: { account: `${DEV_ACCOUNT_ID}`, region: 'ap-northeast-1' },
   });
   return Template.fromStack(stack);
 };

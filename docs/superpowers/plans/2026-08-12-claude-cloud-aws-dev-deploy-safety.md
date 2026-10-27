@@ -35,7 +35,7 @@ Task 3 / 4 / 5 / 7 の冒頭に個別のバナーを置いた。
 
 - 設計の正本は `docs/superpowers/specs/2026-08-12-claude-cloud-aws-dev-deploy-safety-design.md`。**矛盾したら spec が正**。
 - **本計画では `cdk deploy` を一度も実行しない。** IAM の実作成・bootstrap も行わない（人間が runbook で実行する）。
-- AWS アカウント: `822063948773` / リージョン `ap-northeast-1` + `us-east-1`。
+- AWS アカウント: `<DEV_ACCOUNT_ID>` / リージョン `ap-northeast-1` + `us-east-1`。
 - CDK qualifier: **`orcloud01`**（9 文字固定）。Toolkit スタック名 `CDKToolkit-orcloud01`。
 - IAM 名称: boundary = `OpenReceptionClaudeBoundary` / entry role = `OpenReceptionClaudeDeploy-dev` / exec policy = `OpenReceptionClaudeCfnExec-dev`。
 - 許可スタック名パターン: `OpenReception-<Stack>-dev`（正規表現 `^OpenReception-[A-Za-z0-9]+-dev$`）。
@@ -461,8 +461,8 @@ import {
 } from './deploy-preflight';
 
 const ok = (over: Partial<PreflightObservation> = {}): PreflightObservation => ({
-  callerArn: 'arn:aws:sts::822063948773:assumed-role/OpenReceptionClaudeDeploy-dev/cloud-session',
-  accountId: '822063948773',
+  callerArn: 'arn:aws:sts::<DEV_ACCOUNT_ID>:assumed-role/OpenReceptionClaudeDeploy-dev/cloud-session',
+  accountId: '<DEV_ACCOUNT_ID>',
   region: 'ap-northeast-1',
   qualifier: 'orcloud01',
   environment: 'dev',
@@ -490,14 +490,14 @@ describe('1 つでも不一致なら止める', () => {
     ['prod 環境', { environment: 'prod' }, 'environment'],
     [
       '別ロール（人間の CDK user）',
-      { callerArn: 'arn:aws:iam::822063948773:user/CDK' },
+      { callerArn: 'arn:aws:iam::<DEV_ACCOUNT_ID>:user/CDK' },
       'callerArn',
     ],
     [
       '似た名前のロール（部分一致で通さない）',
       {
         callerArn:
-          'arn:aws:sts::822063948773:assumed-role/OpenReceptionClaudeDeploy-dev-evil/x',
+          'arn:aws:sts::<DEV_ACCOUNT_ID>:assumed-role/OpenReceptionClaudeDeploy-dev-evil/x',
       },
       'callerArn',
     ],
@@ -523,7 +523,7 @@ describe('1 つでも不一致なら止める', () => {
     const verdict = evaluatePreflight(ok({ accountId: '111122223333' }), DEFAULT_PREFLIGHT_REQUIREMENT);
     const detail = verdict.failures[0]!.detail;
     expect(detail).toContain('111122223333');
-    expect(detail).toContain('822063948773');
+    expect(detail).toContain('<DEV_ACCOUNT_ID>');
   });
 });
 
@@ -603,7 +603,7 @@ export type PreflightRequirement = {
 };
 
 export const DEFAULT_PREFLIGHT_REQUIREMENT: PreflightRequirement = {
-  accountId: '822063948773',
+  accountId: '<DEV_ACCOUNT_ID>',
   // us-east-1 のスタックは CDK CLI が内部で扱う。CLI 自身の region は ap-northeast-1 に固定する。
   allowedRegions: ['ap-northeast-1'],
   qualifier: 'orcloud01',
@@ -786,7 +786,7 @@ describe('auditPolicyDocument', () => {
           Condition: {
             StringEquals: {
               'iam:PermissionsBoundary':
-                'arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary',
+                'arn:aws:iam::<DEV_ACCOUNT_ID>:policy/OpenReceptionClaudeBoundary',
             },
           },
         },
@@ -904,7 +904,7 @@ describe('claude-deploy-entry-trust.json', () => {
 
   it('user/CDK だけを信頼し ExternalId を要求する', () => {
     const raw = JSON.stringify(doc);
-    expect(raw).toContain('arn:aws:iam::822063948773:user/CDK');
+    expect(raw).toContain('arn:aws:iam::<DEV_ACCOUNT_ID>:user/CDK');
     expect(raw).toContain('sts:ExternalId');
   });
 
@@ -1012,7 +1012,7 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
     {
       "Sid": "OnlyHumanCdkUserWithExternalId",
       "Effect": "Allow",
-      "Principal": { "AWS": "arn:aws:iam::822063948773:user/CDK" },
+      "Principal": { "AWS": "arn:aws:iam::<DEV_ACCOUNT_ID>:user/CDK" },
       "Action": "sts:AssumeRole",
       "Condition": {
         "StringEquals": { "sts:ExternalId": "open-reception-claude-cloud-dev" }
@@ -1042,14 +1042,14 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
       "Effect": "Allow",
       "Action": "sts:AssumeRole",
       "Resource": [
-        "arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1",
-        "arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-us-east-1",
-        "arn:aws:iam::822063948773:role/cdk-orcloud01-file-publishing-role-822063948773-ap-northeast-1",
-        "arn:aws:iam::822063948773:role/cdk-orcloud01-file-publishing-role-822063948773-us-east-1",
-        "arn:aws:iam::822063948773:role/cdk-orcloud01-image-publishing-role-822063948773-ap-northeast-1",
-        "arn:aws:iam::822063948773:role/cdk-orcloud01-image-publishing-role-822063948773-us-east-1",
-        "arn:aws:iam::822063948773:role/cdk-orcloud01-lookup-role-822063948773-ap-northeast-1",
-        "arn:aws:iam::822063948773:role/cdk-orcloud01-lookup-role-822063948773-us-east-1"
+        "arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-ap-northeast-1",
+        "arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-us-east-1",
+        "arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-file-publishing-role-<DEV_ACCOUNT_ID>-ap-northeast-1",
+        "arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-file-publishing-role-<DEV_ACCOUNT_ID>-us-east-1",
+        "arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-image-publishing-role-<DEV_ACCOUNT_ID>-ap-northeast-1",
+        "arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-image-publishing-role-<DEV_ACCOUNT_ID>-us-east-1",
+        "arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-lookup-role-<DEV_ACCOUNT_ID>-ap-northeast-1",
+        "arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-lookup-role-<DEV_ACCOUNT_ID>-us-east-1"
       ]
     },
     {
@@ -1057,8 +1057,8 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
       "Effect": "Deny",
       "Action": "sts:AssumeRole",
       "Resource": [
-        "arn:aws:iam::822063948773:role/cdk-hnb659fds-*",
-        "arn:aws:iam::822063948773:role/cdk-staging-*"
+        "arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-hnb659fds-*",
+        "arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-staging-*"
       ]
     },
     {
@@ -1066,9 +1066,9 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
       "Effect": "Allow",
       "Action": "cloudformation:DescribeStacks",
       "Resource": [
-        "arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/*",
-        "arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-WebMonitoring-dev/*",
-        "arn:aws:cloudformation:us-east-1:822063948773:stack/OpenReception-CfMon-dev/*"
+        "arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-Web-dev/*",
+        "arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-WebMonitoring-dev/*",
+        "arn:aws:cloudformation:us-east-1:<DEV_ACCOUNT_ID>:stack/OpenReception-CfMon-dev/*"
       ]
     },
     {
@@ -1076,8 +1076,8 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
       "Effect": "Allow",
       "Action": "cloudformation:DescribeChangeSet",
       "Resource": [
-        "arn:aws:cloudformation:ap-northeast-1:822063948773:changeSet/claude-gate-*/*",
-        "arn:aws:cloudformation:us-east-1:822063948773:changeSet/claude-gate-*/*"
+        "arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:changeSet/claude-gate-*/*",
+        "arn:aws:cloudformation:us-east-1:<DEV_ACCOUNT_ID>:changeSet/claude-gate-*/*"
       ]
     },
     {
@@ -1152,7 +1152,7 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
       "Resource": "*",
       "Condition": {
         "StringEquals": {
-          "iam:PermissionsBoundary": "arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary"
+          "iam:PermissionsBoundary": "arn:aws:iam::<DEV_ACCOUNT_ID>:policy/OpenReceptionClaudeBoundary"
         }
       }
     },
@@ -1161,13 +1161,13 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
       "Effect": "Deny",
       "Action": "cloudformation:*",
       "Resource": [
-        "arn:aws:cloudformation:*:822063948773:stack/nodi-*/*",
-        "arn:aws:cloudformation:*:822063948773:stack/salon-loop-*/*",
-        "arn:aws:cloudformation:*:822063948773:stack/Kiaff*/*",
-        "arn:aws:cloudformation:*:822063948773:stack/CDKToolkit/*",
-        "arn:aws:cloudformation:*:822063948773:stack/CDKToolkit-staging/*",
-        "arn:aws:cloudformation:*:822063948773:stack/OpenReception-*-staging/*",
-        "arn:aws:cloudformation:*:822063948773:stack/OpenReception-*-prod/*"
+        "arn:aws:cloudformation:*:<DEV_ACCOUNT_ID>:stack/nodi-*/*",
+        "arn:aws:cloudformation:*:<DEV_ACCOUNT_ID>:stack/salon-loop-*/*",
+        "arn:aws:cloudformation:*:<DEV_ACCOUNT_ID>:stack/Kiaff*/*",
+        "arn:aws:cloudformation:*:<DEV_ACCOUNT_ID>:stack/CDKToolkit/*",
+        "arn:aws:cloudformation:*:<DEV_ACCOUNT_ID>:stack/CDKToolkit-staging/*",
+        "arn:aws:cloudformation:*:<DEV_ACCOUNT_ID>:stack/OpenReception-*-staging/*",
+        "arn:aws:cloudformation:*:<DEV_ACCOUNT_ID>:stack/OpenReception-*-prod/*"
       ]
     },
     {
@@ -1175,8 +1175,8 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
       "Effect": "Deny",
       "Action": ["dynamodb:*", "s3:*"],
       "Resource": [
-        "arn:aws:dynamodb:*:822063948773:table/nodi-*",
-        "arn:aws:dynamodb:*:822063948773:table/salon-loop-*",
+        "arn:aws:dynamodb:*:<DEV_ACCOUNT_ID>:table/nodi-*",
+        "arn:aws:dynamodb:*:<DEV_ACCOUNT_ID>:table/salon-loop-*",
         "arn:aws:s3:::nodi-*",
         "arn:aws:s3:::nodi-*/*",
         "arn:aws:s3:::salon-loop-*",
@@ -1192,8 +1192,8 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
       "Effect": "Deny",
       "Action": ["sts:AssumeRole", "iam:PassRole"],
       "Resource": [
-        "arn:aws:iam::822063948773:role/cdk-hnb659fds-*",
-        "arn:aws:iam::822063948773:role/cdk-staging-*"
+        "arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-hnb659fds-*",
+        "arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-staging-*"
       ]
     },
     {
@@ -1203,7 +1203,7 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
       "Resource": "*",
       "Condition": {
         "StringNotEquals": {
-          "iam:PermissionsBoundary": "arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary"
+          "iam:PermissionsBoundary": "arn:aws:iam::<DEV_ACCOUNT_ID>:policy/OpenReceptionClaudeBoundary"
         }
       }
     },
@@ -1222,7 +1222,7 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
         "iam:SetDefaultPolicyVersion",
         "iam:DeletePolicy"
       ],
-      "Resource": "arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary"
+      "Resource": "arn:aws:iam::<DEV_ACCOUNT_ID>:policy/OpenReceptionClaudeBoundary"
     },
     {
       "Sid": "DenyPrincipalCreationAndOrgChanges",
@@ -1305,7 +1305,7 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
       "Resource": "*",
       "Condition": {
         "StringEquals": {
-          "iam:PermissionsBoundary": "arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary"
+          "iam:PermissionsBoundary": "arn:aws:iam::<DEV_ACCOUNT_ID>:policy/OpenReceptionClaudeBoundary"
         }
       }
     },
@@ -1314,13 +1314,13 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
       "Effect": "Deny",
       "Action": "cloudformation:*",
       "Resource": [
-        "arn:aws:cloudformation:*:822063948773:stack/nodi-*/*",
-        "arn:aws:cloudformation:*:822063948773:stack/salon-loop-*/*",
-        "arn:aws:cloudformation:*:822063948773:stack/Kiaff*/*",
-        "arn:aws:cloudformation:*:822063948773:stack/CDKToolkit/*",
-        "arn:aws:cloudformation:*:822063948773:stack/CDKToolkit-staging/*",
-        "arn:aws:cloudformation:*:822063948773:stack/OpenReception-*-staging/*",
-        "arn:aws:cloudformation:*:822063948773:stack/OpenReception-*-prod/*"
+        "arn:aws:cloudformation:*:<DEV_ACCOUNT_ID>:stack/nodi-*/*",
+        "arn:aws:cloudformation:*:<DEV_ACCOUNT_ID>:stack/salon-loop-*/*",
+        "arn:aws:cloudformation:*:<DEV_ACCOUNT_ID>:stack/Kiaff*/*",
+        "arn:aws:cloudformation:*:<DEV_ACCOUNT_ID>:stack/CDKToolkit/*",
+        "arn:aws:cloudformation:*:<DEV_ACCOUNT_ID>:stack/CDKToolkit-staging/*",
+        "arn:aws:cloudformation:*:<DEV_ACCOUNT_ID>:stack/OpenReception-*-staging/*",
+        "arn:aws:cloudformation:*:<DEV_ACCOUNT_ID>:stack/OpenReception-*-prod/*"
       ]
     },
     {
@@ -1328,8 +1328,8 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
       "Effect": "Deny",
       "Action": ["dynamodb:*", "s3:*"],
       "Resource": [
-        "arn:aws:dynamodb:*:822063948773:table/nodi-*",
-        "arn:aws:dynamodb:*:822063948773:table/salon-loop-*",
+        "arn:aws:dynamodb:*:<DEV_ACCOUNT_ID>:table/nodi-*",
+        "arn:aws:dynamodb:*:<DEV_ACCOUNT_ID>:table/salon-loop-*",
         "arn:aws:s3:::nodi-*",
         "arn:aws:s3:::nodi-*/*",
         "arn:aws:s3:::salon-loop-*",
@@ -1345,8 +1345,8 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
       "Effect": "Deny",
       "Action": ["sts:AssumeRole", "iam:PassRole"],
       "Resource": [
-        "arn:aws:iam::822063948773:role/cdk-hnb659fds-*",
-        "arn:aws:iam::822063948773:role/cdk-staging-*"
+        "arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-hnb659fds-*",
+        "arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-staging-*"
       ]
     },
     {
@@ -1356,7 +1356,7 @@ export function auditPolicyDocument(doc: PolicyDocument): PolicyAudit {
       "Resource": "*",
       "Condition": {
         "StringNotEquals": {
-          "iam:PermissionsBoundary": "arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary"
+          "iam:PermissionsBoundary": "arn:aws:iam::<DEV_ACCOUNT_ID>:policy/OpenReceptionClaudeBoundary"
         }
       }
     },
@@ -1397,13 +1397,13 @@ Deny は Allow に優先するので、bootstrap 既定の `cloudformation:*` �
       "Effect": "Deny",
       "Action": "cloudformation:*",
       "NotResource": [
-        "arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/*",
-        "arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-WebMonitoring-dev/*",
-        "arn:aws:cloudformation:us-east-1:822063948773:stack/OpenReception-CfMon-dev/*",
-        "arn:aws:cloudformation:ap-northeast-1:822063948773:stack/CDKToolkit-orcloud01/*",
-        "arn:aws:cloudformation:us-east-1:822063948773:stack/CDKToolkit-orcloud01/*",
-        "arn:aws:cloudformation:ap-northeast-1:822063948773:changeSet/claude-gate-*/*",
-        "arn:aws:cloudformation:us-east-1:822063948773:changeSet/claude-gate-*/*"
+        "arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-Web-dev/*",
+        "arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-WebMonitoring-dev/*",
+        "arn:aws:cloudformation:us-east-1:<DEV_ACCOUNT_ID>:stack/OpenReception-CfMon-dev/*",
+        "arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/CDKToolkit-orcloud01/*",
+        "arn:aws:cloudformation:us-east-1:<DEV_ACCOUNT_ID>:stack/CDKToolkit-orcloud01/*",
+        "arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:changeSet/claude-gate-*/*",
+        "arn:aws:cloudformation:us-east-1:<DEV_ACCOUNT_ID>:changeSet/claude-gate-*/*"
       ]
     },
     {
@@ -1411,13 +1411,13 @@ Deny は Allow に優先するので、bootstrap 既定の `cloudformation:*` �
       "Effect": "Deny",
       "Action": "cloudformation:*",
       "Resource": [
-        "arn:aws:cloudformation:*:822063948773:stack/nodi-*/*",
-        "arn:aws:cloudformation:*:822063948773:stack/salon-loop-*/*",
-        "arn:aws:cloudformation:*:822063948773:stack/Kiaff*/*",
-        "arn:aws:cloudformation:*:822063948773:stack/CDKToolkit/*",
-        "arn:aws:cloudformation:*:822063948773:stack/CDKToolkit-staging/*",
-        "arn:aws:cloudformation:*:822063948773:stack/OpenReception-*-staging/*",
-        "arn:aws:cloudformation:*:822063948773:stack/OpenReception-*-prod/*"
+        "arn:aws:cloudformation:*:<DEV_ACCOUNT_ID>:stack/nodi-*/*",
+        "arn:aws:cloudformation:*:<DEV_ACCOUNT_ID>:stack/salon-loop-*/*",
+        "arn:aws:cloudformation:*:<DEV_ACCOUNT_ID>:stack/Kiaff*/*",
+        "arn:aws:cloudformation:*:<DEV_ACCOUNT_ID>:stack/CDKToolkit/*",
+        "arn:aws:cloudformation:*:<DEV_ACCOUNT_ID>:stack/CDKToolkit-staging/*",
+        "arn:aws:cloudformation:*:<DEV_ACCOUNT_ID>:stack/OpenReception-*-staging/*",
+        "arn:aws:cloudformation:*:<DEV_ACCOUNT_ID>:stack/OpenReception-*-prod/*"
       ]
     },
     {
@@ -1425,8 +1425,8 @@ Deny は Allow に優先するので、bootstrap 既定の `cloudformation:*` �
       "Effect": "Deny",
       "Action": ["iam:PassRole", "sts:AssumeRole"],
       "Resource": [
-        "arn:aws:iam::822063948773:role/cdk-hnb659fds-*",
-        "arn:aws:iam::822063948773:role/cdk-staging-*"
+        "arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-hnb659fds-*",
+        "arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-staging-*"
       ]
     }
   ]
@@ -2158,7 +2158,7 @@ Expected: FAIL — スクリプトが存在しない
 # =============================================================================
 set -euo pipefail
 
-ACCOUNT="822063948773"
+ACCOUNT="<DEV_ACCOUNT_ID>"
 ROLE_ARN="arn:aws:iam::${ACCOUNT}:role/OpenReceptionClaudeDeploy-dev"
 EXTERNAL_ID="open-reception-claude-cloud-dev"
 HOURS=4
@@ -2291,12 +2291,12 @@ git commit -m "feat(infra): デプロイ窓を開ける短命 STS 発行スク�
 2. `cdk bootstrap` を 2 リージョンぶん:
    ```bash
    cd infra
-   npx cdk bootstrap aws://822063948773/ap-northeast-1 aws://822063948773/us-east-1 \
+   npx cdk bootstrap aws://<DEV_ACCOUNT_ID>/ap-northeast-1 aws://<DEV_ACCOUNT_ID>/us-east-1 \
      --qualifier orcloud01 \
      --toolkit-stack-name CDKToolkit-orcloud01 \
-     --cloudformation-execution-policies arn:aws:iam::822063948773:policy/OpenReceptionClaudeCfnExec-dev \
+     --cloudformation-execution-policies arn:aws:iam::<DEV_ACCOUNT_ID>:policy/OpenReceptionClaudeCfnExec-dev \
      --custom-permissions-boundary OpenReceptionClaudeBoundary \
-     --trust 822063948773
+     --trust <DEV_ACCOUNT_ID>
    ```
 3. deploy role への層 1（スタック ARN allowlist）適用
 4. `SIMULATE_PRINCIPAL_ARN=... npm run aws:negative-tests -- --simulate-only` を Admin から実行
