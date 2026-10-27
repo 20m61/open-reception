@@ -193,6 +193,33 @@ describe('bridgeCommittedTurn: 不在者と近い在席者を自動確定しな�
     expect(accepted).toBeGreaterThan(0);
   });
 
+  it('在席が 2 人以上でも、不在の辞書（空を含む）を渡したことで在席どうしの曖昧さを失わない', () => {
+    // 本番の KioskFlow は、不在が 0 人でも空の不在辞書を必ず渡す。その構成でだけ曖昧さの判定が
+    // 縮む（在席の top1 だけになる等）と、在席の同姓 2 人のうち 1 人が復唱なしで確定する。
+    for (let i = 0; i < NAMES.length; i += 1) {
+      for (let j = i + 1; j < NAMES.length; j += 1) {
+        const present = dir([staff('p1', ...NAMES[i]), staff('p2', ...NAMES[j])]);
+        for (const q of QUERIES) {
+          const base = { text: q, directory: present, sttConfidence: 0.95, thresholds: T, t: 0 };
+          expect(
+            bridgeCommittedTurn({ ...base, unavailableDirectory: dir([]) }),
+            `${q} / 在席 ${NAMES[i][0]}・${NAMES[j][0]}`,
+          ).toEqual(bridgeCommittedTurn(base));
+        }
+      }
+    }
+    const result = bridgeCommittedTurn({
+      text: '田中',
+      directory: dir([staff('h', '田中花子', 'たなかはなこ'), staff('j', '田中次郎', 'たなかじろう')]),
+      unavailableDirectory: dir([away('t', '田中太郎', 'たなかたろう')]),
+      sttConfidence: 0.95,
+      thresholds: T,
+      t: 0,
+    });
+    expect(result.event).toMatchObject({ type: 'heardNeedsConfirmation', reason: 'ambiguous_candidates' });
+    expect(result.event).not.toHaveProperty('unavailable');
+  });
+
   it('下界: 不在の辞書に一致が無ければ、渡さないときと結果が同じ（自動採用は続く）', () => {
     for (const [an, ak] of NAMES) {
       for (const q of QUERIES) {
