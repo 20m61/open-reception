@@ -26,7 +26,7 @@ Claude Code on the cloud（クラウドセッション / cron routine）から�
 
 ```
 $ aws sts get-caller-identity
-822063948773  arn:aws:iam::822063948773:user/CDK  AIDA36ZWUMPSTZBOYONU3
+<DEV_ACCOUNT_ID>  arn:aws:iam::<DEV_ACCOUNT_ID>:user/CDK  AIDA36ZWUMPSTZBOYONU3
 ```
 
 実体は SSO ではなく **IAM user + 静的アクセスキー**。技術的には今日でもキーを
@@ -41,7 +41,7 @@ $ aws sts get-caller-identity
 
 ### 2.1 アカウントは open-reception 専用ではない
 
-アカウント `822063948773` / ap-northeast-1 に **22 スタック・4 プロジェクトが同居**する。
+アカウント `<DEV_ACCOUNT_ID>` / ap-northeast-1 に **22 スタック・4 プロジェクトが同居**する。
 
 | プロジェクト | スタック | 備考 |
 | --- | --- | --- |
@@ -57,7 +57,7 @@ $ aws sts get-caller-identity
 ### 2.2 既定 bootstrap の CFN 実行ロールが AdministratorAccess
 
 ```
-cdk-hnb659fds-cfn-exec-role-822063948773-{ap-northeast-1,us-east-1}
+cdk-hnb659fds-cfn-exec-role-<DEV_ACCOUNT_ID>-{ap-northeast-1,us-east-1}
   → arn:aws:iam::aws:policy/AdministratorAccess
 cdk-staging-cfn-exec-role-...
   → SalonLoopStagingCfnExecution / SalonLoopStagingCfnSupport   (salon-loop 専用)
@@ -138,7 +138,7 @@ open-reception の実構成では **Cognito / CloudFront / IAM Policy につい�
       │  sts:AssumeRole  --external-id <ExternalId>  --duration-seconds <窓>
       ▼
   role/OpenReceptionClaudeDeploy-dev                        ★新規
-    trust      : arn:aws:iam::822063948773:user/CDK のみ / ExternalId 必須
+    trust      : arn:aws:iam::<DEV_ACCOUNT_ID>:user/CDK のみ / ExternalId 必須
     MaxSession : 43200 (12h) — 実際の発行は既定 4h
     権限        : (a) sts:AssumeRole → cdk-orcloud01-{deploy,file-publishing,
                       image-publishing}-role-*（**lookup-role は含めない。下記参照**）
@@ -159,8 +159,8 @@ open-reception の実構成では **Cognito / CloudFront / IAM Policy につい�
 [Claude Cloud サンドボックス]   scripts/aws-cloud-deploy.sh 経由でのみ cdk を実行
       │  cdk deploy -c env=dev -c @aws-cdk/core:bootstrapQualifier=orcloud01
       ▼
-  role/cdk-orcloud01-deploy-role-822063948773-{ap-northeast-1,us-east-1}   ★新規
-    cloudformation:*  →  arn:aws:cloudformation:*:822063948773:stack/OpenReception-*-dev/*
+  role/cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-{ap-northeast-1,us-east-1}   ★新規
+    cloudformation:*  →  arn:aws:cloudformation:*:<DEV_ACCOUNT_ID>:stack/OpenReception-*-dev/*
     iam:PassRole      →  cdk-orcloud01-cfn-exec-role-* のみ
       ▼
   role/cdk-orcloud01-cfn-exec-role-...                      ★新規
@@ -213,11 +213,11 @@ CDK の全操作は CloudFormation を通る。deploy role の
 `DeleteStack` 等を
 
 ```
-arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/*
-arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-WebMonitoring-dev/*
-arn:aws:cloudformation:us-east-1:822063948773:stack/OpenReception-CfMon-dev/*
-arn:aws:cloudformation:ap-northeast-1:822063948773:stack/CDKToolkit-orcloud01/*
-arn:aws:cloudformation:us-east-1:822063948773:stack/CDKToolkit-orcloud01/*
+arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-Web-dev/*
+arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-WebMonitoring-dev/*
+arn:aws:cloudformation:us-east-1:<DEV_ACCOUNT_ID>:stack/OpenReception-CfMon-dev/*
+arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/CDKToolkit-orcloud01/*
+arn:aws:cloudformation:us-east-1:<DEV_ACCOUNT_ID>:stack/CDKToolkit-orcloud01/*
 ```
 
 （**これは `claude-deploy-role-restriction.json` の `NotResource` の全 5 行そのままである。**
@@ -444,7 +444,7 @@ OpenReception-*-staging  /  OpenReception-*-prod
 `DenyIamRoleWriteOutsideProject` のタグ条件には、**1 つだけ名前による例外**がある:
 
 ```
-arn:aws:iam::822063948773:role/OpenReception-*-dev-Custom*
+arn:aws:iam::<DEV_ACCOUNT_ID>:role/OpenReception-*-dev-Custom*
 ```
 
 理由。CDK の `CustomResourceProvider`（`crossRegionReferences: true` と
@@ -519,7 +519,7 @@ rollback の `iam:DeleteRole` がタグ条件 Deny に当たって **`ROLLBACK_F
 | 検査 | 期待値 |
 | --- | --- |
 | caller identity | `.../OpenReceptionClaudeDeploy-dev/*` の assumed-role |
-| account | `822063948773` |
+| account | `<DEV_ACCOUNT_ID>` |
 | region | `ap-northeast-1`（us-east-1 スタックは CDK が処理） |
 | qualifier | `orcloud01` |
 | credential 残時間 | > 20 分（`deploy` は > 40 分） |
@@ -1016,7 +1016,7 @@ spec 原文 STOP CONDITIONS の「既存 production deploy 経路を壊す可能
 ### carve-out された名前空間の残存ギャップ（#680 R1/R2/R3 の実装限界）
 
 §4.2 層 4 の carve-out は
-`arn:aws:iam::822063948773:role/OpenReception-*-dev-Custom*` に対して
+`arn:aws:iam::<DEV_ACCOUNT_ID>:role/OpenReception-*-dev-Custom*` に対して
 
 1. `iam:CreateRole` / `PutRolePolicy` / `AttachRolePolicy` を **boundary 条件なしで**許し
 2. `iam:PassRole` を（`lambda.amazonaws.com` 限定で）タグ条件なしで許し

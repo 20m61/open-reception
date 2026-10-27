@@ -12,12 +12,13 @@ import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { makeTempFile } from '../helpers/temp';
+import { DEV_ACCOUNT_ID } from '../../src/domain/governance/dev-account';
 
 const CLI = resolve(process.cwd(), 'scripts/aws-preflight.ts');
 
 const validObservation = {
-  callerArn: 'arn:aws:sts::822063948773:assumed-role/OpenReceptionClaudeDeploy-dev/cloud-session',
-  accountId: '822063948773',
+  callerArn: `arn:aws:sts::${DEV_ACCOUNT_ID}:assumed-role/OpenReceptionClaudeDeploy-dev/cloud-session`,
+  accountId: `${DEV_ACCOUNT_ID}`,
   region: 'ap-northeast-1',
   qualifier: 'orcloud01',
   environment: 'dev',

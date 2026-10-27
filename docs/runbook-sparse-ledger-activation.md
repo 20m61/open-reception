@@ -52,7 +52,7 @@ IAM・CloudFormation・DynamoDB・SNS・CloudTrail に一切書き込まない�
 | parameter | 何の role か | 引き受けるのは |
 |---|---|---|
 | `SparseLedgerOverrideIssuerRoleArn` | 人間が genesis・override を書き、stuck attempt を閉じるための role | owner の人間 principal だけ |
-| `SparseLedgerStackDeployRoleArn` | broker 専用 bootstrap の cfn-exec role（`cdk-orbrkr01-cfn-exec-role-822063948773-ap-northeast-1`。CDK の命名規則で決まる） | `cloudformation.amazonaws.com` だけ（owner が deploy するとき） |
+| `SparseLedgerStackDeployRoleArn` | broker 専用 bootstrap の cfn-exec role（`cdk-orbrkr01-cfn-exec-role-<DEV_ACCOUNT_ID>-ap-northeast-1`。CDK の命名規則で決まる） | `cloudformation.amazonaws.com` だけ（owner が deploy するとき） |
 
 issuer role は stack の `HUMAN_ROLE_ARN_PATTERN` で、role 名（path の後ろ）が次で**始まるものは拒否される**:
 `cdk-orcloud01-`、`OpenReception`、`nodi-`、`salon-loop-`、`Kiaff`。
@@ -151,8 +151,8 @@ Claude の deploy chain とその下の workload role が ledger を書いたり
 for f in claude-boundary claude-cfn-exec; do
   node -e "const n=JSON.stringify(JSON.parse(require('fs').readFileSync('scripts/aws-policies/$f.json','utf8'))).length;console.log('$f',n,'/ 6144')"
 done
-aws iam list-policy-versions --policy-arn arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary --query 'length(Versions)'
-aws iam list-policy-versions --policy-arn arn:aws:iam::822063948773:policy/OpenReceptionClaudeCfnExec-dev --query 'length(Versions)'
+aws iam list-policy-versions --policy-arn arn:aws:iam::<DEV_ACCOUNT_ID>:policy/OpenReceptionClaudeBoundary --query 'length(Versions)'
+aws iam list-policy-versions --policy-arn arn:aws:iam::<DEV_ACCOUNT_ID>:policy/OpenReceptionClaudeCfnExec-dev --query 'length(Versions)'
 # 5 なら、default でない最古の版を delete-policy-version で消してから進む
 ```
 
@@ -161,10 +161,10 @@ aws iam list-policy-versions --policy-arn arn:aws:iam::822063948773:policy/OpenR
 
 ```bash
 aws iam create-policy-version \
-  --policy-arn arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary \
+  --policy-arn arn:aws:iam::<DEV_ACCOUNT_ID>:policy/OpenReceptionClaudeBoundary \
   --policy-document file://scripts/aws-policies/claude-boundary.json --set-as-default
 aws iam create-policy-version \
-  --policy-arn arn:aws:iam::822063948773:policy/OpenReceptionClaudeCfnExec-dev \
+  --policy-arn arn:aws:iam::<DEV_ACCOUNT_ID>:policy/OpenReceptionClaudeCfnExec-dev \
   --policy-document file://scripts/aws-policies/claude-cfn-exec.json --set-as-default
 ```
 
@@ -173,7 +173,7 @@ aws iam create-policy-version \
 
 ```bash
 for r in ap-northeast-1 us-east-1; do
-  aws iam put-role-policy --role-name "cdk-orcloud01-deploy-role-822063948773-$r" \
+  aws iam put-role-policy --role-name "cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-$r" \
     --policy-name OpenReceptionClaudeDeployRestriction \
     --policy-document file://scripts/aws-policies/claude-deploy-role-restriction.json
 done
@@ -185,29 +185,29 @@ aws iam put-role-policy --role-name OpenReceptionClaudeDeploy-dev \
 確認（どちらも `explicitDeny` であること）:
 
 ```bash
-EXEC=arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1
+EXEC=arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-cfn-exec-role-<DEV_ACCOUNT_ID>-ap-northeast-1
 aws iam simulate-principal-policy --policy-source-arn "$EXEC" \
   --action-names dynamodb:PutItem \
-  --resource-arns "arn:aws:dynamodb:ap-northeast-1:822063948773:table/OpenReception-DevDeployBroker-SparseLedgerX" \
+  --resource-arns "arn:aws:dynamodb:ap-northeast-1:<DEV_ACCOUNT_ID>:table/OpenReception-DevDeployBroker-SparseLedgerX" \
   --query 'EvaluationResults[0].EvalDecision' --output text     # explicitDeny
 aws iam simulate-principal-policy --policy-source-arn "$EXEC" \
   --action-names cloudformation:UpdateStack \
-  --resource-arns "arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-DevDeployBroker/x" \
+  --resource-arns "arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-DevDeployBroker/x" \
   --query 'EvaluationResults[0].EvalDecision' --output text     # explicitDeny
 # ブロッカー 8: broker の log・警報・通知・bucket
 for pair in \
-  "logs:DeleteLogGroup arn:aws:logs:ap-northeast-1:822063948773:log-group:OpenReception-DevDeployBroker-BrokerLogsX-x" \
-  "cloudwatch:DisableAlarmActions arn:aws:cloudwatch:ap-northeast-1:822063948773:alarm:OpenReception-DevDeployBroker-LedgerAttentionAlarmX-x" \
-  "sns:SetTopicAttributes arn:aws:sns:ap-northeast-1:822063948773:OpenReception-DevDeployBroker-BrokerAlertsX-x" \
+  "logs:DeleteLogGroup arn:aws:logs:ap-northeast-1:<DEV_ACCOUNT_ID>:log-group:OpenReception-DevDeployBroker-BrokerLogsX-x" \
+  "cloudwatch:DisableAlarmActions arn:aws:cloudwatch:ap-northeast-1:<DEV_ACCOUNT_ID>:alarm:OpenReception-DevDeployBroker-LedgerAttentionAlarmX-x" \
+  "sns:SetTopicAttributes arn:aws:sns:ap-northeast-1:<DEV_ACCOUNT_ID>:OpenReception-DevDeployBroker-BrokerAlertsX-x" \
   "s3:DeleteObjectVersion arn:aws:s3:::openreception-devdeployb-pipelineartifactsx-x/k" \
-  "iam:DeleteRolePolicy arn:aws:iam::822063948773:role/OpenReceptionTrustedDevDeployBrokerRole" \
-  "sts:AssumeRole arn:aws:iam::822063948773:role/cdk-orbrkr01-deploy-role-822063948773-ap-northeast-1" \
-  "s3:PutObject arn:aws:s3:::cdk-orbrkr01-assets-822063948773-ap-northeast-1/x" \
+  "iam:DeleteRolePolicy arn:aws:iam::<DEV_ACCOUNT_ID>:role/OpenReceptionTrustedDevDeployBrokerRole" \
+  "sts:AssumeRole arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orbrkr01-deploy-role-<DEV_ACCOUNT_ID>-ap-northeast-1" \
+  "s3:PutObject arn:aws:s3:::cdk-orbrkr01-assets-<DEV_ACCOUNT_ID>-ap-northeast-1/x" \
   "logs:PutAccountPolicy *" \
   "logs:PutResourcePolicy *" \
-  "cloudformation:UpdateStack arn:aws:cloudformation:ap-northeast-1:822063948773:stack/CDKToolkit-orbrkr01/x" \
-  "ssm:PutParameter arn:aws:ssm:ap-northeast-1:822063948773:parameter/cdk-bootstrap/orbrkr01/version" \
-  "s3:CreateAccessPoint arn:aws:s3:ap-northeast-1:822063948773:accesspoint/x"; do
+  "cloudformation:UpdateStack arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/CDKToolkit-orbrkr01/x" \
+  "ssm:PutParameter arn:aws:ssm:ap-northeast-1:<DEV_ACCOUNT_ID>:parameter/cdk-bootstrap/orbrkr01/version" \
+  "s3:CreateAccessPoint arn:aws:s3:ap-northeast-1:<DEV_ACCOUNT_ID>:accesspoint/x"; do
   set -- $pair
   aws iam simulate-principal-policy --policy-source-arn "$EXEC" --action-names "$1" --resource-arns "$2" \
     --query 'EvaluationResults[0].EvalDecision' --output text   # すべて explicitDeny
@@ -231,7 +231,7 @@ candidate のコードを実行する build には接続の token を渡さな�
 
 - **既存の別用途の接続は使わない。** 2026-10-03 の棚卸し（#1153）で `AVAILABLE` だったのは `amplify_test` だけで、
   owner の判断で broker には使わない。
-- account `822063948773` の safe-dev-deploy の consumer（Foundation `safe-dev-deploy`）は、**repo ごとに 1 つの接続**を作る。
+- account `<DEV_ACCOUNT_ID>` の safe-dev-deploy の consumer（Foundation `safe-dev-deploy`）は、**repo ごとに 1 つの接続**を作る。
   GitHub App（AWS Connector for GitHub）は `20m61` に 1 回だけ install され、その対象 repo の選択は接続の間で共有される。
   そのため、接続を分けても読める repo の範囲は分かれない。repo ごとの分離は、各 pipeline の Source action が
   `owner` / `repo` / `branch` を固定していることで保証する（この stack では
@@ -243,7 +243,7 @@ candidate のコードを実行する build には接続の token を渡さな�
 **実施済み**（owner の記録、controltower#158 comment 5973993355）。open-reception の接続は次で、状態は `AVAILABLE`:
 
 ```text
-arn:aws:codestar-connections:ap-northeast-1:822063948773:connection/262f84e8-b307-46c8-bafd-e5d5121d01b7
+arn:aws:codestar-connections:ap-northeast-1:<DEV_ACCOUNT_ID>:connection/262f84e8-b307-46c8-bafd-e5d5121d01b7
 ```
 
 作り直すとき・別の consumer の接続を作るときのコマンド:
@@ -298,7 +298,7 @@ stack deploy role は、2 つの resource policy で**例外扱い**になる。
 共有の `hnb659fds` の deploy role は account 全体から引き受けられ、自分の cfn-exec role しか渡せないので使えない。
 そこで broker stack は、専用の bootstrap（qualifier `orbrkr01`、`infra/lib/config/broker-bootstrap.ts`）で合成する（#1192）。
 
-- その bootstrap の **cfn-exec role**（`cdk-orbrkr01-cfn-exec-role-822063948773-ap-northeast-1`）が stack deploy role になる。
+- その bootstrap の **cfn-exec role**（`cdk-orbrkr01-cfn-exec-role-<DEV_ACCOUNT_ID>-ap-northeast-1`）が stack deploy role になる。
 - deploy / file publishing / image publishing / lookup の 4 role は、owner の人間 principal だけを信頼させる。
 - Claude の chain は、#1192 の policy で `role/cdk-orbrkr01-*` の AssumeRole / PassRole と `cdk-orbrkr01-*` の bucket を拒否される（手順 3）。
 
@@ -364,7 +364,7 @@ npx cdk bootstrap --show-template > /tmp/broker-bootstrap.yaml
 ### 4c. bootstrap する（owner の admin credential で）
 
 ```bash
-npx cdk bootstrap aws://822063948773/ap-northeast-1 \
+npx cdk bootstrap aws://<DEV_ACCOUNT_ID>/ap-northeast-1 \
   --qualifier orbrkr01 --toolkit-stack-name CDKToolkit-orbrkr01 \
   --cloudformation-execution-policies <4a の policy の ARN> \
   --template /tmp/broker-bootstrap.yaml
@@ -374,10 +374,10 @@ npx cdk bootstrap aws://822063948773/ap-northeast-1 \
 
 ```bash
 for r in deploy-role file-publishing-role image-publishing-role lookup-role; do
-  aws iam get-role --role-name "cdk-orbrkr01-$r-822063948773-ap-northeast-1" \
+  aws iam get-role --role-name "cdk-orbrkr01-$r-<DEV_ACCOUNT_ID>-ap-northeast-1" \
     --query 'Role.AssumeRolePolicyDocument.Statement[].Principal' --output json   # owner の principal だけ
 done
-aws iam list-attached-role-policies --role-name cdk-orbrkr01-cfn-exec-role-822063948773-ap-northeast-1 \
+aws iam list-attached-role-policies --role-name cdk-orbrkr01-cfn-exec-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --query 'AttachedPolicies[].PolicyName'     # 4a の policy だけ（AdministratorAccess でないこと）
 ```
 
@@ -405,7 +405,7 @@ cd infra
 export AWS_REGION=ap-northeast-1   # 他の region だと synth が止まる（下記）
 ARGS=(--app "npx ts-node --prefer-ts-exts bin/dev-deploy-broker.ts" OpenReception-DevDeployBroker
   --parameters SparseLedgerOverrideIssuerRoleArn=<issuer role ARN>
-  --parameters SparseLedgerStackDeployRoleArn=arn:aws:iam::822063948773:role/cdk-orbrkr01-cfn-exec-role-822063948773-ap-northeast-1
+  --parameters SparseLedgerStackDeployRoleArn=arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orbrkr01-cfn-exec-role-<DEV_ACCOUNT_ID>-ap-northeast-1
   --parameters SparseLedgerId=<owner が決めた ledger id>
   --parameters GitHubConnectionArn=<手順 3.5 の ARN> --parameters DevAppSecretsName=open-reception/dev/app-v2
   --parameters DevPublicOriginOverride=<既存の値> --parameters DevProviderSecretBackend=secrets-manager
@@ -532,7 +532,7 @@ aws cloudtrail get-event-selectors --trail-name OpenReceptionSparseLedgerAudit \
   --query 'AdvancedEventSelectors[].FieldSelectors'      # Data / AWS::DynamoDB::Table / table ARN / readOnly=false
 ```
 
-最初の書き込み（手順 8 の genesis）の後、15 分ほどで監査 bucket の `AWSLogs/822063948773/` の下に
+最初の書き込み（手順 8 の genesis）の後、15 分ほどで監査 bucket の `AWSLogs/<DEV_ACCOUNT_ID>/` の下に
 log file が届くことを見る。
 
 live で確かめる点:

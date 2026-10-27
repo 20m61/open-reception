@@ -17,6 +17,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { DEV_ACCOUNT_ID } from '../../src/domain/governance/dev-account';
 
 const SCRIPT = resolve(process.cwd(), 'scripts/aws-negative-tests.ts');
 const SOURCE = readFileSync(SCRIPT, 'utf8');
@@ -45,15 +46,15 @@ function run(args: ReadonlyArray<string>, env: Record<string, string | undefined
   return { status: r.status ?? -1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
 }
 
-const ROLE = (name: string) => `arn:aws:iam::822063948773:role/${name}`;
+const ROLE = (name: string) => `arn:aws:iam::${DEV_ACCOUNT_ID}:role/${name}`;
 
 /** #680 R4: deploy / exec は region ごとに別のロールなので、鍵も環境変数も region ごと。 */
 const FAKE_ARNS: Record<string, string | undefined> = {
   SIMULATE_ENTRY_ROLE_ARN: ROLE('OpenReceptionClaudeDeploy-dev'),
-  SIMULATE_DEPLOY_ROLE_ARN_AP_NORTHEAST_1: ROLE('cdk-orcloud01-deploy-role-822063948773-ap-northeast-1'),
-  SIMULATE_DEPLOY_ROLE_ARN_US_EAST_1: ROLE('cdk-orcloud01-deploy-role-822063948773-us-east-1'),
-  SIMULATE_EXEC_ROLE_ARN_AP_NORTHEAST_1: ROLE('cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1'),
-  SIMULATE_EXEC_ROLE_ARN_US_EAST_1: ROLE('cdk-orcloud01-cfn-exec-role-822063948773-us-east-1'),
+  SIMULATE_DEPLOY_ROLE_ARN_AP_NORTHEAST_1: ROLE(`cdk-orcloud01-deploy-role-${DEV_ACCOUNT_ID}-ap-northeast-1`),
+  SIMULATE_DEPLOY_ROLE_ARN_US_EAST_1: ROLE(`cdk-orcloud01-deploy-role-${DEV_ACCOUNT_ID}-us-east-1`),
+  SIMULATE_EXEC_ROLE_ARN_AP_NORTHEAST_1: ROLE(`cdk-orcloud01-cfn-exec-role-${DEV_ACCOUNT_ID}-ap-northeast-1`),
+  SIMULATE_EXEC_ROLE_ARN_US_EAST_1: ROLE(`cdk-orcloud01-cfn-exec-role-${DEV_ACCOUNT_ID}-us-east-1`),
 };
 
 /** 廃止された変数。テストの env に混ざると `exit 2` になるので明示的に落とす。 */
@@ -352,11 +353,11 @@ describe('S 系は principal ARN が供給されないと実行を拒否する (
   );
 
   it.each([
-    ['SIMULATE_PRINCIPAL_ARN', 'arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev'],
+    ['SIMULATE_PRINCIPAL_ARN', `arn:aws:iam::${DEV_ACCOUNT_ID}:role/OpenReceptionClaudeDeploy-dev`],
     // #680 R4: region 無しの旧変数も廃止。渡したまま走らせて「両 region 検証済み」と
     // 記録できないようにする。
-    ['SIMULATE_DEPLOY_ROLE_ARN', 'arn:aws:iam::822063948773:role/x'],
-    ['SIMULATE_EXEC_ROLE_ARN', 'arn:aws:iam::822063948773:role/y'],
+    ['SIMULATE_DEPLOY_ROLE_ARN', `arn:aws:iam::${DEV_ACCOUNT_ID}:role/x`],
+    ['SIMULATE_EXEC_ROLE_ARN', `arn:aws:iam::${DEV_ACCOUNT_ID}:role/y`],
   ])(
     '廃止された %s が設定されていたら明示的に止める',
     (name, value) => {

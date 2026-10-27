@@ -24,6 +24,7 @@ import {
   validationSourceBindScript,
 } from '../lib/config/validation-gate-env';
 import { checkAwsRuntimeSafety } from '../../src/domain/governance/aws-runtime';
+import { DEV_ACCOUNT_ID } from '../../src/domain/governance/dev-account';
 
 /**
  * #1146 runbook 7.5 (2026-10-08): the Validation project's `npm test` failed 11 files for
@@ -36,7 +37,7 @@ const REPO_ROOT = join(__dirname, '..', '..');
 const template = (() => {
   const app = new cdk.App();
   const stack = new DevDeployBrokerStack(app, 'TestDevDeployBroker', {
-    env: { account: '822063948773', region: 'ap-northeast-1' },
+    env: { account: `${DEV_ACCOUNT_ID}`, region: 'ap-northeast-1' },
   });
   return Template.fromStack(stack);
 })();

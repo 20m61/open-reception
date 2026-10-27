@@ -80,6 +80,7 @@ import {
   DYNAMODB_TABLE_RESOURCE_POLICY_ACTIONS,
   DYNAMODB_TABLE_RESOURCE_POLICY_REJECTED,
 } from '../lib/config/dynamodb-resource-policy-actions';
+import { DEV_ACCOUNT_ID } from '../../src/domain/governance/dev-account';
 
 /**
  * Adversarial Phase 1 invariants for the dev deploy broker (#1146).
@@ -112,7 +113,7 @@ const REV_B = '0123456789abcdef0123456789abcdef01234567';
 const template = (() => {
   const app = new cdk.App();
   const stack = new DevDeployBrokerStack(app, 'TestDevDeployBroker', {
-    env: { account: '822063948773', region: 'ap-northeast-1' },
+    env: { account: `${DEV_ACCOUNT_ID}`, region: 'ap-northeast-1' },
   });
   return Template.fromStack(stack);
 })();
@@ -247,7 +248,7 @@ const isProvenanceStatement = (s: Statement): boolean => {
   return (
     s.Effect === 'Allow' &&
     s.Condition === undefined &&
-    ((same(PROVENANCE_READ_ACTIONS.pipeline) && res === JSON.stringify({ 'Fn::Join': ['', ['arn:', { Ref: 'AWS::Partition' }, ':codepipeline:ap-northeast-1:822063948773:', { Ref: PIPELINES[0] }]] })) ||
+    ((same(PROVENANCE_READ_ACTIONS.pipeline) && res === JSON.stringify({ 'Fn::Join': ['', ['arn:', { Ref: 'AWS::Partition' }, `:codepipeline:ap-northeast-1:${DEV_ACCOUNT_ID}:`, { Ref: PIPELINES[0] }]] })) ||
       (same(PROVENANCE_READ_ACTIONS.validationBuild) && res === JSON.stringify([{ 'Fn::GetAtt': [validationProjectId, 'Arn'] }, { 'Fn::GetAtt': [brokerProjectId, 'Arn'] }])) ||
       (same(PROVENANCE_READ_ACTIONS.artifactBucket) && res === JSON.stringify({ 'Fn::GetAtt': [ARTIFACT_BUCKET[0], 'Arn'] })))
   );
@@ -255,7 +256,7 @@ const isProvenanceStatement = (s: Statement): boolean => {
 
 /** The single reviewed target-stack read (S10a): DescribeStacks on exactly the three stack ARNs. */
 const TARGET_STACK_ARNS = TARGET_STACKS.map((t) => ({
-  'Fn::Join': ['', ['arn:', { Ref: 'AWS::Partition' }, `:cloudformation:${t.region ?? 'ap-northeast-1'}:822063948773:stack/${t.stackName}/*`]],
+  'Fn::Join': ['', ['arn:', { Ref: 'AWS::Partition' }, `:cloudformation:${t.region ?? 'ap-northeast-1'}:${DEV_ACCOUNT_ID}:stack/${t.stackName}/*`]],
 }));
 const isTargetStackStatement = (s: Statement): boolean =>
   s.Effect === 'Allow' &&
@@ -583,7 +584,7 @@ describe('dev deploy broker invariants: trusted broker (stack-owned buildspec, u
       /^node -e '[^']*' \/tmp\/open-reception-access-restriction\.mjs OR_ACCESS_RESTRICTION_MODULE_SHA256$/,
       /^node \/tmp\/open-reception-access-restriction\.mjs --assembly \/tmp\/open-reception-broker-work\/validated\/infra\/cdk\.out$/,
       new RegExp(`^${LEDGER_DENY_COMMAND.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}$`),
-      /^node \/tmp\/open-reception-trusted-policy\.mjs --assembly \/tmp\/open-reception-broker-work\/validated\/infra\/cdk\.out --account 822063948773 > \/tmp\/open-reception-broker-out\/trusted-policy-result\.json$/,
+      new RegExp(String.raw`^node \/tmp\/open-reception-trusted-policy\.mjs --assembly \/tmp\/open-reception-broker-work\/validated\/infra\/cdk\.out --account ${DEV_ACCOUNT_ID} > \/tmp\/open-reception-broker-out\/trusted-policy-result\.json$`),
       /^aws s3 cp "s3:\/\/\$OR_PROVENANCE_MODULE_BUCKET\/\$OR_PROVENANCE_MODULE_KEY" \/tmp\/open-reception-run-provenance\.mjs --only-show-errors$/,
       /^node -e '[^']*' \/tmp\/open-reception-run-provenance\.mjs OR_PROVENANCE_MODULE_SHA256$/,
       new RegExp(`^${PROVENANCE_COMMAND.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}$`),
@@ -840,25 +841,25 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
       // JS and Java agree on this subset (anchors, classes, negative lookahead).
       const re = new RegExp(param!.AllowedPattern!);
       for (const ok of [
-        'arn:aws:iam::822063948773:role/cdk-hnb659fds-cfn-exec-role-822063948773-ap-northeast-1',
-        'arn:aws:iam::822063948773:role/LedgerOverrideIssuer',
-        'arn:aws:iam::822063948773:role/humans/LedgerOverrideIssuer',
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/cdk-hnb659fds-cfn-exec-role-${DEV_ACCOUNT_ID}-ap-northeast-1`,
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/LedgerOverrideIssuer`,
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/humans/LedgerOverrideIssuer`,
       ]) {
         expect(re.test(ok), ok).toBe(true);
       }
       for (const bad of [
-        'arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1',
-        'arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev',
-        'arn:aws:iam::822063948773:role/OpenReceptionClaudeEntry',
-        'arn:aws:iam::822063948773:role/OpenReceptionTrustedDevDeployBrokerRole',
-        'arn:aws:iam::822063948773:role/OpenReceptionDevDeployValidationRole',
-        'arn:aws:iam::822063948773:role/OpenReception-Web-dev-ServerFnServiceRole282D3E61-ABC',
-        'arn:aws:iam::822063948773:role/some/path/OpenReceptionClaudeDeploy-dev',
-        'arn:aws:iam::822063948773:role/nodi-worker',
-        'arn:aws:iam::822063948773:role/salon-loop-fn',
-        'arn:aws:iam::822063948773:role/KiaffRuntime',
-        'arn:aws:iam::822063948773:user/CDK',
-        'arn:aws:iam::822063948773:role/x y',
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/cdk-orcloud01-cfn-exec-role-${DEV_ACCOUNT_ID}-ap-northeast-1`,
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/OpenReceptionClaudeDeploy-dev`,
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/OpenReceptionClaudeEntry`,
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/OpenReceptionTrustedDevDeployBrokerRole`,
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/OpenReceptionDevDeployValidationRole`,
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/OpenReception-Web-dev-ServerFnServiceRole282D3E61-ABC`,
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/some/path/OpenReceptionClaudeDeploy-dev`,
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/nodi-worker`,
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/salon-loop-fn`,
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/KiaffRuntime`,
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:user/CDK`,
+        `arn:aws:iam::${DEV_ACCOUNT_ID}:role/x y`,
       ]) {
         expect(re.test(bad), bad).toBe(false);
       }
@@ -872,19 +873,19 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
     expect(param).not.toHaveProperty('Default');
     const re = new RegExp(param!.AllowedPattern!);
     for (const ok of [
-      'arn:aws:iam::822063948773:role/cdk-orbrkr01-cfn-exec-role-822063948773-ap-northeast-1',
-      'arn:aws:iam::822063948773:role/cdk-orbrkr01-cfn-exec-role-822063948773-us-east-1',
+      `arn:aws:iam::${DEV_ACCOUNT_ID}:role/cdk-orbrkr01-cfn-exec-role-${DEV_ACCOUNT_ID}-ap-northeast-1`,
+      `arn:aws:iam::${DEV_ACCOUNT_ID}:role/cdk-orbrkr01-cfn-exec-role-${DEV_ACCOUNT_ID}-us-east-1`,
     ]) {
       expect(re.test(ok), ok).toBe(true);
     }
     for (const bad of [
-      'arn:aws:iam::822063948773:role/cdk-hnb659fds-cfn-exec-role-822063948773-ap-northeast-1',
-      'arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1',
-      'arn:aws:iam::822063948773:role/cdk-orbrkr01-deploy-role-822063948773-ap-northeast-1',
-      'arn:aws:iam::822063948773:role/cdk-orbrkr01-cfn-exec-role-822063948773-ap-northeast-1-x/y',
-      'arn:aws:iam::822063948773:role/path/cdk-orbrkr01-cfn-exec-role-822063948773-ap-northeast-1',
-      'arn:aws:iam::822063948773:role/ledger-stack-deploy-human',
-      'arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev',
+      `arn:aws:iam::${DEV_ACCOUNT_ID}:role/cdk-hnb659fds-cfn-exec-role-${DEV_ACCOUNT_ID}-ap-northeast-1`,
+      `arn:aws:iam::${DEV_ACCOUNT_ID}:role/cdk-orcloud01-cfn-exec-role-${DEV_ACCOUNT_ID}-ap-northeast-1`,
+      `arn:aws:iam::${DEV_ACCOUNT_ID}:role/cdk-orbrkr01-deploy-role-${DEV_ACCOUNT_ID}-ap-northeast-1`,
+      `arn:aws:iam::${DEV_ACCOUNT_ID}:role/cdk-orbrkr01-cfn-exec-role-${DEV_ACCOUNT_ID}-ap-northeast-1-x/y`,
+      `arn:aws:iam::${DEV_ACCOUNT_ID}:role/path/cdk-orbrkr01-cfn-exec-role-${DEV_ACCOUNT_ID}-ap-northeast-1`,
+      `arn:aws:iam::${DEV_ACCOUNT_ID}:role/ledger-stack-deploy-human`,
+      `arn:aws:iam::${DEV_ACCOUNT_ID}:role/OpenReceptionClaudeDeploy-dev`,
     ]) {
       expect(re.test(bad), bad).toBe(false);
     }
@@ -892,7 +893,7 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
     const app = new cdk.App();
     new DevDeployBrokerStack(app, 'QualifiedBrokerExec', {
       stackName: 'OpenReception-DevDeployBroker',
-      env: { account: '822063948773', region: 'ap-northeast-1' },
+      env: { account: `${DEV_ACCOUNT_ID}`, region: 'ap-northeast-1' },
       synthesizer: new cdk.DefaultStackSynthesizer({ qualifier: BROKER_BOOTSTRAP_QUALIFIER }),
     });
     const artifact = app.synth().getStackArtifact('QualifiedBrokerExec');
@@ -957,13 +958,13 @@ describe('sparse deploy ledger (#1153, Foundation S6a): broker-only, least privi
       const doc = JSON.parse(readFileSync(resolve(__dirname, '../../scripts/aws-policies', name), 'utf8'));
       const st = documentStatements(doc).find((s) => (s as { Sid?: string }).Sid === sid)!;
       expect(st.Effect, name).toBe('Deny');
-      expect(st.Resource, name).toContain(`arn:aws:iam::822063948773:role/cdk-${BROKER_BOOTSTRAP_QUALIFIER}-*`);
+      expect(st.Resource, name).toContain(`arn:aws:iam::${DEV_ACCOUNT_ID}:role/cdk-${BROKER_BOOTSTRAP_QUALIFIER}-*`);
     }
     // The synthesized template asks for that bootstrap (version parameter and deploy / exec roles).
     const app = new cdk.App();
     const stack = new DevDeployBrokerStack(app, 'QualifiedBroker', {
       stackName: 'OpenReception-DevDeployBroker',
-      env: { account: '822063948773', region: 'ap-northeast-1' },
+      env: { account: `${DEV_ACCOUNT_ID}`, region: 'ap-northeast-1' },
       synthesizer: new cdk.DefaultStackSynthesizer({ qualifier: BROKER_BOOTSTRAP_QUALIFIER }),
     });
     const template = Template.fromStack(stack).toJSON() as { Parameters: Record<string, { Default?: string }> };
@@ -1408,7 +1409,7 @@ describe('deploy account pin (pre-arming blocker 3)', () => {
 
   it('a concrete synth for another account fails before any template exists', () => {
     const app = new cdk.App();
-    expect(() => new DevDeployBrokerStack(app, 'Other', { env: { account: '123456789012', region: 'ap-northeast-1' } })).toThrow(/822063948773/);
+    expect(() => new DevDeployBrokerStack(app, 'Other', { env: { account: '123456789012', region: 'ap-northeast-1' } })).toThrow(new RegExp(DEV_ACCOUNT_ID));
     // Environment-agnostic synth is allowed; the broker's first command refuses any other account.
     expect(() => new DevDeployBrokerStack(new cdk.App(), 'Agnostic')).not.toThrow();
   });
@@ -1614,7 +1615,8 @@ describe('the broker never reads or writes the candidate tree CodeBuild extracte
       // Drop inline scripts and quoted strings; what remains are the paths and flags the shell sees.
       const shell = command.replace(/node -e '[^']*'/g, 'node').replace(/"[^"]*"/g, '');
       for (const token of shell.split(/\s+/).filter(Boolean)) {
-        if (/^(node|test|-f|-e|mkdir|-m|-p|700|aws|s3|cp|deny|--gate-file|&&|\|\||if|then|fi|\[|=|0|\];|>&2;|--only-show-errors|echo|exit|42|>|>&2|822063948773|--assembly|--account|--pipeline|--validation-project|--artifact-bucket-env|--stages|--stacks)$/.test(token)) continue;
+        if (token === DEV_ACCOUNT_ID) continue;
+        if (/^(node|test|-f|-e|mkdir|-m|-p|700|aws|s3|cp|deny|--gate-file|&&|\|\||if|then|fi|\[|=|0|\];|>&2;|--only-show-errors|echo|exit|42|>|>&2|--assembly|--account|--pipeline|--validation-project|--artifact-bucket-env|--stages|--stacks)$/.test(token)) continue;
         if (/^"\$[A-Z_]+"$|^"s3:\/\/\$[A-Z_]+\/\$[A-Z_]+"$|^OR_[A-Z0-9_]+$|^[A-Z][A-Za-z]+$|^[A-Z_]+$|^Source\/PromotionBranch,Validate\/UnprivilegedValidation,BrokerBoundary\/TrustedBrokerUnarmed$|^OpenReception-Web-dev,OpenReception-WebMonitoring-dev,OpenReception-CfMon-dev@us-east-1$/.test(token)) continue;
         expect(token.startsWith('/tmp/open-reception-'), `${token} in: ${command}`).toBe(true);
       }

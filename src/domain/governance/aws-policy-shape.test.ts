@@ -25,11 +25,12 @@ import {
   CARVE_OUT_ALLOWED_ACTIONS,
   CARVE_OUT_ALLOWED_RESOURCE_PREFIX,
 } from './deploy-diff-gate';
+import { DEV_ACCOUNT_ID } from './dev-account';
 
 const load = (name: string): PolicyDocument =>
   JSON.parse(readFileSync(resolve(process.cwd(), 'scripts/aws-policies', name), 'utf8')) as PolicyDocument;
 
-const ROLE_ARN_PREFIX = 'arn:aws:iam::822063948773:role/';
+const ROLE_ARN_PREFIX = `arn:aws:iam::${DEV_ACCOUNT_ID}:role/`;
 
 /**
  * CDK の `CustomResourceProvider` が作るロールだけを外す carve-out (#680 R1/R2/R3)。
@@ -111,7 +112,7 @@ describe('auditPolicyDocument', () => {
           Condition: {
             StringEquals: {
               'iam:PermissionsBoundary':
-                'arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary',
+                `arn:aws:iam::${DEV_ACCOUNT_ID}:policy/OpenReceptionClaudeBoundary`,
             },
           },
         },
@@ -131,7 +132,7 @@ describe('auditPolicyDocument', () => {
           Condition: {
             StringEqualsIfExists: {
               'iam:PermissionsBoundary':
-                'arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary',
+                `arn:aws:iam::${DEV_ACCOUNT_ID}:policy/OpenReceptionClaudeBoundary`,
             },
           },
         },
@@ -253,7 +254,7 @@ describe('auditPolicyDocument', () => {
           {
             Effect: 'Allow',
             Action: 'iam:PassRole',
-            Resource: 'arn:aws:iam::822063948773:role/OpenReception-*-dev-*',
+            Resource: `arn:aws:iam::${DEV_ACCOUNT_ID}:role/OpenReception-*-dev-*`,
             Condition: { StringEquals: { 'iam:PassedToService': 'lambda.amazonaws.com' } },
           },
         ],
@@ -274,7 +275,7 @@ describe('auditPolicyDocument', () => {
           {
             Effect: 'Allow',
             Action: 'iam:PassRole',
-            Resource: 'arn:aws:iam::822063948773:role/OpenReception-*-dev-*',
+            Resource: `arn:aws:iam::${DEV_ACCOUNT_ID}:role/OpenReception-*-dev-*`,
             Condition: {
               StringEquals: {
                 'iam:PassedToService': 'lambda.amazonaws.com',
@@ -330,7 +331,7 @@ describe('auditPolicyDocument', () => {
           {
             Effect: 'Allow',
             Action: ['iam:DeleteRole', 'iam:CreatePolicyVersion'],
-            Resource: 'arn:aws:iam::822063948773:role/OpenReception-*',
+            Resource: `arn:aws:iam::${DEV_ACCOUNT_ID}:role/OpenReception-*`,
           },
         ],
       });
@@ -345,13 +346,13 @@ describe('auditPolicyDocument', () => {
           {
             Effect: 'Deny',
             Action: ['iam:DeleteRole'],
-            Resource: ['arn:aws:iam::822063948773:role/cdk-hnb659fds-*'],
+            Resource: [`arn:aws:iam::${DEV_ACCOUNT_ID}:role/cdk-hnb659fds-*`],
           },
           // IAM 書き込みと無関係な Deny は混ざらない。
           { Effect: 'Deny', Action: ['s3:*'], Resource: ['arn:aws:s3:::nodi-*'] },
         ],
       });
-      expect(audit.iamWriteDenyPatterns).toEqual(['arn:aws:iam::822063948773:role/cdk-hnb659fds-*']);
+      expect(audit.iamWriteDenyPatterns).toEqual([`arn:aws:iam::${DEV_ACCOUNT_ID}:role/cdk-hnb659fds-*`]);
     });
   });
 
@@ -429,7 +430,7 @@ describe.each(ESCALATION_SCOPED_POLICIES)('%s の IAM 昇格経路', (name) => {
     // 🔴 Sid で取る。`find(Action に iam:PassRole を含む最初の Allow)` だと、#680 R2 で
     // 追加した carve-out を掴んで意味が反転しうる。
     const stmt = bySid(load(name), 'AllowPassRoleOnlyToDevWorkloadRoles');
-    expect(stmt.Resource).toBe('arn:aws:iam::822063948773:role/OpenReception-*-dev-*');
+    expect(stmt.Resource).toBe(`arn:aws:iam::${DEV_ACCOUNT_ID}:role/OpenReception-*-dev-*`);
     expect(stmt.Condition).toEqual({
       StringEquals: { 'iam:PassedToService': 'lambda.amazonaws.com' },
     });
@@ -446,12 +447,12 @@ describe.each(ESCALATION_SCOPED_POLICIES)('%s の IAM 昇格経路', (name) => {
     ['OpenReception-Web-dev-CustomCrossRegionExportWriter-mWjZeIPYdVgw', true],
     ['OpenReception-Web-prod-ServerFnServiceRole-xxxx', false],
     ['salon-loop-staging-SomeRole', false],
-    ['cdk-hnb659fds-cfn-exec-role-822063948773-ap-northeast-1', false],
+    [`cdk-hnb659fds-cfn-exec-role-${DEV_ACCOUNT_ID}-ap-northeast-1`, false],
   ] as const)('PassRole の渡し先 %s を覆うか = %s', (roleName, expected) => {
     const stmt = bySid(load(name), 'AllowPassRoleOnlyToDevWorkloadRoles');
     const pattern = stmt.Resource;
     if (typeof pattern !== 'string') throw new Error('Resource が単一の文字列ではない');
-    expect(iamArnGlobMatches(pattern, `arn:aws:iam::822063948773:role/${roleName}`)).toBe(expected);
+    expect(iamArnGlobMatches(pattern, `arn:aws:iam::${DEV_ACCOUNT_ID}:role/${roleName}`)).toBe(expected);
   });
 
   /**
@@ -491,7 +492,7 @@ describe.each(ESCALATION_SCOPED_POLICIES)('%s の IAM 昇格経路', (name) => {
         : required.endsWith('-')
           ? `${required}example`
           : required;
-      const arn = `arn:aws:iam::822063948773:${suffix}`;
+      const arn = `arn:aws:iam::${DEV_ACCOUNT_ID}:${suffix}`;
       const covered = audit.iamWriteDenyPatterns.some((p) => iamArnGlobMatches(p, arn));
       expect(covered, `${arn} を覆う Deny 資源が無い（${name}）`).toBe(true);
     }
@@ -589,8 +590,8 @@ describe('carve-out パターンの広がり (#680 R1/R2/R3)', () => {
     'OpenReception-Web-prod-CustomCrossRegionExportWriter-aBcDeFgHiJkL',
     'OpenReception-Web-staging-CustomCrossRegionExportWriter-aBcDeFgHiJkL',
     // 自分のチェーン・他プロジェクト・エントリロール。
-    'cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1',
-    'cdk-hnb659fds-cfn-exec-role-822063948773-ap-northeast-1',
+    `cdk-orcloud01-cfn-exec-role-${DEV_ACCOUNT_ID}-ap-northeast-1`,
+    `cdk-hnb659fds-cfn-exec-role-${DEV_ACCOUNT_ID}-ap-northeast-1`,
     'nodi-dev-CustomSomething-aBcDeFgHiJkL',
     'OpenReceptionClaudeDeploy-dev',
     // 大小文字を変えただけの名前も一致しない。
@@ -670,7 +671,7 @@ describe('claude-boundary.json', () => {
 describe('permissions boundary の付け外し (#680 実地デプロイの回帰)', () => {
   const boundary = load('claude-boundary.json');
   const cfnExec = load('claude-cfn-exec.json');
-  const BOUNDARY_ARN = 'arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary';
+  const BOUNDARY_ARN = `arn:aws:iam::${DEV_ACCOUNT_ID}:policy/OpenReceptionClaudeBoundary`;
 
   const actionsOf = (s: PolicyStatement): ReadonlyArray<string> =>
     typeof s.Action === 'string' ? [s.Action] : (s.Action ?? []);
@@ -778,7 +779,7 @@ describe('permissions boundary の付け外し (#680 実地デプロイの回帰
  */
 describe('dev ランタイムが必要とする読み取りが天井にある (#680 / 2026-08-15)', () => {
   const boundary = load('claude-boundary.json');
-  const DEV_SECRETS = 'arn:aws:secretsmanager:*:822063948773:secret:open-reception/dev/*';
+  const DEV_SECRETS = `arn:aws:secretsmanager:*:${DEV_ACCOUNT_ID}:secret:open-reception/dev/*`;
 
   const actionsOf = (s: PolicyStatement): ReadonlyArray<string> =>
     typeof s.Action === 'string' ? [s.Action] : (s.Action ?? []);
@@ -852,10 +853,10 @@ describe('dev ランタイムが必要とする読み取りが天井にある (#
    * 他の資源型にも及ぶ）。ここでは畳んだあとも元の 2 つを実際に覆うことを固定する。
    */
   it.each([
-    ['arn:aws:iam::822063948773:role/cdk-hnb659fds-deploy-role-822063948773-ap-northeast-1'],
-    ['arn:aws:iam::822063948773:policy/cdk-hnb659fds-something'],
-    ['arn:aws:iam::822063948773:role/cdk-staging-deploy-role-822063948773-ap-northeast-1'],
-    ['arn:aws:iam::822063948773:policy/cdk-staging-something'],
+    [`arn:aws:iam::${DEV_ACCOUNT_ID}:role/cdk-hnb659fds-deploy-role-${DEV_ACCOUNT_ID}-ap-northeast-1`],
+    [`arn:aws:iam::${DEV_ACCOUNT_ID}:policy/cdk-hnb659fds-something`],
+    [`arn:aws:iam::${DEV_ACCOUNT_ID}:role/cdk-staging-deploy-role-${DEV_ACCOUNT_ID}-ap-northeast-1`],
+    [`arn:aws:iam::${DEV_ACCOUNT_ID}:policy/cdk-staging-something`],
   ])('🔴 %s は依然として Deny の資源に一致する', (arn) => {
     const patterns = boundary.Statement.filter(
       (s) => s.Effect === 'Deny' && actionsOf(s).includes('iam:PutRolePolicy'),
@@ -1004,7 +1005,7 @@ describe('claude-deploy-entry.json', () => {
     const resources = list(stmt!.Resource);
     expect(resources.length).toBeGreaterThan(0);
     for (const r of resources) {
-      expect(r).toMatch(/^arn:aws:cloudformation:[a-z0-9-]+:822063948773:stack\/OpenReception-[A-Za-z0-9]+-dev\/\*$/);
+      expect(r).toMatch(new RegExp(String.raw`^arn:aws:cloudformation:[a-z0-9-]+:${DEV_ACCOUNT_ID}:stack\/OpenReception-[A-Za-z0-9]+-dev\/\*$`));
     }
     // 他プロジェクト・他環境・changeSet ARN が紛れ込んでいないことも明示的に確認する。
     const joined = resources.join('\n');
@@ -1108,7 +1109,7 @@ describe('claude-deploy-role-restriction.json（層 1・主境界）', () => {
   // 消して困るものは無い。
   it('NotResource 許可リストの各エントリは stack ARN である（changeSet ARN は資源型が一致せず死んでいる）', () => {
     const stackOnly =
-      /^arn:aws:cloudformation:[a-z0-9-]+:822063948773:stack\/(OpenReception-[A-Za-z0-9]+-dev|CDKToolkit-orcloud01)\/\*$/;
+      new RegExp(String.raw`^arn:aws:cloudformation:[a-z0-9-]+:${DEV_ACCOUNT_ID}:stack\/(OpenReception-[A-Za-z0-9]+-dev|CDKToolkit-orcloud01)\/\*$`);
     expect(audit.deniedNotResourcePatterns.length).toBeGreaterThan(0);
     for (const p of audit.deniedNotResourcePatterns) {
       expect(p).toMatch(stackOnly);
@@ -1167,7 +1168,10 @@ describe('ドキュメントが出荷ポリシーと一致している (#680 R6/
     const shipped = auditPolicyDocument(load('claude-deploy-role-restriction.json'))
       .deniedNotResourcePatterns;
     expect(shipped.length).toBeGreaterThan(0);
-    expect(fencedBlockAfter(readDoc(SPEC), '#### 層 1（主境界）')).toEqual([...shipped]);
+    // 文書はアカウント ID を `<DEV_ACCOUNT_ID>` と書く（#1238）。出荷物の側を同じ印へ写して比べる。
+    const asDocumented = shipped.map((p) => p.split(DEV_ACCOUNT_ID).join('<DEV_ACCOUNT_ID>'));
+    expect(asDocumented.some((p) => p.includes('<DEV_ACCOUNT_ID>'))).toBe(true);
+    expect(fencedBlockAfter(readDoc(SPEC), '#### 層 1（主境界）')).toEqual(asDocumented);
   });
 
   /**
@@ -1255,7 +1259,7 @@ describe('claude-deploy-entry-trust.json', () => {
 
   it('user/CDK だけを信頼する', () => {
     const raw = JSON.stringify(doc);
-    expect(raw).toContain('arn:aws:iam::822063948773:user/CDK');
+    expect(raw).toContain(`arn:aws:iam::${DEV_ACCOUNT_ID}:user/CDK`);
   });
 
   /**
@@ -1298,12 +1302,12 @@ const BROKER_STACK = 'OpenReception-DevDeployBroker';
 const BROKER_GENERATED: ReadonlyArray<{ service: string; logicalId: string; maxLength: number; arn: (name: string) => string }> = [
   { service: 's3', logicalId: 'PipelineArtifacts4A9B2621', maxLength: 63, arn: (n) => `arn:aws:s3:::${n}` },
   { service: 's3', logicalId: 'LedgerAuditLogsB7808091', maxLength: 63, arn: (n) => `arn:aws:s3:::${n}` },
-  { service: 'logs', logicalId: 'BrokerLogs003CD6FC', maxLength: 512, arn: (n) => `arn:aws:logs:ap-northeast-1:822063948773:log-group:${n}` },
-  { service: 'logs', logicalId: 'ValidationLogsD682AFC4', maxLength: 512, arn: (n) => `arn:aws:logs:ap-northeast-1:822063948773:log-group:${n}` },
-  { service: 'cloudwatch', logicalId: 'LedgerAttentionAlarm1D6EBF56', maxLength: 255, arn: (n) => `arn:aws:cloudwatch:ap-northeast-1:822063948773:alarm:${n}` },
-  { service: 'sns', logicalId: 'BrokerAlerts7ED7E89C', maxLength: 256, arn: (n) => `arn:aws:sns:ap-northeast-1:822063948773:${n}` },
-  { service: 'iam', logicalId: 'PipelineRoleD68726F7', maxLength: 64, arn: (n) => `arn:aws:iam::822063948773:role/${n}` },
-  { service: 'iam', logicalId: 'PipelineBrokerBoundaryTrustedBrokerUnarmedCodePipelineActionRole04E6F052', maxLength: 64, arn: (n) => `arn:aws:iam::822063948773:role/${n}` },
+  { service: 'logs', logicalId: 'BrokerLogs003CD6FC', maxLength: 512, arn: (n) => `arn:aws:logs:ap-northeast-1:${DEV_ACCOUNT_ID}:log-group:${n}` },
+  { service: 'logs', logicalId: 'ValidationLogsD682AFC4', maxLength: 512, arn: (n) => `arn:aws:logs:ap-northeast-1:${DEV_ACCOUNT_ID}:log-group:${n}` },
+  { service: 'cloudwatch', logicalId: 'LedgerAttentionAlarm1D6EBF56', maxLength: 255, arn: (n) => `arn:aws:cloudwatch:ap-northeast-1:${DEV_ACCOUNT_ID}:alarm:${n}` },
+  { service: 'sns', logicalId: 'BrokerAlerts7ED7E89C', maxLength: 256, arn: (n) => `arn:aws:sns:ap-northeast-1:${DEV_ACCOUNT_ID}:${n}` },
+  { service: 'iam', logicalId: 'PipelineRoleD68726F7', maxLength: 64, arn: (n) => `arn:aws:iam::${DEV_ACCOUNT_ID}:role/${n}` },
+  { service: 'iam', logicalId: 'PipelineBrokerBoundaryTrustedBrokerUnarmedCodePipelineActionRole04E6F052', maxLength: 64, arn: (n) => `arn:aws:iam::${DEV_ACCOUNT_ID}:role/${n}` },
 ];
 const TAMPER_ACTION: Readonly<Record<string, string>> = {
   s3: 's3:DeleteObjectVersion',
@@ -1356,22 +1360,22 @@ describe.each([
   );
 
   it.each([
-    ['iam:DeleteRolePolicy', 'arn:aws:iam::822063948773:role/OpenReceptionTrustedDevDeployBrokerRole'],
-    ['iam:DeleteRole', 'arn:aws:iam::822063948773:role/OpenReceptionDevDeployValidationRole'],
-    ['logs:DeleteMetricFilter', 'arn:aws:logs:ap-northeast-1:822063948773:log-group:OpenReception-DevDeployBroker-BrokerLogs003CD6FC-AbCdEf123456:*'],
-    ['sns:SetSubscriptionAttributes', 'arn:aws:sns:ap-northeast-1:822063948773:OpenReception-DevDeployBroker-BrokerAlerts7ED7E89C-AbCdEf123456:0b8e2d6c-1111-2222-3333-444455556666'],
+    ['iam:DeleteRolePolicy', `arn:aws:iam::${DEV_ACCOUNT_ID}:role/OpenReceptionTrustedDevDeployBrokerRole`],
+    ['iam:DeleteRole', `arn:aws:iam::${DEV_ACCOUNT_ID}:role/OpenReceptionDevDeployValidationRole`],
+    ['logs:DeleteMetricFilter', `arn:aws:logs:ap-northeast-1:${DEV_ACCOUNT_ID}:log-group:OpenReception-DevDeployBroker-BrokerLogs003CD6FC-AbCdEf123456:*`],
+    ['sns:SetSubscriptionAttributes', `arn:aws:sns:ap-northeast-1:${DEV_ACCOUNT_ID}:OpenReception-DevDeployBroker-BrokerAlerts7ED7E89C-AbCdEf123456:0b8e2d6c-1111-2222-3333-444455556666`],
     ['s3:PutBucketPolicy', 'arn:aws:s3:::openreception-devdeployb-pipelineartifacts4a9b2621-abcdef123456'],
     // broker 専用 bootstrap（qualifier orbrkr01。owner 決定 2026-09-28）: role を引き受けない・渡さない、bucket に触れない
-    ['sts:AssumeRole', 'arn:aws:iam::822063948773:role/cdk-orbrkr01-deploy-role-822063948773-ap-northeast-1'],
-    ['iam:PassRole', 'arn:aws:iam::822063948773:role/cdk-orbrkr01-cfn-exec-role-822063948773-ap-northeast-1'],
-    ['sts:AssumeRole', 'arn:aws:iam::822063948773:role/cdk-orbrkr01-file-publishing-role-822063948773-ap-northeast-1'],
-    ['s3:PutObject', 'arn:aws:s3:::cdk-orbrkr01-assets-822063948773-ap-northeast-1/abc.json'],
+    ['sts:AssumeRole', `arn:aws:iam::${DEV_ACCOUNT_ID}:role/cdk-orbrkr01-deploy-role-${DEV_ACCOUNT_ID}-ap-northeast-1`],
+    ['iam:PassRole', `arn:aws:iam::${DEV_ACCOUNT_ID}:role/cdk-orbrkr01-cfn-exec-role-${DEV_ACCOUNT_ID}-ap-northeast-1`],
+    ['sts:AssumeRole', `arn:aws:iam::${DEV_ACCOUNT_ID}:role/cdk-orbrkr01-file-publishing-role-${DEV_ACCOUNT_ID}-ap-northeast-1`],
+    ['s3:PutObject', `arn:aws:s3:::cdk-orbrkr01-assets-${DEV_ACCOUNT_ID}-ap-northeast-1/abc.json`],
     // broker の log group / bucket へ別経路で届く account 単位の操作
     ['logs:PutAccountPolicy', '*'],
     ['logs:DeleteAccountPolicy', '*'],
-    ['s3:CreateAccessPoint', 'arn:aws:s3:ap-northeast-1:822063948773:accesspoint/x'],
-    ['s3:CreateAccessPointForObjectLambda', 'arn:aws:s3-object-lambda:ap-northeast-1:822063948773:accesspoint/x'],
-    ['s3:CreateMultiRegionAccessPoint', 'arn:aws:s3::822063948773:accesspoint/x.mrap'],
+    ['s3:CreateAccessPoint', `arn:aws:s3:ap-northeast-1:${DEV_ACCOUNT_ID}:accesspoint/x`],
+    ['s3:CreateAccessPointForObjectLambda', `arn:aws:s3-object-lambda:ap-northeast-1:${DEV_ACCOUNT_ID}:accesspoint/x`],
+    ['s3:CreateMultiRegionAccessPoint', `arn:aws:s3::${DEV_ACCOUNT_ID}:accesspoint/x.mrap`],
     // vended logs / resource policy で broker の log group へ書かせる経路
     ['logs:PutResourcePolicy', '*'],
     ['logs:CreateDelivery', '*'],
@@ -1379,31 +1383,31 @@ describe.each([
     ['logs:PutDeliverySource', '*'],
     ['logs:CreateLogDelivery', '*'],
     // broker 専用 bootstrap の stack と version parameter（壊す・先取りする）
-    ['cloudformation:UpdateStack', 'arn:aws:cloudformation:ap-northeast-1:822063948773:stack/CDKToolkit-orbrkr01/abc'],
-    ['cloudformation:CreateStack', 'arn:aws:cloudformation:ap-northeast-1:822063948773:stack/CDKToolkit-orbrkr01/abc'],
-    ['cloudformation:DeleteStack', 'arn:aws:cloudformation:ap-northeast-1:822063948773:stack/CDKToolkit/abc'],
-    ['ssm:PutParameter', 'arn:aws:ssm:ap-northeast-1:822063948773:parameter/cdk-bootstrap/orbrkr01/version'],
-    ['ssm:DeleteParameter', 'arn:aws:ssm:ap-northeast-1:822063948773:parameter/cdk-bootstrap/orbrkr01/version'],
+    ['cloudformation:UpdateStack', `arn:aws:cloudformation:ap-northeast-1:${DEV_ACCOUNT_ID}:stack/CDKToolkit-orbrkr01/abc`],
+    ['cloudformation:CreateStack', `arn:aws:cloudformation:ap-northeast-1:${DEV_ACCOUNT_ID}:stack/CDKToolkit-orbrkr01/abc`],
+    ['cloudformation:DeleteStack', `arn:aws:cloudformation:ap-northeast-1:${DEV_ACCOUNT_ID}:stack/CDKToolkit/abc`],
+    ['ssm:PutParameter', `arn:aws:ssm:ap-northeast-1:${DEV_ACCOUNT_ID}:parameter/cdk-bootstrap/orbrkr01/version`],
+    ['ssm:DeleteParameter', `arn:aws:ssm:ap-northeast-1:${DEV_ACCOUNT_ID}:parameter/cdk-bootstrap/orbrkr01/version`],
   ])('%s on %s を Deny する', (action, arn) => {
     expect(denies(action, arn)).toBe(true);
   });
 
   it('Claude の dev stack の log・警報・topic・bucket・role には掛からない', () => {
     const own: ReadonlyArray<readonly [string, string]> = [
-      ['logs:DeleteLogGroup', 'arn:aws:logs:ap-northeast-1:822063948773:log-group:/aws/lambda/OpenReception-Web-dev-Server-AbCdEf123456'],
-      ['logs:DeleteLogGroup', 'arn:aws:logs:ap-northeast-1:822063948773:log-group:OpenReception-Web-dev-AccessLogs-AbCdEf123456'],
-      ['cloudwatch:DeleteAlarms', 'arn:aws:cloudwatch:ap-northeast-1:822063948773:alarm:OpenReception-WebMonitoring-dev-Errors-AbCdEf123456'],
-      ['sns:DeleteTopic', 'arn:aws:sns:ap-northeast-1:822063948773:OpenReception-Notification-dev-Alerts-AbCdEf123456'],
+      ['logs:DeleteLogGroup', `arn:aws:logs:ap-northeast-1:${DEV_ACCOUNT_ID}:log-group:/aws/lambda/OpenReception-Web-dev-Server-AbCdEf123456`],
+      ['logs:DeleteLogGroup', `arn:aws:logs:ap-northeast-1:${DEV_ACCOUNT_ID}:log-group:OpenReception-Web-dev-AccessLogs-AbCdEf123456`],
+      ['cloudwatch:DeleteAlarms', `arn:aws:cloudwatch:ap-northeast-1:${DEV_ACCOUNT_ID}:alarm:OpenReception-WebMonitoring-dev-Errors-AbCdEf123456`],
+      ['sns:DeleteTopic', `arn:aws:sns:ap-northeast-1:${DEV_ACCOUNT_ID}:OpenReception-Notification-dev-Alerts-AbCdEf123456`],
       ['s3:PutObject', 'arn:aws:s3:::openreception-web-dev-assets-abcdef123456/x.js'],
-      ['iam:DeleteRolePolicy', 'arn:aws:iam::822063948773:role/OpenReception-Web-dev-CustomCDKBucketDeployment-AbCdEf123456'],
+      ['iam:DeleteRolePolicy', `arn:aws:iam::${DEV_ACCOUNT_ID}:role/OpenReception-Web-dev-CustomCDKBucketDeployment-AbCdEf123456`],
       // Claude 自身の bootstrap（orcloud01）は引き続き使える
-      ['sts:AssumeRole', 'arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1'],
-      ['s3:PutObject', 'arn:aws:s3:::cdk-orcloud01-assets-822063948773-ap-northeast-1/abc.zip'],
+      ['sts:AssumeRole', `arn:aws:iam::${DEV_ACCOUNT_ID}:role/cdk-orcloud01-deploy-role-${DEV_ACCOUNT_ID}-ap-northeast-1`],
+      ['s3:PutObject', `arn:aws:s3:::cdk-orcloud01-assets-${DEV_ACCOUNT_ID}-ap-northeast-1/abc.zip`],
       ['logs:DescribeAccountPolicies', '*'],
       // dev stack の SSM parameter と Claude 自身の bootstrap の version は触れる
-      ['ssm:PutParameter', 'arn:aws:ssm:ap-northeast-1:822063948773:parameter/open-reception/dev/x'],
-      ['ssm:GetParameter', 'arn:aws:ssm:ap-northeast-1:822063948773:parameter/cdk-bootstrap/orcloud01/version'],
-      ['cloudformation:UpdateStack', 'arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/abc'],
+      ['ssm:PutParameter', `arn:aws:ssm:ap-northeast-1:${DEV_ACCOUNT_ID}:parameter/open-reception/dev/x`],
+      ['ssm:GetParameter', `arn:aws:ssm:ap-northeast-1:${DEV_ACCOUNT_ID}:parameter/cdk-bootstrap/orcloud01/version`],
+      ['cloudformation:UpdateStack', `arn:aws:cloudformation:ap-northeast-1:${DEV_ACCOUNT_ID}:stack/OpenReception-Web-dev/abc`],
     ];
     for (const [action, arn] of own) {
       expect(denies(action, arn), arn).toBe(false);

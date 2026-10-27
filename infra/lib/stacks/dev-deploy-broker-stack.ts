@@ -32,6 +32,7 @@ import {
   VALIDATION_TOOL_BIN,
   VALIDATION_UNIT_TEST_COMMAND,
 } from '../config/validation-gate-env';
+import { DEV_ACCOUNT_ID } from '../../../src/domain/governance/dev-account';
 
 export const DEV_DEPLOY_PROMOTION_BRANCH = 'dev-deploy';
 
@@ -42,7 +43,7 @@ export const DEV_DEPLOY_PROMOTION_BRANCH = 'dev-deploy';
  * account fails, the trusted policy evaluates the cloud assembly against this account, and the
  * broker build refuses to run in any other account.
  */
-export const DEV_DEPLOY_TARGET_ACCOUNT = '822063948773';
+export const DEV_DEPLOY_TARGET_ACCOUNT = DEV_ACCOUNT_ID;
 
 const VALIDATION_PROJECT_NAME = 'OpenReceptionDevDeployValidation';
 const BROKER_PROJECT_NAME = 'OpenReceptionTrustedDevDeployBroker';

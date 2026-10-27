@@ -32,14 +32,20 @@ set +x
 
 set -euo pipefail
 
-ACCOUNT="822063948773"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# アカウント ID の本物の値は src/domain/governance/dev-account.ts だけが持つ（#1238）。
+# 読めなければ資格情報を発行せずに終わる（別アカウントの窓を開けない）。
+ACCOUNT="$(sed -n "s/^export const DEV_ACCOUNT_ID = '\([0-9]\{12\}\)';\$/\1/p" "$ROOT/src/domain/governance/dev-account.ts")"
+if ! [[ "$ACCOUNT" =~ ^[0-9]{12}$ ]]; then
+  echo "⛔ src/domain/governance/dev-account.ts から dev のアカウント ID を読めません（資格情報は発行していません）" >&2
+  exit 1
+fi
 ROLE_ARN="arn:aws:iam::${ACCOUNT}:role/OpenReceptionClaudeDeploy-dev"
 EXTERNAL_ID="open-reception-claude-cloud-dev"
 REGION="ap-northeast-1"
 HOURS=4
 PRINT=false
 WITH_CONTEXT=true
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 while [ $# -gt 0 ]; do
   case "$1" in

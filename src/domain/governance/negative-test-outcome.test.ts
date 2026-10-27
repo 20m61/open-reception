@@ -234,8 +234,8 @@ describe('region coverage (#680 R4)', () => {
 });
 
 describe('誤った principal に対する評価は採点せず棄却する (Critical 3)', () => {
-  const EXEC = 'arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1';
-  const ENTRY = 'arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev';
+  const EXEC = 'arn:aws:iam::111122223333:role/cdk-orcloud01-cfn-exec-role-111122223333-ap-northeast-1';
+  const ENTRY = 'arn:aws:iam::111122223333:role/OpenReceptionClaudeDeploy-dev';
 
   it('意図した principal で評価されていれば通常どおり採点する', () => {
     expect(
