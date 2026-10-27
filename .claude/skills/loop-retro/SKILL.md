@@ -43,7 +43,7 @@ npm run loop:retro -- --report
 | **無風の周回** — 指摘なくマージされた | マージ済み PR | **弱い肯定**（規約が効いている証拠として数える） |
 
 ```sh
-gh api "repos/{owner}/{repo}/pulls?state=closed&per_page=50&sort=updated&direction=desc"
+curl -sS "https://api.github.com/repos/{owner}/{repo}/pulls?state=closed&per_page=50&sort=updated&direction=desc"
 ```
 
 🔴 **無風を 0 件と読まない。** 「指摘が出なかった」は「観測していない」ではなく

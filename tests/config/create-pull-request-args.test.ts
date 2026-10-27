@@ -11,10 +11,10 @@
  * 「渡したのに効かない」は「渡し忘れ」より悪い。**呼び出し側は成功したと思い込む。**
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { makeTempDir } from '../helpers/temp';
 
 /**
  * 各ケースの上限。**既定の 5 秒では足りない。**
@@ -66,7 +66,7 @@ describe('create-pull-request.ts の引数 (#736)', () => {
   }, SPAWN_TIMEOUT_MS);
 
   it('🔴 --body-file を受け付ける（無視しない）', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'pr-body-'));
+    const dir = makeTempDir('pr-body-');
     const file = join(dir, 'body.md');
     writeFileSync(file, 'TEST-本文');
     // 引数解析は通り、その先（git remote / gh）で落ちる ＝ 引数エラーではない。
@@ -77,6 +77,7 @@ describe('create-pull-request.ts の引数 (#736)', () => {
 
   it('--body と --body-file の同時指定を拒否する（どちらが効いたか曖昧にしない）', () => {
     const { code, output } = runArgs([
+      // temp-ok: 存在しないパスを渡す negative case。作らない。
       '--head', 'x', '--title', 'y', '--body', 'a', '--body-file', '/tmp/nonexistent',
     ]);
     expect(code).not.toBe(0);

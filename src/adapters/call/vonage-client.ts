@@ -32,7 +32,15 @@ export interface VideoSdk {
   initPublisher(targetElement?: HTMLElement | string, properties?: Record<string, unknown>): VideoPublisher;
 }
 
-/** クライアントに露出してよい公開 URL（CDN）。NEXT_PUBLIC_ で上書き可能。 */
+/**
+ * クライアントに露出してよい公開 URL（CDN）。NEXT_PUBLIC_ で上書き可能。
+ *
+ * 🔴 **export しない (#1132)。** 一度 export して e2e から引かせたが、`NEXT_PUBLIC_` は
+ * **ビルド時に** inline されるので、テストプロセスの env とずれると検証が嘘の赤を出す。
+ * e2e は**そのビルドが実際に挿した `<script>` の `src`** を DOM から読む。
+ * 名前も元に戻した —— 振る舞い不変の rename で本番ファイルの diff を増やさない
+ * （レビュー 7 周目）。
+ */
 const DEFAULT_SDK_URL =
   process.env.NEXT_PUBLIC_VONAGE_SDK_URL ?? 'https://static.opentok.com/v2/js/opentok.min.js';
 const GLOBAL_NAME = 'OT';

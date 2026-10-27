@@ -10,10 +10,11 @@ import {
   evaluatePreflight,
   type PreflightObservation,
 } from './deploy-preflight';
+import { DEV_ACCOUNT_ID } from './dev-account';
 
 const ok = (over: Partial<PreflightObservation> = {}): PreflightObservation => ({
-  callerArn: 'arn:aws:sts::822063948773:assumed-role/OpenReceptionClaudeDeploy-dev/cloud-session',
-  accountId: '822063948773',
+  callerArn: `arn:aws:sts::${DEV_ACCOUNT_ID}:assumed-role/OpenReceptionClaudeDeploy-dev/cloud-session`,
+  accountId: `${DEV_ACCOUNT_ID}`,
   region: 'ap-northeast-1',
   qualifier: 'orcloud01',
   environment: 'dev',
@@ -42,14 +43,14 @@ describe('1 つでも不一致なら止める', () => {
     ['prod 環境', { environment: 'prod' }, 'environment'],
     [
       '別ロール（人間の CDK user）',
-      { callerArn: 'arn:aws:iam::822063948773:user/CDK' },
+      { callerArn: `arn:aws:iam::${DEV_ACCOUNT_ID}:user/CDK` },
       'callerArn',
     ],
     [
       '似た名前のロール（部分一致で通さない）',
       {
         callerArn:
-          'arn:aws:sts::822063948773:assumed-role/OpenReceptionClaudeDeploy-dev-evil/x',
+          `arn:aws:sts::${DEV_ACCOUNT_ID}:assumed-role/OpenReceptionClaudeDeploy-dev-evil/x`,
       },
       'callerArn',
     ],
@@ -79,7 +80,7 @@ describe('1 つでも不一致なら止める', () => {
     const verdict = evaluatePreflight(ok({ accountId: '111122223333' }), DEFAULT_PREFLIGHT_REQUIREMENT);
     const detail = verdict.failures[0]!.detail;
     expect(detail).toContain('111122223333');
-    expect(detail).toContain('822063948773');
+    expect(detail).toContain(`${DEV_ACCOUNT_ID}`);
   });
 });
 

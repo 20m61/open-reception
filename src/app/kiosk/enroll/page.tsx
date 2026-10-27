@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { isServerSideFailure } from '@/domain/util/http-failure';
 
 /**
  * 受付端末エンロール画面 (docs/reception-issuance-design.md inc1)。
@@ -55,6 +56,20 @@ const ERROR_MESSAGE: Record<string, ErrorCopy> = {
     detail: 'ネットワークを確認して、もう一度お試しください。',
     retryable: true,
   },
+  /**
+   * 🔴 **サーバ側の設定不備 (#1123)。** `KIOSK_ENROLLMENT_SECRET` を入れ忘れたデプロイでは
+   * `/api/kiosk/enroll` が 503 `unavailable` を返す。
+   *
+   * ここが無いと `FALLBACK_ERROR`（「URLが無効か期限切れです／**管理画面で再発行してください**」・
+   * `retryable: false`）へ落ち、**嘘の原因と嘘の対処**を出す —— 指示どおり再発行しようとしても
+   * 発行側（`issueEnrollmentToken`）が同じ鍵で落ちるので、設置者は袋小路をループする。
+   * 担当者側（`staff-failure.ts` の `unavailable`）と同じ意味・同じ語彙に揃える。
+   */
+  unavailable: {
+    title: 'サーバー側の問題で登録できません',
+    detail: '時間をおいても直らない場合は、管理者へ連絡してください。',
+    retryable: true,
+  },
 };
 
 function toError(code: string): Phase {
@@ -97,6 +112,20 @@ export default function KioskEnrollPage() {
         router.replace('/kiosk');
         return;
       }
+      // 🔴 **まず status で判定する (#1123)。** 本文の `error` 文字列だけを見ると、
+      // **本文が JSON でない 5xx が全部 `invalid_token` へ落ちる** ——
+      // 「URLが無効か期限切れです／管理画面で再発行してください」＋再試行ボタン無し、
+      // という**嘘の原因と嘘の対処**になり、再発行しても発行側が同じ鍵で落ちて袋小路になる。
+      //
+      // これは仮定ではない: CloudFront は 502 / 504 を **HTML の hold page** で返すし
+      // （`infra/lib/stacks/web-stack.ts` の `errorResponses`）、Next の既定 500 も HTML である。
+      // 🔴 **述語は共有する（`isServerSideFailure`）。** 同じ境界を 2 か所に手書きすると、
+      // 片方のテストがもう片方を縛らない —— 最初はそうしており、受付端末側は 502/503 しか
+      // 踏まず `>= 501` への変異が素通りした（レビュー 3 周目の実測）。
+      if (isServerSideFailure(res.status)) {
+        setPhase(toError('unavailable'));
+        return;
+      }
       const data = (await res.json().catch(() => null)) as { error?: string } | null;
       setPhase(toError(data?.error ?? 'invalid_token'));
     } catch {
@@ -128,6 +157,12 @@ export default function KioskEnrollPage() {
       ) : (
         <div
           data-testid="enroll-error"
+          // 失敗を支援技術へ**提示する**（`docs/handoff-2026-08-26.md` の失敗 3 ——
+          // 「`aria-live` を見て**読み上げている**と主張する」は別物なので、そう書かない）。
+          // 🔴 **この要素は error のときに DOM へ挿入される**ので、live region として
+          // 実際に告知されるかは支援技術依存である。常時マウントへ直す案は #1130
+          // （担当者側の `StaffResponseActions` も同じ条件マウントで、対は揃っていない）。
+          role="status"
           style={{ maxWidth: 480, display: 'grid', gap: 'var(--space-md)', wordBreak: 'keep-all' }}
         >
           <h1 style={{ fontSize: '1.6rem', margin: 0 }}>{phase.title}</h1>

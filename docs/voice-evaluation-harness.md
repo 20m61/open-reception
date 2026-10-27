@@ -241,6 +241,48 @@ CER は**コーパス CER を主指標**にする。発話ごと CER の中央�
 「発信前確認後の誤担当者発信 0 件」はオフラインのイベント列だけでは判定できない
 （実際の発信操作を伴うため）。#65 の実機 UAT で確認する項目として残す。
 
+## 評価器の自己診断（#1200）
+
+SLO は「割ったかどうか」を見る。実 provider（#370 など）や VAD のしきい値を**詰める**段では、
+「候補のほうが本当に良いか」を判定する必要がある。そこで間違えやすい 3 つを、
+`src/domain/voice/evaluation-diagnostics.ts`（純関数）で機械的に判定する。考え方は
+claude.dev「Automating eval design and hillclimbing」から借りた。
+
+| 関数 | 何を防ぐか |
+| --- | --- |
+| `compareSuiteMetrics` | SLO の全項目と**補助指標**（`AUX_METRICS`: 初回 partial・ターン確定・TTS first byte・確定 → first audio の遅延、Top1 率、フィラー誤応答率）を良い向きで比べる。SLO の項目だけだと「正解を 1 位から 3 位へ落とした」候補が `no-change` になる（独立レビューの実測）。基準で測れていたものが候補で測れなくなったら**劣化**とする |
+| `runRepeated` + `noiseFromRepeats` | **ばらつきの内側の差を改善と読む**のを防ぐ。反復実行の幅（最大 − 最小）をノイズ幅にし、それを超えた差だけを数える。回によって測れたり測れなかったりする指標は幅を無限大にする |
+| `partitionScenarios` | シナリオを **ID のハッシュだけで** train / holdout に分ける。並び順にも実行結果にも依らないので、都合のよい分割を後から選べない |
+| `assessImprovement` | `regressed`（どちらかで 1 つでも劣化）> `unmeasurable`（holdout か train で何も測れない）> `improved`（holdout で改善）> `overfit-suspect`（**train でだけ改善**）> `no-change` |
+| `headroom` | 基準 provider で最良値に張り付いた割合指標を名指しする。張り付いた指標では、そのデータセットは改善を示せない |
+
+**使い方（実 provider を詰めるとき）**:
+
+1. `partitionScenarios(scenarios, { holdoutPercent, salt })` の割合と salt は**調整を始める前に**決めて記録する
+2. 基準を `runRepeated`（2 回以上）で流し、`noiseFromRepeats` でノイズ幅を取る。**比べる集合
+   （train / holdout）ごとに**取る —— シナリオが少ない側ほどばらつきは大きいので、全体で取った幅を
+   分割に当てると過小評価になる
+3. 調整は train のシナリオだけを見て行う（holdout の失敗例をプロンプトや設定へ写さない）
+4. `assessImprovement` が `improved` のときだけ採る。`overfit-suspect` は、train の失敗例に合わせて
+   詰めた兆候として扱う
+
+**評価器そのものの検査**（`tests/voice-evaluation/diagnostics.test.ts`）:
+
+- **単調性**: 合成 provider のノブを 1 つずつ悪くした 16 通りについて、どの指標も「改善」と判定されず、
+  狙った指標は「劣化」と判定されること。強い実装と弱い実装を見分けられない評価器では、何も詰められない。
+  **この不変条件は合成モデルの誤りも見つけた**: TTS のノブ（`synthesisRequestMs` など）は段ごとの
+  所要時間ではなく `turn.committed` からの経過で、要求だけを遅らせると request → first byte が縮み
+  「改善」に見えた。モデルの注記を直し、後段も同じだけずらす劣化に置き換えた
+- **過学習の実例**: train のシナリオでだけ速い provider が `overfit-suspect` になること
+  （負の対照: どこでも速い provider は `improved`）
+
+**同梱データの限界**: 合成データの基準 provider は、割合の指標を**すべて最良値で**通す
+（`headroom` がそう報告する）。劣化の検知には使えるが、候補の優劣を割合の指標で比べる根拠には
+ならない。改善を測りたい指標は、**実運用の失敗例**（聞き取り失敗・言い直し）からケースを足す。
+「今の実装が落ちるケースだけを集める」と、その実装の癖に合わせたデータセットになるので避ける。
+シナリオは 8 件しか無いため、holdout も数件になる。分割で結論を出すのは、実データのシナリオが
+揃ってから（#65 / #370）。
+
 ## データの取り扱い
 
 - **実音声はリポジトリに入れない。** 既定のデータセットは合成発話テキストと正解ラベルのみ。

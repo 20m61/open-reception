@@ -4,3 +4,5 @@ cdk.out/
 !jest.config.js
 *.d.ts
 .cdk.staging/
+# Byte-exact CDK provider handlers of the real dev assembly (the trusted policy pins their digests).
+!test/fixtures/real-dev-assembly/asset.*/*.js

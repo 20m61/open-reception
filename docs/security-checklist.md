@@ -46,7 +46,9 @@ npm run test:e2e       # 認可境界を含む e2e
 
 ## 通信・ヘッダ（ASVS V14）
 
-- [ ] CSP / X-Frame-Options(DENY) / X-Content-Type-Options(nosniff) / Referrer-Policy / Permissions-Policy を付与（`next.config.ts`）
+- [ ] CSP / X-Frame-Options(DENY) / X-Content-Type-Options(nosniff) / Referrer-Policy / Permissions-Policy を付与
+      （🔴 **CSP だけ `src/proxy.ts`**。nonce が per-request なので静的ヘッダにできず、`next.config.ts` に併設すると
+      **ブラウザが両方の積を取って nonce 許可が打ち消される**（#200）。残りは `next.config.ts`）
 - [ ] CORS は既定（same-origin）。クロスオリジンを開放しない
 - [ ] CSRF: 認証は SameSite=Lax cookie。状態変更 API は same-origin 前提
 

@@ -175,3 +175,127 @@ gate_stamp_satisfies() {
   done < "${stamp}"
   return 1
 }
+
+# ---- 証拠ファイル（#1195）---------------------------------------------------
+#
+# スタンプは「このツリーを green で検査した」を**このマシンの中だけ**で覚える。
+# Cloud で `--full` を回しても owner からは見えないので、PR へ載せられる形の記録を
+# 別に書く。読むのは `scripts/publish-gate-evidence.ts`（判定は
+# `src/domain/governance/gate-evidence.ts`）。
+#
+# 書式（1 行 1 項目・`key=value`）:
+#   version / tier / head_start / dirty_start / started_at   … 開始時に書く
+#   exit / stamped / head_end / dirty_end / finished_at     … 終了時に足す
+#   env.<key>=<value>                                         … 実行環境（表示用）
+#   summary=<summary の 1 行>                                 … 各ステップの結果
+#
+# 🔴 **開始時に仮の記録で上書きする。** 終了処理を通らずに死んだ（bootstrap 失敗・kill）
+# 実行の後に、**前回の PASS の記録が残って読まれる**のを防ぐ。仮の記録には `exit` が
+# 無いので、判定は「完走していない」になる。
+#
+# 置き場所はスタンプと同じく `.git` 配下（コミットされない・worktree ごとに別）。
+# tier ごとに分けるのは、後から回した `--fast` が `--full` の証拠を消さないため。
+
+GATE_EVIDENCE_VERSION=1
+
+# gate_evidence_file <tier> — 証拠ファイルのパス。git 外なら 1。
+gate_evidence_file() {
+  local git_dir
+  git_dir="$(git rev-parse --absolute-git-dir 2>/dev/null)" || return 1
+  [ -n "${git_dir}" ] || return 1
+  printf '%s/open-reception-gate-evidence-%s\n' "${git_dir}" "$1"
+}
+
+# 作業ツリーが dirty か。0 / 1 / unknown（git status が失敗したら unknown ＝ clean と言わない）。
+# 未追跡（非 ignore）も dirty に数える ―― 指紋と同じ範囲である。
+_gate_dirty_flag() {
+  local out
+  out="$(git status --porcelain --untracked-files=all 2>/dev/null)" || { printf 'unknown\n'; return; }
+  if [ -z "${out}" ]; then printf '0\n'; else printf '1\n'; fi
+}
+
+_gate_head() {
+  git rev-parse --verify -q HEAD 2>/dev/null || true
+}
+
+# 値から改行を落とす（1 行 1 項目の書式を壊させない）。
+_gate_evidence_line() { # _gate_evidence_line <key> <value>
+  printf '%s=%s\n' "$1" "$(printf '%s' "$2" | tr '\r\n' '  ')"
+}
+
+# gate_evidence_begin <tier> — 開始時の記録を書く。git 外では何もしない。
+gate_evidence_begin() {
+  local file
+  file="$(gate_evidence_file "$1")" || return 0
+  GATE_EVIDENCE_HEAD_START="$(_gate_head)"
+  GATE_EVIDENCE_DIRTY_START="$(_gate_dirty_flag)"
+  GATE_EVIDENCE_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  {
+    _gate_evidence_line version "${GATE_EVIDENCE_VERSION}"
+    _gate_evidence_line tier "$1"
+    _gate_evidence_line head_start "${GATE_EVIDENCE_HEAD_START}"
+    _gate_evidence_line dirty_start "${GATE_EVIDENCE_DIRTY_START}"
+    _gate_evidence_line started_at "${GATE_EVIDENCE_STARTED_AT}"
+  } > "${file}.tmp" && mv "${file}.tmp" "${file}"
+}
+
+# gate_evidence_finish <tier> <exit> <stamped:0|1> [summary 行...] — 終了時の記録で置き換える。
+gate_evidence_finish() {
+  local tier="$1" code="$2" stamped="$3" file runner line
+  shift 3
+  file="$(gate_evidence_file "${tier}")" || return 0
+  if [ "${CLAUDE_CODE_REMOTE:-}" = "true" ]; then runner="claude-code-remote"; else runner="local"; fi
+  {
+    _gate_evidence_line version "${GATE_EVIDENCE_VERSION}"
+    _gate_evidence_line tier "${tier}"
+    _gate_evidence_line head_start "${GATE_EVIDENCE_HEAD_START:-}"
+    _gate_evidence_line dirty_start "${GATE_EVIDENCE_DIRTY_START:-unknown}"
+    _gate_evidence_line started_at "${GATE_EVIDENCE_STARTED_AT:-}"
+    _gate_evidence_line exit "${code}"
+    _gate_evidence_line stamped "${stamped}"
+    _gate_evidence_line head_end "$(_gate_head)"
+    _gate_evidence_line dirty_end "$(_gate_dirty_flag)"
+    _gate_evidence_line finished_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    _gate_evidence_line env.runner "${runner}"
+    _gate_evidence_line env.os "$(uname -srm 2>/dev/null || echo unknown)"
+    _gate_evidence_line env.node "$(node -v 2>/dev/null || echo missing)"
+    # 🔴 **道具は起動しない（在否だけを見る）。** 証拠のために `semgrep --version` を叩くと、
+    # 「ルールセットが無いときは semgrep を起動しない」を縛る sast のテストが落ちる（実測）。
+    # 版まで要るなら、各ステップのログを見る。
+    _gate_evidence_line env.gitleaks "$(command -v gitleaks >/dev/null 2>&1 && echo present || echo missing)"
+    _gate_evidence_line env.semgrep "$(command -v semgrep >/dev/null 2>&1 && echo present || echo missing)"
+    # 実行計画（tier と個別トグルが解決した結果）。`--full --no-build` のように tier を
+    # 名乗りながらステップを落とした実行を、判定側が見分けるため。
+    # seam（QUALITY_GATE_SELFTEST）で起動した実行も記録する ―― ステップを 1 つも走らせていない。
+    for line in ${GATE_EVIDENCE_PLAN:-}; do _gate_evidence_line "plan.${line%%=*}" "${line#*=}"; done
+    _gate_evidence_line selftest "${QUALITY_GATE_SELFTEST:-}"
+    # 測る対象を差し替える環境変数。**値は書かない**（在否だけ）。在れば判定側が PASS を拒む
+    # ―― 検出器の差し替え（change-risk を素通しにできる）と、e2e の向け先の差し替え
+    # （HEAD 以外のサーバを測る）。独立レビュー 2 周目 MINOR 3 / 4。
+    for line in QUALITY_GATE_DETECTOR_CMD PLAYWRIGHT_BASE_URL; do
+      if [ -n "${!line:-}" ]; then _gate_evidence_line "override.${line}" set; fi
+    done
+    for line in "$@"; do _gate_evidence_line summary "${line}"; done
+  } > "${file}.tmp" && mv "${file}.tmp" "${file}"
+}
+
+# gate_count_flaky — playwright の出力（標準入力）から flaky の件数を出す。
+#
+# 集計は `  2 flaky` のように**行単独**で出る。テスト名に "flaky" を含む行
+# （`› retries 2 flaky tests`）を拾わないよう、行全体が「数字 + flaky」の形のものだけを数える。
+# 色付き出力（FORCE_COLOR）では集計が ANSI の色コードで包まれるので、先に落とす。
+# 複数あれば（再実行の集計が重なったとき）最後の 1 つを採る。
+#
+# 🔴 **集計行（`N passed` / `N failed`）そのものが見つからなければ `unknown` を出す。**
+# `reporter: 'github'`（CI=1 のとき）は集計を `::notice` 行へ埋めるので、flaky が在っても
+# 数えられない。「数えられなかった」を 0 件に倒さない（独立レビュー MINOR）。
+gate_count_flaky() {
+  local plain n
+  plain="$(sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g')"
+  if ! printf '%s\n' "${plain}" | grep -Eq '^[[:space:]]*[0-9]+ (passed|failed)([[:space:]]|$)'; then
+    printf 'unknown\n'
+    return
+  fi
+  n="$(printf '%s\n' "${plain}" | grep -E '^[[:space:]]*[0-9]+ flaky[[:space:]]*$' | tail -n 1 | grep -Eo '[0-9]+' || true)"
+  printf '%s\n' "${n:-0}"
+}

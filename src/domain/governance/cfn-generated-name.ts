@@ -17,6 +17,7 @@
  * 「論理 ID で通ると思って書いた ARN パターン」は**一致せず、初回デプロイで
  * AccessDenied → ROLLBACK_FAILED になる**。だから予測を関数にしてテストで固定する。
  */
+import { DEV_ACCOUNT_ID } from './dev-account';
 
 /**
  * `iam:CreateRole` / `PutRolePolicy` / `AttachRolePolicy` / `PassRole` を
@@ -50,7 +51,7 @@
  * `cfn-generated-name.test.ts` の「新スタック名は切り詰められず -dev が残る」が
  * この前提を固定している ―― 25 文字を超えた瞬間に赤くなる。
  */
-export const CARVE_OUT_ROLE_ARN_PATTERN = 'arn:aws:iam::822063948773:role/OpenReception-*-dev-Custom*';
+export const CARVE_OUT_ROLE_ARN_PATTERN = `arn:aws:iam::${DEV_ACCOUNT_ID}:role/OpenReception-*-dev-Custom*`;
 
 /**
  * carve-out パターンが属するアカウント ID。**パターンから取り出す**（別に書き写さない）。

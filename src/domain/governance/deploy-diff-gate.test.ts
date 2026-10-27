@@ -15,6 +15,7 @@ import {
   type TemplateProperties,
   type TemplateResource,
 } from './deploy-diff-gate';
+import { DEV_ACCOUNT_ID } from './dev-account';
 
 const change = (over: Partial<ChangeSetResourceChange> = {}): ChangeSetResourceChange => ({
   action: 'Modify',
@@ -222,7 +223,7 @@ const PROVIDER_MANAGED_JOIN = [
 const SSM_EXPORTS_ARN = (suffix: string): unknown => ({
   'Fn::Join': [
     '',
-    ['arn:', { Ref: 'AWS::Partition' }, `:ssm:us-east-1:822063948773:parameter/cdk/exports/${suffix}`],
+    ['arn:', { Ref: 'AWS::Partition' }, `:ssm:us-east-1:${DEV_ACCOUNT_ID}:parameter/cdk/exports/${suffix}`],
   ],
 });
 
@@ -288,7 +289,7 @@ const providerRole = (over: TemplateProperties = {}): TemplateProperties => ({
 /** boundary もタグも付く、アプリの普通の Lambda 実行ロール。 */
 const lambdaServiceRole = (over: TemplateProperties = {}): TemplateProperties => ({
   AssumeRolePolicyDocument: PROVIDER_TRUST,
-  PermissionsBoundary: 'arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary',
+  PermissionsBoundary: `arn:aws:iam::${DEV_ACCOUNT_ID}:policy/OpenReceptionClaudeBoundary`,
   ...over,
 });
 
@@ -331,7 +332,7 @@ const [S3_AUTO_DELETE_ROLE, EXPORT_WRITER_ROLE, EXPORT_READER_ROLE, BUCKET_DEPLO
 const CDK_ASSET_BUCKET_ARN = (suffix: string): unknown => ({
   'Fn::Join': [
     '',
-    ['arn:', { Ref: 'AWS::Partition' }, `:s3:::cdk-orcloud01-assets-822063948773-ap-northeast-1${suffix}`],
+    ['arn:', { Ref: 'AWS::Partition' }, `:s3:::cdk-orcloud01-assets-${DEV_ACCOUNT_ID}-ap-northeast-1${suffix}`],
   ],
 });
 
@@ -390,7 +391,7 @@ const bucketDeploymentRoleFixture = (
         : {},
   });
 
-const ACCOUNT = '822063948773';
+const ACCOUNT = `${DEV_ACCOUNT_ID}`;
 
 const URL_TARGETS: Readonly<Record<string, string>> =
   REVIEWED_CDK_GENERATED_LOGICAL_IDS.functionUrls;
@@ -505,7 +506,7 @@ describe('A: 論理 ID を騙っても中身で弾く（allowlist だけでは�
             {
               Action: 'sts:AssumeRoleWithWebIdentity',
               Effect: 'Allow',
-              Principal: { Federated: 'arn:aws:iam::822063948773:oidc-provider/token.actions.githubusercontent.com' },
+              Principal: { Federated: `arn:aws:iam::${DEV_ACCOUNT_ID}:oidc-provider/token.actions.githubusercontent.com` },
             },
           ],
         },
@@ -536,7 +537,7 @@ describe('A: 論理 ID を騙っても中身で弾く（allowlist だけでは�
     [
       '許可リストの action を parameter/* で載せる（cdk/exports の外へ出る）',
       providerRole({
-        Policies: inlineWith('ssm:GetParameters', 'arn:aws:ssm:us-east-1:822063948773:parameter/*'),
+        Policies: inlineWith('ssm:GetParameters', `arn:aws:ssm:us-east-1:${DEV_ACCOUNT_ID}:parameter/*`),
       }),
     ],
     [
@@ -562,7 +563,7 @@ describe('A: 論理 ID を騙っても中身で弾く（allowlist だけでは�
             PolicyDocument: {
               Version: '2012-10-17',
               Statement: [
-                { Effect: 'Allow', Action: 'ssm:GetParameters', NotResource: 'arn:aws:ssm:us-east-1:822063948773:parameter/nothing' },
+                { Effect: 'Allow', Action: 'ssm:GetParameters', NotResource: `arn:aws:ssm:us-east-1:${DEV_ACCOUNT_ID}:parameter/nothing` },
               ],
             },
           },
@@ -586,7 +587,7 @@ describe('A: 論理 ID を騙っても中身で弾く（allowlist だけでは�
                   Effect: 'Allow',
                   Action: 'ssm:GetParameters',
                   Resource: SSM_EXPORTS_ARN('*'),
-                  NotResource: 'arn:aws:ssm:us-east-1:822063948773:parameter/nothing',
+                  NotResource: `arn:aws:ssm:us-east-1:${DEV_ACCOUNT_ID}:parameter/nothing`,
                 },
               ],
             },
@@ -1021,7 +1022,7 @@ describe('A: BucketDeployment の ServiceRole (#680 続報)', () => {
                   {
                     'Fn::Join': [
                       '',
-                      ['arn:', { Ref: 'AWS::Partition' }, ':s3:::cdk-hnb659fds-assets-822063948773-ap-northeast-1'],
+                      ['arn:', { Ref: 'AWS::Partition' }, `:s3:::cdk-hnb659fds-assets-${DEV_ACCOUNT_ID}-ap-northeast-1`],
                     ],
                   },
                 ],
@@ -1197,7 +1198,7 @@ describe('carve-out の外のロールの trust policy (#680 R10)', () => {
               Action: 'sts:AssumeRoleWithWebIdentity',
               Effect: 'Allow',
               Principal: {
-                Federated: 'arn:aws:iam::822063948773:oidc-provider/token.actions.githubusercontent.com',
+                Federated: `arn:aws:iam::${DEV_ACCOUNT_ID}:oidc-provider/token.actions.githubusercontent.com`,
               },
             },
           ],
@@ -1217,7 +1218,7 @@ describe('carve-out の外のロールの trust policy (#680 R10)', () => {
             {
               Action: 'sts:AssumeRole',
               Effect: 'Allow',
-              Principal: { AWS: { 'Fn::Join': ['', ['arn:aws:iam::822063948773:root']] } },
+              Principal: { AWS: { 'Fn::Join': ['', [`arn:aws:iam::${DEV_ACCOUNT_ID}:root`]] } },
             },
           ],
         },

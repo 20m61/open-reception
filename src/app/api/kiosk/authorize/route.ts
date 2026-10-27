@@ -1,8 +1,52 @@
 import { NextResponse } from 'next/server';
+import { cookies } from 'next/headers';
 import { getSecuritySettings, verifyPin } from '@/lib/security/security-store';
 import { isIpAllowed } from '@/domain/security/types';
-import { KIOSK_COOKIE, KIOSK_SESSION_TTL_MS, issueKioskSession } from '@/lib/auth/kiosk';
+import {
+  KIOSK_COOKIE,
+  KIOSK_SESSION_TTL_MS,
+  issueKioskSession,
+  readKioskSession,
+} from '@/lib/auth/kiosk';
+import {
+  lookupDeviceBinding,
+  type DeviceBindingLookup,
+} from '@/lib/product-context/device-binding';
+import { KIOSK_DEVICE_COOKIE, readDeviceCredential } from '@/lib/auth/kiosk-device-credential';
+import { getEnrollmentSecret } from '@/lib/auth/kiosk-enrollment';
 import { readJson } from '@/lib/data-stores/result-http';
+import { KIOSK_AUTHORIZE_LAYERS } from '@/domain/security/attempt-budget';
+import { assertIdentitySaltAvailable, clientIdentity } from '@/lib/security/client-identity';
+import { secretUnavailableResponse } from '@/lib/auth/secret-unavailable';
+import { recordLayeredSuccess, reserveLayeredSafely } from '@/lib/security/attempt-store';
+import { reportAttemptBudgetExceeded, reportAttemptStoreUnavailable } from '@/lib/security/attempt-report';
+
+/**
+ * 🔴 **試行予算は層になっている（#1021 AC4 / レビュー B1・B2）。**
+ *
+ * 一次は**発信元ごと**（`x-forwarded-for` の**末尾** = CloudFront が付ける詐称できない
+ * viewer IP。`clientIdentity`）。二次は global cap。
+ *
+ * 🔴 **当初は global 1 本にしていた。** 「非詐称可能な識別子は無い」と判断したためだが、
+ * それは**この route が読んでいる `split(',')[0]`（先頭＝詐称可能）から一般化した誤り**で、
+ * `src/lib/admin/audit.ts` が末尾を採っていることと `src/proxy.ts` の origin-verify が
+ * CloudFront 迂回を全ルートで拒否していることで反証された（独立レビュー B1）。
+ *
+ * global 1 本だと、攻撃者が少量のリクエストで**受付の初回認可を無期限に閉じられる**うえ、
+ * 復旧経路（admin → エンロール URL 発行）も同じ形で閉じられて**受付が復旧不能**になった
+ * （同 B2）。一次を発信元ごとにすると、他人の失敗で閉まらない。
+ *
+ * 残る代償: global cap を使い切られている間は**初回の PIN 認可**が閉じる。ただし
+ * **稼働中の端末は 30 日 cookie で動き続け**、復旧経路（`/api/admin/login` →
+ * エンロール URL 発行）は**この増分が一切触っていない**ので開いたままである
+ * （admin 側の試行回数制限は射程外。`attempt-budget.ts` の該当 doc / #1167）。
+ *
+ * 🔴 **一次が「1 IP あたり」であるためには、鍵がプロセス間で安定していなければならない。**
+ * 一度 salt をプロセス起動ごとの乱数にしたとき、Lambda の同時実行ごとに鍵が割れて
+ * **1 本の IP だけで global cap を使い切れる**状態になっていた（独立レビュー 4 周目 MAJOR-1）。
+ * 今は fail-closed の鍵から決定的に導出している（`client-identity.ts`）。
+ */
+const ATTEMPT_SCOPE = 'kiosk-authorize';
 
 /**
  * POST /api/kiosk/authorize — PIN / IP による受付端末の初回許可 (issue #23)。
@@ -12,9 +56,16 @@ import { readJson } from '@/lib/data-stores/result-http';
  * さもないと `verifyPin` が任意 PIN で true を返し、誰でも authorize でセッションを取得できてしまい、
  * `/kiosk` セッションゲート (#239) を回避できる。IP allowlist は単独では認可根拠にしない（client 提供の
  * `x-forwarded-for` は詐称可能なため）。PIN 不要運用の端末は管理発行 URL/QR でエンロールする。
+ *
+ * 🔴 **PIN で認可できるのは登録済みの端末だけ (#1237)。** 端末 ID は request body から取らず、
+ * 管理発行 URL/QR のエンロール（`/api/kiosk/enroll`）で得た kiosk セッションから導出し、
+ * 端末台帳で有効な端末に限る。満たさなければ 403 で、エンロールへ案内する。
+ *
+ * 🔴 **セッションが切れた端末は、登録の証跡（端末証明 `kiosk_device`）で身元を示す。**
+ * 詳細は下の `resolveEnrolledDevice`。
  */
 export async function POST(request: Request): Promise<NextResponse> {
-  const body = (await readJson(request)) as { pin?: unknown; kioskId?: unknown } | null;
+  const body = (await readJson(request)) as { pin?: unknown } | null;
   const settings = await getSecuritySettings();
   const clientIp = (request.headers.get('x-forwarded-for') ?? '').split(',')[0]?.trim() ?? '';
 
@@ -32,13 +83,94 @@ export async function POST(request: Request): Promise<NextResponse> {
       { status: 403 },
     );
   }
+  // 🔴 **端末の身元は登録の証跡（端末証明 → kiosk セッションの順）だけが決める (#1237)。**
+  //    body の `kioskId` は読まない。台帳で有効な端末に限る（未登録・失効・ストア障害は
+  //    どれもセッションを出さない ＝ fail-closed。障害だけは応答を 503 に分ける）。
+  //    PIN の試行ではないので予算は数えず、照合も走らせない（未登録の要求で PBKDF2 を回させない）。
+  const jar = await cookies();
+  const credentialToken = jar.get(KIOSK_DEVICE_COOKIE)?.value;
+  // 🔴 証明の検証鍵が解決できないときは 503（fail-closed）。null に倒すと「未登録」に化け、
+  //    鍵の欠落が登録の問題に見える。catch の射程は鍵の解決だけ（#1123）。
+  if (credentialToken) {
+    try {
+      getEnrollmentSecret();
+    } catch {
+      return secretUnavailableResponse('KIOSK_ENROLLMENT_SECRET');
+    }
+  }
+  const found = await resolveEnrolledDevice(credentialToken, jar.get(KIOSK_COOKIE)?.value);
+  if (found.kind === 'unavailable') {
+    // 🔴 台帳が読めないのは「未登録」ではない（#1237 follow-up）。再登録を案内すると、
+    //    担当者に直らない作業をさせる。セッションは出さず（fail-closed）、503 で返す。
+    //    帳簿の障害と同じ形で、未捕捉 500 にもしない。
+    return NextResponse.json({ error: 'unavailable' }, { status: 503 });
+  }
+  if (found.kind === 'not_enrolled') {
+    return NextResponse.json(
+      { error: 'not_enrolled', message: 'device is not enrolled; enroll via issued URL/QR' },
+      { status: 403 },
+    );
+  }
+  const { binding } = found;
+  // 🔴 **照合の前に予算を見る（#1021 AC4）。** 予算超過の試行は `verifyPin` を
+  //    **走らせない** —— AC3 で照合は PBKDF2（実測 約 5ms/回）になったので、走らせると
+  //    叩くだけで Lambda の GB-ms と同時実行を消費させられる。断るついでに
+  //    **コストを下げる**のがこの順序の要点である（増幅を閉じる側に使う）。
+  // 🔴 数えるのは**PIN の試行だけ**。上の 403（PIN 認可が無効なサイト）は試行ではないので
+  //    数えない —— 数えると攻撃でもないもので予算を使い切る。
+  // 🔴 **予約してから照合する（Codex レビュー P1）。** 読み取り専用の判定だと、
+  //    並行バーストで**全員が予算内と読んで全員が照合へ進む**（実測: 予算 3 に対して
+  //    20 回中 20 回が到達し 0 回しか断られなかった）。入場を CAS で予約することでしか
+  //    閉じられない。数えるのは「入場した試行」で、成功したら窓ごと捨てる。
+  // 🔴 **鍵の解決だけを catch する（`/api/kiosk/enroll` と同じ流儀）。** 発信元ハッシュの
+  //    salt は `KIOSK_ENROLLMENT_SECRET` から導出するので、未設定デプロイでは throw する
+  //    （`failClosed`）。`clientIdentity` ごと try で包むと、ハッシュ計算やヘッダ解析の
+  //    throw まで 503 に化ける —— 射程を広げない理由は `secret-unavailable.ts`（#1123）。
+  try {
+    assertIdentitySaltAvailable();
+  } catch {
+    return secretUnavailableResponse('KIOSK_ENROLLMENT_SECRET');
+  }
+  const identity = await clientIdentity(request);
+  const budget = await reserveLayeredSafely(
+    identity,
+    ATTEMPT_SCOPE,
+    KIOSK_AUTHORIZE_LAYERS,
+    Date.now(),
+  );
+  if (budget === 'unavailable') {
+    // 🔴 ストアが読めないときは fail-closed（落とせば制限が消える状態を作らない）。
+    //    未捕捉 throw にはしない（未認証経路で 500 を無制限に生ませない）。
+    reportAttemptStoreUnavailable(ATTEMPT_SCOPE);
+    return NextResponse.json({ error: 'unavailable' }, { status: 503 });
+  }
+  if (!budget.allowed) {
+    // 🔴 **閉じたことを記録する（レビュー M4）。** 記録が無いと、来訪者に
+    //    「担当者へお声がけください」と言われた担当者が**なぜ閉じたのか知る手段が無い**。
+    //    値（PIN）は残さない。
+    reportAttemptBudgetExceeded(ATTEMPT_SCOPE);
+    // 🔴 **待たせるために応答を保留しない。** Lambda では待ち時間に課金されるので、
+    //    sleep は増幅を悪化させる。即座に断り、いつ再試行できるかだけ伝える。
+    //    値（入力された PIN）は応答に出さない（未認証経路）。
+    return NextResponse.json(
+      { error: 'too_many_attempts', message: 'too many attempts; try again later' },
+      { status: 429, headers: { 'retry-after': String(Math.ceil(budget.retryAfterMs / 1000)) } },
+    );
+  }
   const pin = typeof body?.pin === 'string' ? body.pin : '';
   if (!(await verifyPin(pin))) {
+    // 予約の時点で数えてあるので、ここで数え直さない（二重計上になる）。
     return NextResponse.json({ error: 'unauthorized', message: 'invalid pin' }, { status: 401 });
   }
+  // 🔴 成功したら窓を捨てる（正しく入った直後に予算切れで断られる形を作らない）。
+  //    🔴 **ここの失敗でセッション発行を止めない（レビュー M2）。** 捨て損なっても
+  //    予算は窓明けで自然に戻る。止めると、帳簿の書き込み失敗だけで**正しい PIN を
+  //    入れた来訪者が受付を開始できない**（実測で未捕捉 500 になっていた）。
+  if (!(await recordLayeredSuccess(identity, ATTEMPT_SCOPE))) {
+    reportAttemptStoreUnavailable(ATTEMPT_SCOPE);
+  }
 
-  const kioskId = typeof body?.kioskId === 'string' && body.kioskId ? body.kioskId : 'kiosk-dev';
-  const token = await issueKioskSession(kioskId);
+  const token = await issueKioskSession(binding.kioskId);
   const res = NextResponse.json({ ok: true });
   res.cookies.set(KIOSK_COOKIE, token, {
     httpOnly: true,
@@ -48,4 +180,37 @@ export async function POST(request: Request): Promise<NextResponse> {
     maxAge: Math.floor(KIOSK_SESSION_TTL_MS / 1000),
   });
   return res;
+}
+
+/**
+ * 端末の身元を、登録の証跡（端末証明）→ kiosk セッションの順で解決する (#1237)。
+ *
+ * PIN 画面が出るのは有効なセッションが無いときなので、セッションだけを身元の根拠にすると
+ * PIN 画面からの PIN は常に未登録になる。証明はエンロールでだけ発行され（1 年）、台帳の世代
+ * （失効・再登録で上がる）と一致するときだけ通る。証明が無い・通らないときは従来どおり
+ * セッションを見る。どちらでも、台帳で有効な端末でなければ通さない（＝ 403 not_enrolled）。
+ *
+ * どちらの経路でも通らず、**途中で台帳が読めなかった**なら `unavailable`（登録の有無が
+ * 分からない）。片方が読めずにもう片方で通ったなら、その端末を返す（従来と同じ）。
+ * 🔴 鍵が解決できないと `readDeviceCredential` は throw する。呼び出し側が先に鍵を確かめる。
+ */
+async function resolveEnrolledDevice(
+  credentialToken: string | undefined,
+  sessionToken: string | undefined,
+): Promise<DeviceBindingLookup> {
+  let unreadable = false;
+  const credential = await readDeviceCredential(credentialToken);
+  if (credential) {
+    const found = await lookupDeviceBinding(credential.kioskId);
+    if (found.kind === 'enrolled' && found.binding.credentialGeneration === credential.generation)
+      return found;
+    if (found.kind === 'unavailable') unreadable = true;
+  }
+  const session = await readKioskSession(sessionToken);
+  if (session) {
+    const found = await lookupDeviceBinding(session.kioskId);
+    if (found.kind === 'enrolled') return found;
+    if (found.kind === 'unavailable') unreadable = true;
+  }
+  return unreadable ? { kind: 'unavailable' } : { kind: 'not_enrolled' };
 }

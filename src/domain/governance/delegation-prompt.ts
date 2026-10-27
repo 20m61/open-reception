@@ -77,11 +77,12 @@ export type DelegationInput = {
    */
   localFastGateNote?: string;
   /**
-   * どこで止めるか（既定 `'merge'`）。
+   * どこで止めるか（既定 `'pr'` / #1198）。
    *
-   * - `'merge'`: 品質ゲート → PR → **squash マージまで**このセッション内で完結させる（従来どおり）。
-   * - `'pr'`: 品質ゲート → **PR 作成まで**で止める。マージ可否は人間が判断する
-   *   （例: マージ直後に人間が実 IAM を作る等、停止境界に隣接する変更）。
+   * - `'pr'`: 品質ゲート → PR 作成 → **`--full` の証拠を PR へ載せる**まで。**マージは owner が
+   *   PR 上の証拠を見て行う**（#1195: Claude は自分の PR を merge しない）。
+   * - `'merge'`: 品質ゲート → PR → **squash マージまで**このセッション内で完結させる。
+   *   **明示したときだけ**使える（owner が意図して任せる場合）。
    *
    * 🔴 手書きで `extraProhibitions` に「マージしないこと」を入れても、既定
    * （`'merge'`）では手順側の `gh pr merge` はそのまま残り、1 つのプロンプトの中で
@@ -118,7 +119,7 @@ const STEP_CHANGE_RISK =
   'ゲート出力の `change-risk (停止境界)` 節を**そのまま報告し、PR 本文の「人間承認が必要な変更」節に貼る**。**この報告が停止境界に触れたかどうかの唯一の根拠です**（依頼文はそれを判断していません）。この検出器は報告専用で偽陽性に倒してあるため、該当があっても自己判断で止めず、**全文を報告**すること。**「判定はできていません」は「当たりなし」ではありません**（測れなかったという意味なので、それも含めてそのまま報告する / #709）。';
 
 const STEP_GATE =
-  '`./scripts/quality-gate.sh --full` を実行する。summary の全ステップが PASS であることを確認する。**要約の緑だけを信じず、log 本文で実際に走ったコマンド行を確認する。** infra の `Tests` 行が `skipped` を含むなら**偽の green**です（`N passed | M skipped` は偽 / 括弧の中と `passed` の数が一致する `N passed (N)` が本物）。**件数そのものは数えないこと** —— 増え続けるので、値を覚えて突き合わせると本物を偽と誤診します。FAIL は**直さずに**全文報告して止める。';
+  '`./scripts/quality-gate.sh --full` を実行する。summary の全ステップが PASS であることを確認する。**要約の緑だけを信じず、log 本文で実際に走ったコマンド行を確認する。** infra の `Tests` 行が `skipped` を含むなら**偽の green**です（`N passed | M skipped` は偽 / 括弧の中と `passed` の数が一致する `N passed (N)` が本物）。**件数そのものは数えないこと** —— 増え続けるので、値を覚えて突き合わせると本物を偽と誤診します。FAIL は**直さずに**全文報告して止める。**変更が文書だけの周回は `--full --no-skip-docs` で回すこと**（文書スコープで省略されたステップは、後で載せる証拠で PASS と認められません）。';
 
 /** 毎回書いていた禁止事項。 */
 const DEFAULT_PROHIBITIONS: readonly string[] = [
@@ -135,7 +136,18 @@ const DEFAULT_PROHIBITIONS: readonly string[] = [
  * `gh pr merge` がどこにも現れないことをテストで固定している。この文でリテラルに
  * コマンド名を書くと、禁止のつもりの一文自体がその制約を破ってしまう。
  */
-const MERGE_PROHIBITION = 'マージしないこと。PR 作成までで止め、マージ可否は人間が判断する。';
+const MERGE_PROHIBITION =
+  'マージしないこと。PR 作成と証拠の投稿までで止め、マージは owner が PR 上の証拠を見て判断する。';
+
+/**
+ * `stopAfter: 'pr'` の最後の実作業: `--full` の証拠を PR へ載せる (#1198 / #1195)。
+ *
+ * 証拠は「ゲートが clean なコミットで PASS した」ことを owner が PR 上で読むための記録で、
+ * 判定は `gate-evidence.ts`（fail-closed）が持つ。**ここで PASS と言い換えない** —— 終了コードと
+ * 見出しをそのまま報告させる。REST のみ（`gh` を使わない）。
+ */
+const STEP_EVIDENCE =
+  '`npm run gate:evidence -- --number <PR 番号>` で `--full` の証拠を PR のコメントへ載せる（REST のみ・`gh` は不要）。**終了コードと、載った証拠コメントの見出し（✅ かどうか）をそのまま報告する。** 0 以外、または見出しが ✅ でないときは **PASS とは報告せず**、出力全文を報告すること（作業ツリーが dirty / 証拠の SHA が PR の head と違う / SKIP・FAIL・flaky がある、のいずれかでも PASS になりません）。**ゲートを回した後に commit / push しないこと** —— head が動くと証拠は無効になります。';
 
 /**
  * 禁止事項の中に「マージするな」という趣旨の一文が既にあるかを判定する。
@@ -391,7 +403,8 @@ export function buildDelegationPrompt(
 ): string {
   validateDelegationInput(input);
 
-  const stopAfter = input.stopAfter ?? 'merge';
+  // 🔴 既定は 'pr' (#1198)。'merge' は明示指定のときだけ。
+  const stopAfter = input.stopAfter ?? 'pr';
 
   const stepCheckout = `\`git fetch origin && git checkout ${input.branch}\` し、\`git rev-parse HEAD\` が \`${input.headSha}\` で始まることを確認する。違えば**そこで止めて報告**する。`;
   // 追加検証は**ビルドとゲートの前**に置く（この周回の目的の確認を先に済ませる）。
@@ -442,13 +455,21 @@ export function buildDelegationPrompt(
   const stepMergeOrStop =
     stopAfter === 'merge'
       ? 'PR が出来たら `npx tsx scripts/merge-pull-request.ts --number <番号>` で squash マージする（**`gh pr merge` は使わないこと** — GraphQL が 403 でした / #702 時点の観測）。マージできたかは同コマンドが REST で引き直して確認する。**リモートブランチの削除は試さなくてよい**（proxy が write を拒否していました / これも観測であって保証ではありません。ローカル側で後始末します）。'
-      : '🔴 **ここで止める。マージコマンドを実行しないこと。** マージ可否は人間が判断するため、PR を作成した時点でこの委譲の作業は完了。';
+      : '🔴 **ここで止める。マージコマンドを実行しないこと。** マージは owner が PR 上の証拠を見て行うため、証拠を載せた時点でこの委譲の作業は完了。';
   const stepFinalReport =
     stopAfter === 'merge'
       ? '最後に次を 1 つずつはっきり報告する: (a) ゲートの結果、(b) PR 番号と URL、(c) マージできたか（`merged=true` を確認したか）。'
-      : '最後に次を 1 つずつはっきり報告する: (a) ゲートの結果、(b) PR 番号と URL、(c) マージしていないこと。';
+      : '最後に次を 1 つずつはっきり報告する: (a) ゲートの結果、(b) PR 番号と URL、(c) 証拠投稿の終了コードと見出し、(d) マージしていないこと。';
 
-  const allSteps = [...ordered, stepPrCreate, stepConfirmPr, stepMergeOrStop, stepFinalReport];
+  const allSteps = [
+    ...ordered,
+    stepPrCreate,
+    stepConfirmPr,
+    // 証拠は PR 番号が要るので PR 作成の後。'merge' の手順は従来のまま（明示指定のみ）。
+    ...(stopAfter === 'pr' ? [STEP_EVIDENCE] : []),
+    stepMergeOrStop,
+    stepFinalReport,
+  ];
   const numbered = allSteps.map((s, i) => `${i + 1}. ${s}`).join('\n');
 
   // `stopAfter: 'pr'` なら呼び出し側が書かなくてもマージ禁止を自動で足す。
@@ -473,7 +494,7 @@ export function buildDelegationPrompt(
   const openingGoal =
     stopAfter === 'merge'
       ? '品質ゲート → PR → マージまで**このセッション内で完結**させてください。'
-      : '品質ゲート → PR 作成まで**このセッション内で完結**させてください（マージはしないこと。マージ可否は人間が判断します）。';
+      : '品質ゲート → PR 作成 → `--full` の証拠投稿まで**このセッション内で完結**させてください（マージはしないこと。マージは owner が PR 上の証拠を見て行います）。';
 
   // `gh pr merge` への言及は `stopAfter: 'merge'` のときだけ（'pr' の出力には
   // `gh pr merge` がどこにも現れないことをテストで固定している）。
