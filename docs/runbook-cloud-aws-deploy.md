@@ -8,7 +8,7 @@ Claude Code on the cloud（クラウドセッション / cron routine）から�
 🔴 **本書を書いている時点で、この runbook のステップは 1 度も実行されていない。IAM は未適用、
 dev への `cdk deploy` も未実施。** ステップ 1〜11 は人間が実際に手を動かして初めて検証される。
 
-対象アカウント: `822063948773`（open-reception 以外に nodi / salon-loop / Kiaff が同居）。
+対象アカウント: `<DEV_ACCOUNT_ID>`（open-reception 以外に nodi / salon-loop / Kiaff が同居）。
 リージョン: `ap-northeast-1`（主）+ `us-east-1`（`OpenReception-CfMon-dev` のみ）。
 qualifier: `orcloud01`。
 
@@ -27,10 +27,10 @@ qualifier: `orcloud01`。
 [Claude Cloud サンドボックス]  scripts/aws-cloud-deploy.sh 経由でのみ cdk を実行
       │  cdk deploy -c env=dev -c @aws-cdk/core:bootstrapQualifier=orcloud01
       ▼
-  role/cdk-orcloud01-deploy-role-822063948773-<region>   ← ステップ 2 (bootstrap) で作成、
+  role/cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-<region>   ← ステップ 2 (bootstrap) で作成、
       │                                                     ステップ 3 で層 1 の Deny を上乗せ
       ▼
-  role/cdk-orcloud01-cfn-exec-role-822063948773-<region> ← ステップ 2 (bootstrap) で作成、
+  role/cdk-orcloud01-cfn-exec-role-<DEV_ACCOUNT_ID>-<region> ← ステップ 2 (bootstrap) で作成、
       │                                                     OpenReceptionClaudeCfnExec-dev +
       │                                                     OpenReceptionClaudeBoundary 付き
       ▼
@@ -45,11 +45,39 @@ qualifier: `orcloud01`。
 **人間が Admin 権限を持つ IAM user（`user/CDK`）で実行する。**
 
 > 🔴 **`claude-boundary.json` は managed policy の 6,144 文字上限に近い。**
-> 2026-09-05 時点で **5,946 文字（空白を除いた実サイズ。残り 198 文字）**。
+> 2026-09-28 時点で **6,123 文字（空白を除いた実サイズ。残り 21 文字）**。
 > 変遷: carve-out で 5,148 → 5,682（+534）、`DenyBoundaryEscape` 分割で 5,876（+194）、
 > `PutRolePermissionsBoundary` の Allow で 5,909（+33）、Secrets Manager の
 > 読み取り許可で 6,240 相当まで膨らんだが、**Deny を削らずに詰めて** 6,037 まで戻した。
 > 2026-09-05 に PassRole をタグ条件から ARN スコープへ替えて 5,978 → 5,946（−32）。
+> 2026-09-27 に sparse deploy ledger（#1153）の table を既存の `DenyForeignProjectData` へ
+> 1 ARN 追加し、`DenyForeignProjectStacks` に broker stack（`OpenReception-DevDeployBroker`）を
+> 追加して 5,946 → 6,074（+128）。新しいステートメントでは上限を超えるため既存の Deny に畳み、
+> account 部を `*` にして短くした（Deny なので覆う範囲が増える＝安全側）。
+> 2026-09-28 に arming 前ブロッカー 8（#1146 / #1192）で次を足した。新しいステートメントは作らず、
+> すべて既存の Deny に畳んだ。
+> - `DenyForeignProjectData`: broker の log group・警報・SNS topic・bucket
+>   （`logs:*` / `cloudwatch:*` / `sns:*` / `s3:*`。bucket は小文字で stack 名ごと切られるので
+>   `openreception-devdeploy*`）と、broker 専用 bootstrap の bucket `cdk-orbrkr01-*`
+> - `DenyIamWriteOnForeignPrincipals`: `role/*DevDeploy*`（broker の role）
+> - `DenySharedBootstrapRoles`: broker 専用 bootstrap の `role/cdk-orbrkr01-*`
+> - `DenyPrincipalCreationAndOrgChanges`（cfn-exec は `DenyDnsAndPrincipals`）:
+>   `logs:*AccountPolicy`・`s3:Create*AccessPoint*`・`logs:PutResourcePolicy`・`logs:*Deliver*`
+>   （account 単位で broker の log group / bucket に届く経路。vended logs の配送先を broker の log group に向けるなど）
+> - `DenyForeignProjectData`: `ssm:*` on `parameter/cdk-bootstrap/orbrkr01/*`（broker 専用 bootstrap の version）
+> - `DenyForeignProjectStacks`: `CDKToolkit` / `CDKToolkit-staging` の 2 本を `stack/CDKToolkit*/*` に畳んだ
+>   （broker 専用の `CDKToolkit-orbrkr01` も覆う。Claude 自身の `CDKToolkit-orcloud01` も boundary 下では Deny になるが、
+>   それを読むのは boundary の無い deploy role だけ）
+> - 層 1（deploy role）と entry の共有 bootstrap の Deny にも `role/cdk-orbrkr01-*` を足した
+>
+> 余白を作るために、次の 2 つを行った。
+> - (a) すべての Deny の `Resource` の account 部を `*` にした（覆う範囲が増える＝安全側）。
+>   `NotResource` と Condition の値は、広げると緩む側なので変えていない。
+> - (b) `DenyForeignProjectData` から `nodi-*/*`・`salon-loop-*/*`・`cdk-staging-*/*`・`cdk-hnb659fds-*/*` を外した
+>   （`*` は `/` を越えるので、bucket のパターンがオブジェクトも覆う。被覆はテストで固定）。
+>
+> その結果、boundary は 6,074 → 6,123（+49）。
+> 移行用の `claude-*-migration.json` は、移行が完了したので 2026-09-28 に廃止した（ステップ 9d）。
 >
 > 🔴 **詰め方の正解（2026-08-15）**: 「入らないから Deny を削る」ではなく
 > **(a) 実効的に重複している列挙を外す**（`iam:UpdateAssumeRolePolicy` は
@@ -64,7 +92,7 @@ qualifier: `orcloud01`。
 > ポリシーになるので、`aws-policy-shape.test.ts` の「IAM の許すパスで始まる」テストで
 > 固定してある。2026-08-15 に実際にこれで `create-policy-version` が落ちた。
 >
-> **残りは 198 文字。**
+> **残りは 21 文字。**
 > 次にステートメントを足す人は、まず余白を測ること:
 >
 > ```bash
@@ -77,7 +105,7 @@ qualifier: `orcloud01`。
 > どちらも attach する**（IAM は 1 プリンシパルに boundary を 1 本しか付けられないので、
 > **分割はできない**）—— つまり実質的には**アクションの列挙を整理するしかない**。
 > 「入らないから Deny を削る」は境界の後退なので、必ず人間の承認を取ること。
-> `claude-cfn-exec.json` は 5,109 / 6,144（残り 1,035）で余裕がある。
+> `claude-cfn-exec.json` は 5,264 / 6,144（残り 880）で余裕がある。
 >
 > 🔴 **層 2（cfn-exec）と層 4（boundary）は同じ規則の 2 つの写しである。** 実効権限は
 > `identity ∩ boundary` なので、**片方だけ直しても効かない**。2026-08-15 にこれで 2 度落ちた
@@ -140,16 +168,16 @@ boundary を重ねても実効的な差が無い。
 
 ```bash
 cd infra
-npx cdk bootstrap aws://822063948773/ap-northeast-1 aws://822063948773/us-east-1 \
+npx cdk bootstrap aws://<DEV_ACCOUNT_ID>/ap-northeast-1 aws://<DEV_ACCOUNT_ID>/us-east-1 \
   --qualifier orcloud01 \
   --toolkit-stack-name CDKToolkit-orcloud01 \
-  --cloudformation-execution-policies arn:aws:iam::822063948773:policy/OpenReceptionClaudeCfnExec-dev \
+  --cloudformation-execution-policies arn:aws:iam::<DEV_ACCOUNT_ID>:policy/OpenReceptionClaudeCfnExec-dev \
   --custom-permissions-boundary OpenReceptionClaudeBoundary \
-  --trust 822063948773
+  --trust <DEV_ACCOUNT_ID>
 ```
 
-これで `cdk-orcloud01-deploy-role-822063948773-<region>` /
-`cdk-orcloud01-cfn-exec-role-822063948773-<region>` / file-publishing / image-publishing /
+これで `cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-<region>` /
+`cdk-orcloud01-cfn-exec-role-<DEV_ACCOUNT_ID>-<region>` / file-publishing / image-publishing /
 lookup の各ロールが作成され、boundary と exec policy が結びつく。
 
 🔴 **`--custom-permissions-boundary` が boundary を付けるのは cfn-exec role 1 つだけである。**
@@ -185,12 +213,12 @@ bootstrap が作成した `cdk-orcloud01-deploy-role-*` へ、主境界となる
 
 ```bash
 aws iam put-role-policy \
-  --role-name cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
+  --role-name cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --policy-name OpenReceptionClaudeDeployRestriction \
   --policy-document file://scripts/aws-policies/claude-deploy-role-restriction.json
 
 aws iam put-role-policy \
-  --role-name cdk-orcloud01-deploy-role-822063948773-us-east-1 \
+  --role-name cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-us-east-1 \
   --policy-name OpenReceptionClaudeDeployRestriction \
   --policy-document file://scripts/aws-policies/claude-deploy-role-restriction.json
 ```
@@ -206,16 +234,16 @@ allowlist を足した等で `claude-deploy-role-restriction.json` を直した�
 for r in ap-northeast-1 us-east-1; do
   printf "%s: " "$r"
   aws iam get-role-policy \
-    --role-name "cdk-orcloud01-deploy-role-822063948773-$r" \
+    --role-name "cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-$r" \
     --policy-name OpenReceptionClaudeDeployRestriction \
     --query PolicyDocument --output json | rg -c 'CfMon-dev'
 done
 ```
 
 > **同じ規則の写しが複数ある所は、必ず片方だけ直る。** 今日だけで 3 度起きた ――
-> 層 2 と層 4（identity ∩ boundary）、移行用ポリシーの対、そしてこのリージョン別ロール。
+> 層 2 と層 4（identity ∩ boundary）、移行用ポリシーの対（2026-09-28 廃止）、そしてこのリージョン別ロール。
 > 「両方に同じ性質を要求する」テスト（`policy-parity.test.ts` /
-> `boundary-migration.test.ts`）が効くのは repo 内の写しだけで、**実 IAM 側の写しは
+> 廃止前の `boundary-migration.test.ts`）が効くのは repo 内の写しだけで、**実 IAM 側の写しは
 > 人間の手順が守るしかない**。だからここに書いてある。
 
 ---
@@ -238,9 +266,9 @@ done
 （原文のまま記録する ―― これが唯一の証拠である）:
 
 ```
-AccessDenied: User: arn:aws:sts::822063948773:assumed-role/OpenReceptionClaudeDeploy-dev/claude-cloud-20260814-0352
+AccessDenied: User: arn:aws:sts::<DEV_ACCOUNT_ID>:assumed-role/OpenReceptionClaudeDeploy-dev/claude-cloud-20260814-0352
 is not authorized to perform: cloudformation:DescribeChangeSet
-on resource: arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/f9c7aab0-8f6f-11f1-be9b-0a2cf2440d9f
+on resource: arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-Web-dev/f9c7aab0-8f6f-11f1-be9b-0a2cf2440d9f
 because no identity-based policy allows the cloudformation:DescribeChangeSet action
 ```
 
@@ -284,11 +312,11 @@ stack ARN で認可されると確定した。change set 系に未証明の資�
 `exit 2` で拒否する。** 実行は 1 回でよい（両リージョンを 1 回で回す）。
 
 ```bash
-SIMULATE_ENTRY_ROLE_ARN=arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev \
-SIMULATE_DEPLOY_ROLE_ARN_AP_NORTHEAST_1=arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
-SIMULATE_DEPLOY_ROLE_ARN_US_EAST_1=arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-us-east-1 \
-SIMULATE_EXEC_ROLE_ARN_AP_NORTHEAST_1=arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
-SIMULATE_EXEC_ROLE_ARN_US_EAST_1=arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-us-east-1 \
+SIMULATE_ENTRY_ROLE_ARN=arn:aws:iam::<DEV_ACCOUNT_ID>:role/OpenReceptionClaudeDeploy-dev \
+SIMULATE_DEPLOY_ROLE_ARN_AP_NORTHEAST_1=arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
+SIMULATE_DEPLOY_ROLE_ARN_US_EAST_1=arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-us-east-1 \
+SIMULATE_EXEC_ROLE_ARN_AP_NORTHEAST_1=arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-cfn-exec-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
+SIMULATE_EXEC_ROLE_ARN_US_EAST_1=arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-cfn-exec-role-<DEV_ACCOUNT_ID>-us-east-1 \
   npm run aws:negative-tests -- --simulate-only
 ```
 
@@ -385,7 +413,7 @@ boundary を渡すのは `exec` だけである（`--custom-permissions-boundary
 
 #### 実施記録: 2026-08-15（✅ 50/50 PASS。**PassRole については無効**）
 
-**実施済み。** 上のコマンドをそのまま Admin（`arn:aws:iam::822063948773:user/CDK`）から実行した。
+**実施済み。** 上のコマンドをそのまま Admin（`arn:aws:iam::<DEV_ACCOUNT_ID>:user/CDK`）から実行した。
 
 > 🔴 **この 50/50 を「PassRole も検証済み」と読まないこと（2026-09-05 追記）。**
 > 当時の S 系には S23（dev の Lambda 実行ロールへ渡せること）が無く、
@@ -531,17 +559,17 @@ FAIL した 3 本（`7` / `7u` / `11`）はいずれも
 ```bash
 # 1) entry role: DescribeStacks（自分の dev スタック） → allowed 期待
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/OpenReceptionClaudeDeploy-dev \
   --action-names cloudformation:DescribeStacks \
-  --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/dummy-id \
+  --resource-arns arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-Web-dev/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 2) entry role: DescribeChangeSet（自分の dev スタック。stack ARN で認可される。
 #    2026-08-13 実測で訂正 ―― 以前は changeSet ARN で叩いていた） → allowed 期待
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/OpenReceptionClaudeDeploy-dev \
   --action-names cloudformation:DescribeChangeSet \
-  --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/dummy-id \
+  --resource-arns arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-Web-dev/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 3) entry role: CreateChangeSet（entry role 自身は持つべきではない） → denied 期待
@@ -549,47 +577,47 @@ aws iam simulate-principal-policy \
 #      CreateChangeSet を叩く設計であり、entry role が直接持つ必要は無い。
 #      allowed が返ったら意図しない権限付与＝バグ）
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/OpenReceptionClaudeDeploy-dev \
   --action-names cloudformation:CreateChangeSet \
-  --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/dummy-id \
+  --resource-arns arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-Web-dev/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 4) entry role: ExecuteChangeSet（entry role 自身は持つべきではない） → denied 期待
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/OpenReceptionClaudeDeploy-dev \
   --action-names cloudformation:ExecuteChangeSet \
-  --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:changeSet/claude-gate-abc1234/dummy-id \
+  --resource-arns arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:changeSet/claude-gate-abc1234/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 5) CDK deploy role: CreateChangeSet（自分の dev スタック） → allowed 期待
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names cloudformation:CreateChangeSet \
-  --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/dummy-id \
+  --resource-arns arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-Web-dev/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 6) CDK deploy role: DescribeChangeSet（自分の dev スタック。stack ARN で認可される。
 #    2026-08-13 実測で訂正） → allowed 期待
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names cloudformation:DescribeChangeSet \
-  --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/dummy-id \
+  --resource-arns arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-Web-dev/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 7) CDK deploy role: ExecuteChangeSet（自分の dev スタック。**stack ARN** で認可される。
 #    2026-08-15 実測で訂正 ―― 以前は changeSet ARN で叩いており、資源型が一致しないため
 #    常に implicitDeny だった） → allowed 期待（IMPORTANT A の主眼）
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names cloudformation:ExecuteChangeSet \
-  --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/dummy-id \
+  --resource-arns arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-Web-dev/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 8) CDK deploy role: DescribeStacks（自分の dev スタック） → allowed 期待
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names cloudformation:DescribeStacks \
-  --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/dummy-id \
+  --resource-arns arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-Web-dev/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 9) CDK deploy role: 他プロジェクトのスタックへ ExecuteChangeSet → denied 期待
@@ -604,9 +632,9 @@ aws iam simulate-principal-policy \
 #    最小 Allow でも implicitDeny になることを probe で確認済み）。
 #    名前ではなく **foreign stack** を問う形へ置き換えた ―― これが主境界の本体である。
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names cloudformation:ExecuteChangeSet \
-  --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:stack/nodi-dev-app/dummy-id \
+  --resource-arns arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/nodi-dev-app/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 10) 上記 1〜9 のうち us-east-1 が関係するもの（stack/changeSet の region 部分を
@@ -618,18 +646,18 @@ aws iam simulate-principal-policy \
 #     （`cleanupOldChangeset` が実行時の deploy で必ず呼ぶため必須。名前が衝突した
 #     既存 change set を削除できないと `cdk deploy` の実行自体が失敗する）
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names cloudformation:DeleteChangeSet \
-  --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/dummy-id \
+  --resource-arns arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-Web-dev/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 12) CDK deploy role: DeleteStack（自分の dev スタック） → allowed 期待
 #     （`--no-execute` の no-op 実行が REVIEW_IN_PROGRESS のスタック殻を残すことがあり、
 #     人間が Admin から片付ける runbook 手順に DeleteStack 権限が要る）
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names cloudformation:DeleteStack \
-  --resource-arns arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/dummy-id \
+  --resource-arns arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-Web-dev/dummy-id \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 13) 🔴 entry role: lookup role への AssumeRole → denied 期待
@@ -638,9 +666,9 @@ aws iam simulate-principal-policy \
 #     ここが allowed だと、窓の間に nodi / salon-loop / Kiaff の DynamoDB・S3・
 #     Lambda 環境変数・Cognito をアカウント全体で読める＝主境界の完全な迂回）
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/OpenReceptionClaudeDeploy-dev \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/OpenReceptionClaudeDeploy-dev \
   --action-names sts:AssumeRole \
-  --resource-arns arn:aws:iam::822063948773:role/cdk-orcloud01-lookup-role-822063948773-ap-northeast-1 \
+  --resource-arns arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-lookup-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # ---------------------------------------------------------------------------
@@ -678,9 +706,9 @@ aws iam simulate-principal-policy \
 #     🔴 渡す context は `iam:PassedToService` **だけ**。タグを注入すると、
 #        実リクエストでは起こらない条件で allowed を得てしまう（上記の空虚な検査）。
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-cfn-exec-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names iam:PassRole \
-  --resource-arns 'arn:aws:iam::822063948773:role/OpenReception-Web-dev-ServerFnServiceRoleDUMMY' \
+  --resource-arns 'arn:aws:iam::<DEV_ACCOUNT_ID>:role/OpenReception-Web-dev-ServerFnServiceRoleDUMMY' \
   --context-entries \
       'ContextKeyName=iam:PassedToService,ContextKeyValues=lambda.amazonaws.com,ContextKeyType=string' \
   --query 'EvaluationResults[0].EvalDecision' --output text
@@ -690,9 +718,9 @@ aws iam simulate-principal-policy \
 #      `OpenReception-*-dev-*` のスコープが機能しておらず、Important 4 は塞げていない）
 #     **14 と同じ context を渡す**ので、denied の理由が「context 不足」でないと言える。
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-cfn-exec-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names iam:PassRole \
-  --resource-arns 'arn:aws:iam::822063948773:role/salon-loop-staging-SomeRole' \
+  --resource-arns 'arn:aws:iam::<DEV_ACCOUNT_ID>:role/salon-loop-staging-SomeRole' \
   --context-entries \
       'ContextKeyName=iam:PassedToService,ContextKeyValues=lambda.amazonaws.com,ContextKeyType=string' \
   --query 'EvaluationResults[0].EvalDecision' --output text
@@ -701,9 +729,9 @@ aws iam simulate-principal-policy \
 #     （PassedToService 条件が効いていることの直接確認。渡し先は 14 と同じ ARN なので、
 #      違いは `iam:PassedToService` の値だけ ―― 条件そのものを問えている）
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-cfn-exec-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names iam:PassRole \
-  --resource-arns 'arn:aws:iam::822063948773:role/OpenReception-Web-dev-ServerFnServiceRoleDUMMY' \
+  --resource-arns 'arn:aws:iam::<DEV_ACCOUNT_ID>:role/OpenReception-Web-dev-ServerFnServiceRoleDUMMY' \
   --context-entries \
       'ContextKeyName=iam:PassedToService,ContextKeyValues=ec2.amazonaws.com,ContextKeyType=string' \
   --query 'EvaluationResults[0].EvalDecision' --output text
@@ -720,33 +748,33 @@ Allow している（CDK が自分のロール・ポリシーを更新するの�
 # 17) cfn-exec role: 共有 bootstrap の cfn-exec role を削除 → denied 期待
 #     （allowed だと 4 プロジェクト全部のデプロイを壊せる）
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-cfn-exec-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names iam:DeleteRole \
-  --resource-arns arn:aws:iam::822063948773:role/cdk-hnb659fds-cfn-exec-role-822063948773-ap-northeast-1 \
+  --resource-arns arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-hnb659fds-cfn-exec-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 18) cfn-exec role: 別プロジェクトの実行ポリシーを書き換える → denied 期待
 #     （`--set-as-default` 付きの CreatePolicyVersion は中身を丸ごと差し替えられる）
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-cfn-exec-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names iam:CreatePolicyVersion iam:SetDefaultPolicyVersion \
-  --resource-arns arn:aws:iam::822063948773:policy/SalonLoopStagingCfnExecution \
+  --resource-arns arn:aws:iam::<DEV_ACCOUNT_ID>:policy/SalonLoopStagingCfnExecution \
   --query 'EvaluationResults[*].EvalDecision' --output text
 
 # 19) cfn-exec role: **自分のチェーン**（deploy role）から層 1 のインラインポリシーを
 #     剥がす → denied 期待。これが allowed だと主境界そのものを外せる
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-cfn-exec-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names iam:DeleteRolePolicy \
-  --resource-arns arn:aws:iam::822063948773:role/cdk-orcloud01-deploy-role-822063948773-ap-northeast-1 \
+  --resource-arns arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-deploy-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --query 'EvaluationResults[0].EvalDecision' --output text
 
 # 20) cfn-exec role: 自分の（タグ付き）dev ロールの削除 → allowed 期待
 #     （19 の Deny が広すぎて通常のスタック更新まで壊していないことの対照）
 aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
+  --policy-source-arn arn:aws:iam::<DEV_ACCOUNT_ID>:role/cdk-orcloud01-cfn-exec-role-<DEV_ACCOUNT_ID>-ap-northeast-1 \
   --action-names iam:DeleteRole \
-  --resource-arns 'arn:aws:iam::822063948773:role/OpenReception-Web-dev-ServerFnServiceRoleDUMMY' \
+  --resource-arns 'arn:aws:iam::<DEV_ACCOUNT_ID>:role/OpenReception-Web-dev-ServerFnServiceRoleDUMMY' \
   --context-entries \
       'ContextKeyName=aws:ResourceTag/Project,ContextKeyValues=open-reception,ContextKeyType=string' \
   --query 'EvaluationResults[0].EvalDecision' --output text
@@ -789,7 +817,7 @@ aws iam simulate-principal-policy \
 ステップ 4 を PASS させて初回デプロイを認可するとき、**あなたは次のことも一緒に
 承認している**。
 
-`arn:aws:iam::822063948773:role/OpenReception-*-dev-Custom*` は Permissions Boundary の
+`arn:aws:iam::<DEV_ACCOUNT_ID>:role/OpenReception-*-dev-Custom*` は Permissions Boundary の
 強制とタグ条件 Deny から**除外されている**（CDK の `crossRegionReferences` /
 `autoDeleteObjects` が作る provider role にはどちらも付かないため。理由と実測は
 ADR 0009 決定 8 と spec §4.2 層 4）。
@@ -923,25 +951,22 @@ scripts/aws-issue-credentials.sh --hours 4
 値は既定では表示されず、macOS のクリップボードへ直接入る（`--print` を明示したときのみ表示）。
 **値をこの runbook や git や log に書かない。**
 
-### クリップボードには 9 変数が入る（2026-09-06 / #989）
+### クリップボードには 8 変数が入る（#989 / #1148）
 
 AWS の 5 つ（`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` /
-`AWS_REGION` / `AWS_CREDENTIAL_EXPIRATION`）に加えて、**デプロイ必須 context の 4 つ**
+`AWS_REGION` / `AWS_CREDENTIAL_EXPIRATION`）に加えて、**デプロイ必須 context の 3 つ**
 （ステップ 8b）も同じブロックに入る。**まとめて 1 回で貼れる。**
 
-以前は AWS の 5 つだけをコピーしていたため、残り 4 つが「リポジトリに書いてあるから後で」に
-なり、2026-09-06 の 3 回目のデプロイで **`OR_APP_SECRETS_NAME` だけが未登録**のまま窓を開けて
-`diff` が止まった。落ちたのは 4 つのうち唯一「秘密の値ではない」もので、
-**秘密 3 つは貼る意識が働くのに非秘密の 1 つだけ抜ける**という形だった。
+#1148 で origin-verify の生値 handoff は廃止した。`OR_APP_SECRETS_NAME` から
+`appSecretsName` と `originVerifySecretName` を両方生成するため、
+Claude Cloud へ `OR_ORIGIN_VERIFY_SECRET` を登録してはいけない。
 
-**初回だけ、値の置き場所を作る**（**リポジトリの外**。`OR_ORIGIN_VERIFY_SECRET` は秘密そのもので、
-`.gitignore` に頼ると ignore 行が消えた瞬間に commit され得る）:
+**初回だけ、値の置き場所を作る**（リポジトリの外。運用 context を git 管理しない）:
 
 ```bash
 mkdir -p ~/.config/open-reception
 cat > ~/.config/open-reception/deploy-context.env <<'EOF'
 OR_APP_SECRETS_NAME=open-reception/dev/app-v2
-OR_ORIGIN_VERIFY_SECRET=＜実際の高エントロピー値＞
 OR_PUBLIC_ORIGIN_OVERRIDE=https://dvxkh8nfwl334.cloudfront.net
 OR_PROVIDER_SECRET_BACKEND=secrets-manager
 EOF
@@ -951,7 +976,7 @@ chmod 600 ~/.config/open-reception/deploy-context.env
 置き場所は `OR_DEPLOY_CONTEXT_FILE` で変えられる。環境変数が設定されていればそちらが優先される
 （一時的に別の値で試せる）。
 
-🔴 **4 変数が欠けていると、窓を開けずに止まる。** 解決は `aws sts assume-role` **より前**に
+🔴 **3 変数が欠けていると、窓を開けずに止まる。** 解決は `aws sts assume-role` **より前**に
 走るので、資格情報は発行されない ―― 「開いたが使えない窓」を作らないため。欠落を `diff` で
 知ると、そこまでの往復（verify 約 6 分を含む）が丸ごと窓を食う。
 
@@ -999,12 +1024,12 @@ claude.ai/code で同じ環境 ＋ リポジトリを選んでセッションを
 3. **ゲートの任意ツールが揃っているか。** セッション開始時の `gate-tooling:` 行を読む。
    `missing gitleaks` が出ていたら `--pr` の unit が**14 件赤になる**（原因はツール不在。
    詳細は `docs/cloud-dev-environment.md` §4）。`bash scripts/cloud-setup.sh` で入れ直す
-4. **必須 context 4 変数が環境ダイアログに揃っているか**（ステップ 8b）。**値は出さない**。
-   ステップ 5 のコピーに 4 変数も入るようになったので（#989）、9 つまとめて貼っていれば
+4. **必須 context 3 変数が環境ダイアログに揃っているか**（ステップ 8b）。**値は出さない**。
+   ステップ 5 のコピーに 3 変数も入るので（#989 / #1148）、8 つまとめて貼っていれば
    ここは揃っているはず。既存セッションで確かめるときは:
 
 ```bash
-for v in OR_APP_SECRETS_NAME OR_ORIGIN_VERIFY_SECRET OR_PUBLIC_ORIGIN_OVERRIDE OR_PROVIDER_SECRET_BACKEND; do
+for v in OR_APP_SECRETS_NAME OR_PUBLIC_ORIGIN_OVERRIDE OR_PROVIDER_SECRET_BACKEND; do
   printf '%-28s %s\n' "$v" "$(printenv "$v" >/dev/null && echo SET || echo UNSET)"
 done
 ```
@@ -1034,13 +1059,13 @@ claude.ai/code の環境ダイアログへ、次の**変数名 5 つ**を登録�
 - `AWS_REGION`
 - `AWS_CREDENTIAL_EXPIRATION`
 
-ステップ 8b の context 4 変数（`OR_APP_SECRETS_NAME` / `OR_ORIGIN_VERIFY_SECRET` /
+ステップ 8b の context 3 変数（`OR_APP_SECRETS_NAME` /
 `OR_PUBLIC_ORIGIN_OVERRIDE` / `OR_PROVIDER_SECRET_BACKEND`）も同じダイアログへ入れる。
-合わせて 9 つ。
+合わせて 8 つ。**`OR_ORIGIN_VERIFY_SECRET` の生値は登録しない。**
 
 ### 🔴 live e2e の 3 変数も一緒に入れる（2026-09-09 追加）
 
-上の 9 つだけだと、**`smoke` の後半（`npm run test:e2e:live`）が必ず落ちる**:
+上の 8 つだけだと、**`smoke` の後半（`npm run test:e2e:live`）が必ず落ちる**:
 
 ```
 ERROR: 次の環境変数が要ります: LIVE_BASE_URL LIVE_ADMIN_USER LIVE_ADMIN_PASSWORD
@@ -1175,9 +1200,9 @@ SecurityGroup・IAM プリンシパルの変更 等）を検出したら非ゼ�
 返し、その `resource` は次のとおり **stack ARN** を名指しした（原文のまま記録する）:
 
 ```
-AccessDenied: User: arn:aws:sts::822063948773:assumed-role/OpenReceptionClaudeDeploy-dev/claude-cloud-20260814-0352
+AccessDenied: User: arn:aws:sts::<DEV_ACCOUNT_ID>:assumed-role/OpenReceptionClaudeDeploy-dev/claude-cloud-20260814-0352
 is not authorized to perform: cloudformation:DescribeChangeSet
-on resource: arn:aws:cloudformation:ap-northeast-1:822063948773:stack/OpenReception-Web-dev/f9c7aab0-8f6f-11f1-be9b-0a2cf2440d9f
+on resource: arn:aws:cloudformation:ap-northeast-1:<DEV_ACCOUNT_ID>:stack/OpenReception-Web-dev/f9c7aab0-8f6f-11f1-be9b-0a2cf2440d9f
 because no identity-based policy allows the cloudformation:DescribeChangeSet action
 ```
 
@@ -1251,7 +1276,7 @@ synth を突き合わせる」と書いていたが、`OpenReceptionClaudeDeploy
 `cloudformation:GetTemplate` を**明示 Deny** されている（2026-09-06 実測）:
 
 ```
-AccessDenied: User: arn:aws:sts::822063948773:assumed-role/OpenReceptionClaudeDeploy-dev/...
+AccessDenied: User: arn:aws:sts::<DEV_ACCOUNT_ID>:assumed-role/OpenReceptionClaudeDeploy-dev/...
 is not authorized to perform: cloudformation:GetTemplate ... with an explicit deny in an identity-based policy
 ```
 
@@ -1430,22 +1455,38 @@ security test 8 本**である。9b で全部を見切れないことを、ガ�
 
 | 環境変数 | 渡る context | 省くとどうなるか |
 | --- | --- | --- |
-| `OR_APP_SECRETS_NAME` | `appSecretsName` | Secrets Manager 連携が落ち、**起動が 500** |
-| `OR_ORIGIN_VERIFY_SECRET` | `originVerifySecret` | CloudFront 経由の **POST が全滅**（403） |
+| `OR_APP_SECRETS_NAME` | `appSecretsName` **+ `originVerifySecretName`** | アプリ機密の runtime 読込と origin-verify dynamic reference が落ちる |
 | `OR_PUBLIC_ORIGIN_OVERRIDE` | `publicOriginOverride` | 発行される **QR が誰にも使えない** |
 | `OR_PROVIDER_SECRET_BACKEND` | `providerSecretBackend` | テナント provider secret が **in-memory のまま**。実 Vonage 資格情報を入れても Lambda をまたぐと消え、**受付が断続的に 503** になる（下記） |
 
-dev の値は `docs/deploy-aws.md`「dev をゼロから立ち上げる手順」を参照
-（**リポジトリには置かない**。`originVerifySecret` は秘密の値そのもの）。
+dev の値は `docs/deploy-aws.md`「dev をゼロから立ち上げる手順」を参照。
+origin-verify は同じ app secret の `ORIGIN_VERIFY_SECRET` キーを CFN dynamic reference で読む。
+**生値を deploy context / CDK argv へ載せない。**
+
+### 🔴 #1148 後の初回 deploy の前に一度だけ行うこと（人間の作業 / Human Gate）
+
+#1148 から dev でも origin-verify が常に有効になる（Function URL は `NONE` + ヘッダ検証、
+`ORIGIN_VERIFY_REQUIRED=1`）。**dev の app secret に `ORIGIN_VERIFY_SECRET` キーが無いと、
+CloudFormation が dynamic reference を解決できず stack 操作が失敗する**（fail closed だが窓を無駄にする）。
+
+1. **環境ダイアログと context ファイルから `OR_ORIGIN_VERIFY_SECRET` を削除する。**
+   残っていると `aws-issue-credentials.sh` / `aws-cloud-deploy.sh` が「廃止された変数」として止める。
+2. **値は露出済みとして扱い、新しい値を作る。** 旧手順では生値が Claude の環境に置かれていた。
+   旧値を Secrets Manager へ写すのではなく、新しい高エントロピー値
+   （例: `openssl rand -base64 32`）を生成し、`open-reception/dev/app-v2` の JSON に
+   `ORIGIN_VERIFY_SECRET` キーとして追加する（Mac 側で実行し、値を Claude に渡さない）。
+3. deploy では Lambda の env と CloudFront のヘッダが同時に新しい値へ変わる。
+   CloudFront への反映の間、**一時的に 403** が出うる。利用の少ない時間に行う。
+
+コマンド単位の手順（値を画面・argv・ファイルに残さない生成、成功の確認、rollback）は
+[`runbook-origin-verify-secret-migration.md`](./runbook-origin-verify-secret-migration.md)。
 
 ### 🔴 `OR_APP_SECRETS_NAME` は「非秘密だから」落ちやすい（2026-09-06）
 
-3 回目のデプロイで、**4 つのうち `OR_APP_SECRETS_NAME` だけが環境ダイアログに未登録**で
-`diff` が停止した（ガードは正しく効いた。2026-08-15 の 500 は再発していない）。
-落ちたのは 4 つのうち**唯一「秘密の値ではない」もの**（Secrets Manager の名前）で、
-しかもリポジトリに平文で 2 箇所書いてある（この節と `docs/deploy-aws.md`）。
-秘密 3 つは「貼る」意識が働くが、非秘密の 1 つは「書いてあるから後で」で落ちる。
-**ステップ 5 の事前チェックで 4 つまとめて set/unset を見る**のはこのためである。
+2026-09-06 の 3 回目のデプロイでは、当時の必須 context のうち
+`OR_APP_SECRETS_NAME` だけが未登録で `diff` が停止した（ガードは正しく効いた）。
+#1148 以降は必須 context を 3 つへ縮小し、origin-verify 名もこの値から導出する。
+**ステップ 5 の事前チェックで 3 つまとめて set/unset を見る**。
 
 **wrapper に既定値フォールバックを入れない（決定）。** 「runbook に書いてあるのだから
 未設定なら埋めればよい」は筋が悪い。このガードの目的は*値を埋めること*ではなく
@@ -1456,81 +1497,21 @@ dev の値は `docs/deploy-aws.md`「dev をゼロから立ち上げる手順」
 
 ```bash
 export OR_APP_SECRETS_NAME=open-reception/dev/app-v2
-export OR_ORIGIN_VERIFY_SECRET=...        # 高エントロピー値。履歴・ログに残さない
-                                          # 🔴 山括弧つきの説明文をそのまま貼らない（下記 2026-09-06）
+# ↑ appSecretsName と originVerifySecretName の両方へ使う。secret 値そのものではない。
 export OR_PUBLIC_ORIGIN_OVERRIDE=https://dvxkh8nfwl334.cloudfront.net
 # 実 Vonage を使うなら secrets-manager。mock だけで動かすなら memory と**明示**する
 export OR_PROVIDER_SECRET_BACKEND=secrets-manager
 ```
 
-### 🔴 「set されている」は「正しい値が入っている」ではない（2026-09-06）
+### 旧方式の事故記録: 生 `OR_ORIGIN_VERIFY_SECRET` handoff（2026-09-06）
 
-4 回目のデプロイで、`OR_ORIGIN_VERIFY_SECRET` に**この runbook の散文に出てくる
-プレースホルダ文字列そのもの**（山括弧つきの `＜実際の高エントロピー値＞`。13 文字 / 39 バイト）が
-入っていた。
+当時は dev だけ `originVerifySecret=<生値>` を許しており、runbook のプレースホルダを
+実値として貼る事故が発生した。CloudFront側で非ASCIIとして拒否された回と、
+ガードで停止した回がある。詳細な当時の経緯は git history / #993 / #995 を参照。
 
-🔴 **この回はクラウドセッションが 2 つ並走した。本節は停止した側（PR #993）の記録である。**
-**もう一方は `deploy` を実行し、CloudFront が `originCustomHeader` を 400 で拒否した**
-（`illegal characters`。ロールバック完走・dev は無傷。ステップ 10「実施記録: 2026-09-06
-（4 回目）」）。つまりこの型は**運が良ければ外部 API に弾かれるが、それは保証ではない** ――
-CloudFront が弾いたのは値が**非 ASCII だった**からであって、`changeme` のような
-ASCII のプレースホルダなら**そのまま通り、デプロイは成功していた**。
-
-🔴 **機械的なガードは入った（#995）。** `resolveDeployContext` が山括弧・非 ASCII・
-`OR_ORIGIN_VERIFY_SECRET` の 22 文字未満を弾くので、この型は**窓を開ける前**か
-`verify` より手前で落ちる。ただしこれは症状を止めるものであり、生値を CDK context に
-載せる方式が続く限り貼り付け事故の余地は残る（本筋は #612）。
-
-**上のガードも、ステップ 5 の事前チェックも、これを止められない。** どちらも
-**set / unset しか見ていない**からで、プレースホルダは堂々と SET と出る。前節
-（`OR_APP_SECRETS_NAME` の未登録）は「登録し忘れ」だったが、こちらは
-**「登録したが中身が説明文」**であり、症状が正反対である ―― 前者は大声で止まり、
-後者は**全部緑のまま通過する**。
-
-実際、以下は**すべて PASS した**:
-
-| 段 | 結果 |
-| --- | --- |
-| ステップ 5 の 4 変数チェック | 4/4 SET |
-| ステップ 7 `verify`（`--pr` 8 ステップ） | ✅ PASS |
-| ステップ 8 `preflight`（negative security test） | ✅ 8/8 PASS |
-| ステップ 9 `diff` gate の findings | `CDKMetadata` の `replacement=Conditional` が 3 スタックぶんのみ |
-
-findings は**事前にユーザーが承認していた形**（`Remove` 0 件 / `Replacement: True` 0 件 /
-WebMonitoring の新規は `KioskRealDialingUnavailable*` の Alarm と MetricFilter 各 1 件）を
-**満たしていた**。トークンを渡していれば通っていた。
-
-**デプロイしていたらどうなったか。** CloudFront の `x-origin-verify` ヘッダと ServerFn の
-`ORIGIN_VERIFY_SECRET` env は**同じ context から組み立てられる**ので、両方が同じ
-プレースホルダになる ―― つまり**アプリは正常に動く**。壊れないので運用では気づけない。
-しかし `src/lib/security/origin-verify.ts` は単純比較なので、**リポジトリの散文を読んだ者は
-誰でもヘッダを偽造でき、CloudFront を迂回して Lambda Function URL を直叩きできる**。
-現行の 44 文字の高エントロピー値を、公開文字列で上書きすることになる。
-
-**検出のしかた（値を出さずに測る）。** synth 済みテンプレートはローカルなので IAM に
-関係なく読める。承認前に必ずこれを通す:
-
-```bash
-jq -r '.Resources | to_entries[] | select(.value.Type=="AWS::CloudFront::Distribution")
-       | .value.Properties.DistributionConfig.Origins[].OriginCustomHeaders[]?
-       | select(.HeaderName=="x-origin-verify")
-       | "len=\(.HeaderValue|length)  looks_like_placeholder=\(.HeaderValue|test("[＜＞<>]"))"' \
-  infra/cdk.out/OpenReception-Web-dev.template.json
-```
-
-`looks_like_placeholder=true`、または `len` が現行値（44）と大きく違うなら**止める**。
-🔴 **`describe-change-set` の `AfterValue` で判定しない。** CloudFront のヘッダ値は
-CloudFormation 側が `?????????????` にマスクして返すので、「マスクされている＝安全に
-解決される」と読めてしまう。**マスクは値の性質を何も保証しない**（9b-1 の実施記録）。
-
-**入れ直すときは、現行 dev に載っている値と同じものを再登録する。** 別の値へ変えると、
-CloudFront の配信更新と ServerFn の env 更新が同時に効くとは限らず、切り替え中に
-`x-origin-verify` の不一致で 403 になる窓が出うる（未実測。`web-stack.ts` の警告の型）。
-
-**Issue 候補（この周回では未実施）**: ガードを presence から plausibility へ広げる
-（山括弧・既知プレースホルダ・最小長・現行値との桁違いを wrapper が拒否する）。
-本筋は #612 の `originVerifySecretName` 移行で、生値を context に載せる方式である限り
-この型は何度でも再現する。
+**#1148 で原因側を除去した。** 現行方式は `OR_APP_SECRETS_NAME` と同じ Secrets Manager secret の
+`ORIGIN_VERIFY_SECRET` キーを dynamic reference で使う。WebStack は
+`originVerifySecret=<生値>` を **devを含む全環境で synth 時に拒否**する。
 
 #### 実施記録: 2026-09-06 のデプロイ ―― このセッションは 9 で停止した
 
@@ -1577,8 +1558,8 @@ secret は消えるので `buildVoiceCredentials` は null を返す ―― #765
 （`bin/open-reception.ts`）。`secrets-manager` を選んで prefix が空のときは
 WebStack が構築段で fail-closed に落とす。
 
-⚠️ `originVerifySecret` は `cdk` の argv に載る＝プロセステーブルから見える。CDK context の
-仕組み上避けられないので、**本筋は `originVerifySecretName`（Secrets Manager 名）への移行**（#612）。
+✅ #1148 で `originVerifySecret` の生値経路を廃止した。現行 wrapper は
+`OR_APP_SECRETS_NAME` から `originVerifySecretName` を生成し、CDK argv に secret 値を載せない。
 
 ---
 
@@ -1630,61 +1611,33 @@ Your access has been denied by S3 ... permission to GetObject for cdk-hnb659fds-
 スタック」前提だった。2026-08-15 にこれを踏み、`UPDATE_ROLLBACK_FAILED` から
 抜けられなくなった。
 
-### 手順（移行の間だけ穴を開け、成功したら閉じる）
+### ✅ 完了。移行用ポリシーは廃止した（2026-09-28）
 
-`scripts/aws-policies/claude-boundary-migration.json` は**通常の境界と 1 箇所だけ違う**
-一時ポリシー。共有 assets の**オブジェクト読み取りだけ**を通し、書き込み・削除・
-他プロジェクトのデータは通常どおり Deny する（`NotAction: s3:GetObject` の Deny で塞ぐ）。
-差分が 1 箇所であることは `src/domain/governance/boundary-migration.test.ts` が固定している。
+この移行は完了している。根拠は次の 2 つ。
+- 2026-08-15 の初回デプロイが成功した（本書の「実施記録」）。
+- 2026-09-09 に、chain が扱う 3 スタックが `orcloud01` の chain で `UPDATE_COMPLETE` になった
+  （`describe-stacks` の実測。ステップ 9 の実施記録）。
 
-🔴 **境界と cfn-exec の両方を差し替える。** 同じ Deny が両方にあり、**片方だけ開けても
-`explicitDeny` のまま**通らない（2026-08-15 に境界だけ開けて実際に踏んだ）。
+成功したデプロイ以降、スタックは `orcloud01` の assets を参照するので、次からのロールバックは
+共有バケットを見ない。
 
-```bash
-# 1) 一時ポリシーを適用（ここから窓が開く）。**2 本とも**必要。
-aws iam create-policy-version \
-  --policy-arn arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary \
-  --policy-document file://scripts/aws-policies/claude-boundary-migration.json \
-  --set-as-default
-aws iam create-policy-version \
-  --policy-arn arn:aws:iam::822063948773:policy/OpenReceptionClaudeCfnExec-dev \
-  --policy-document file://scripts/aws-policies/claude-cfn-exec-migration.json \
-  --set-as-default
+そのため、移行の窓を開けるための一時ポリシーを廃止した。
+- 廃止したもの: `scripts/aws-policies/claude-boundary-migration.json` / `claude-cfn-exec-migration.json` と、
+  その差分を固定していた `src/domain/governance/boundary-migration.test.ts`
+- 理由: 移行用 boundary が 6,144 文字の上限に達し、arming 前ブロッカー 8（#1146 / #1192）の Deny を
+  足せなくなった。
 
-# 窓が開いたことを必ず確認する（開いていないまま deploy して二度手間になる）
-aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::822063948773:role/cdk-orcloud01-cfn-exec-role-822063948773-ap-northeast-1 \
-  --action-names s3:GetObject \
-  --resource-arns "arn:aws:s3:::cdk-hnb659fds-assets-822063948773-ap-northeast-1/x.zip" \
-  --query 'EvaluationResults[0].EvalDecision' --output text   # → allowed
+🔴 **共有 bootstrap（`hnb659fds`）で作った別のスタックを、将来また chain へ移す場合**は、
+そのときの通常ポリシーから同じ「1 箇所だけ違う」一時ポリシーを作り直し、差分のテストも一緒に戻す。
+- 廃止前の版は git の履歴にある（`git log --diff-filter=D -- scripts/aws-policies/claude-boundary-migration.json`）。
+- 廃止前の版をそのまま適用しない。それ以降に通常ポリシーへ足した Deny が落ちる。
+- 窓の開閉（2 本とも差し替える、`simulate` で確かめる、成功したら即座に閉じる、古い version を掃除する）は、
+  廃止前の本節の手順（git の履歴）に従う。
 
-# 2) 移行デプロイ（必須 context はステップ 8b）
-bash scripts/aws-cloud-deploy.sh diff
-OR_APPROVED_DIFF="..." bash scripts/aws-cloud-deploy.sh deploy
-
-# 3) 🔴 成功したら必ず通常へ戻す（窓を閉じる）。**2 本とも**戻す。
-aws iam create-policy-version \
-  --policy-arn arn:aws:iam::822063948773:policy/OpenReceptionClaudeBoundary \
-  --policy-document file://scripts/aws-policies/claude-boundary.json \
-  --set-as-default
-aws iam create-policy-version \
-  --policy-arn arn:aws:iam::822063948773:policy/OpenReceptionClaudeCfnExec-dev \
-  --policy-document file://scripts/aws-policies/claude-cfn-exec.json \
-  --set-as-default
-
-# 閉じたことを確認する（上と同じ simulate が explicitDeny に戻る）
-```
-
-⚠️ managed policy は**バージョンを 5 個までしか保持できない**。窓の開閉を繰り返すと
-`LimitExceeded` になるので、古いバージョンは `aws iam delete-policy-version` で掃除する。
-
-**窓の間に何が起きうるか**: サンドボックスが侵害されていた場合、他プロジェクト
-（nodi / salon-loop）の Lambda バンドルや CFN テンプレートを**読める**。書き込みはできない。
-だから**移行が終わったら即座に閉じる**。閉じたことは `simulate-principal-policy` で
-`s3:GetObject` on `cdk-hnb659fds-assets-*/*` が `explicitDeny` に戻ることで確かめる。
-
-**なぜ一度きりで済むか**: 成功したデプロイ以降、スタックは `orcloud01` の assets を参照する
-ので、次からのロールバックは共有バケットを見ない。
+**live 側の確認（owner、次に policy を適用するとき）**: repo からは実 IAM の状態が見えない。
+`OpenReceptionClaudeBoundary` / `OpenReceptionClaudeCfnExec-dev` の default version が通常のファイルと同じであること
+（`get-policy-version` の文書を `claude-boundary.json` / `claude-cfn-exec.json` と比べる）を確かめる。
+移行用の版が残っていれば、`delete-policy-version` で消す。
 
 ---
 
@@ -1805,6 +1758,118 @@ OR_SMOKE_URL=https://<デプロイ後のドメイン> bash scripts/aws-cloud-dep
 
 `scripts/url-quality-gate.sh` と `npm run test:e2e:live` を呼ぶ。
 
+### 実施記録: 2026-09-14（6 回目 ―― ✅ **成功**。独自ドメイン `open-reception.cinc.click` を初回適用）
+
+HEAD `686a55b`（#1104）。**`OpenReception-Web-dev` のみ `UPDATE_COMPLETE`** で、
+`WebMonitoring-dev` / `CfMon-dev` は **no changes**（`LastUpdatedTime` は 5 回目の
+2026-09-09 のまま）。5 回目で `main` に追いついた直後の周回なのでコード差分は無く、
+**変わったのは独自ドメインの配線だけ**である。
+
+| 段 | 結果 | 所要 |
+| --- | --- | --- |
+| §0 診断 | ⚠️ **`OR_CUSTOM_DOMAIN` だけが UNSET**（9/10。後述） | 約 1 分 |
+| `verify` | ✅ green（8 ステップ全 PASS。unit 8298 passed / 633 files、infra cdk 176 passed / 12 files、`flaky` **0**、SKIP **0**） | 約 6 分 |
+| `preflight` | ✅ 全項目 PASS（negative security test `passed=8 failed=0 notSimulatable=0`） | 約 30 秒 |
+| `diff` | ⛔ `Web-dev` のみブロック（設計どおり）。他 2 スタックは「危険な変更はありません」 | 約 2.5 分 |
+| findings 精査 | ✅ `describe-change-set` の実体で裏取り → 承認 | 約 2 分 |
+| `deploy` | ✅ `Web-dev` `UPDATE_COMPLETE`（`Deployment time: 228.01s`） | 約 4.5 分 |
+| `smoke` | ✅ CDK 生成ドメイン・独自ドメインとも主要ルート 200（独自ドメインは alias 作成後に再確認）。lighthouse / live e2e は未実行（後述） | 約 3 分 |
+
+**到達点**（`describe-stacks` の実測）:
+
+| スタック | 状態 | `LastUpdatedTime` |
+| --- | --- | --- |
+| `OpenReception-Web-dev` | `UPDATE_COMPLETE` | 2026-09-14T11:16:36Z |
+| `OpenReception-WebMonitoring-dev` | `UPDATE_COMPLETE`（**今回の変更なし**） | 2026-09-09T21:29:55Z |
+| `OpenReception-CfMon-dev` | `UPDATE_COMPLETE`（**今回の変更なし**） | 2026-09-09T21:30:17Z |
+
+findings は過去 2 回と同じ形だった: `Remove` **0 件** / `Replacement: True` **0 件**。
+`Web-dev` は 10 変更中 7 件が `[resourceReplacement] ... replacement=Conditional`。
+🔴 **`Distribution830FAC52`（`AWS::CloudFront::Distribution`）は `Replacement: False`** で、
+独自ドメインは**その場で**適用された ―― distribution ID `E3JHU0VUXEJJ0J` と
+`dvxkh8nfwl334.cloudfront.net` はどちらも変わっていない。
+
+適用後、Outputs に `CustomDomainUrl = https://open-reception.cinc.click` が現れた。
+提出テンプレート（`infra/cdk.out/OpenReception-Web-dev.template.json`）の実測は
+`Aliases: ["open-reception.cinc.click"]`、`ViewerCertificate` は
+`MinimumProtocolVersion: TLSv1.2_2021` / `SslSupportMethod: sni-only`。
+
+`OR_ORIGIN_VERIFY_SECRET` は verify / diff / deploy の 3 ログとも `grep -c -F` で **0 回**。
+
+#### 🔴 `OR_CUSTOM_DOMAIN` は環境ダイアログへ入れても、既に動いているセッションには届かない
+
+今回の主目的そのものの変数が、セッション開始時点で **UNSET** だった（他 9 変数は SET）。
+env はコンテナ起動時に焼き込まれるため（ステップ 6b）、**窓を開けた後に足した変数は
+そのセッションには入らない**。
+
+これは**黙って通る**型である ―― `resolveCustomDomainContext` は未指定を**正常**として扱う
+（独自ドメインを使わない環境の deploy を止めないため）ので、気づかなければ
+**CDK 生成ドメインのままデプロイが「成功」してしまう**。`docs/deploy-aws.md` が警告している
+「環境ダイアログへ入れ忘れると、黙って CDK 生成ドメインのままデプロイされる」が実際に起きた。
+**`diff` の findings にも出ない**（ドメインが付かないことは「危険な変更」ではないため）。
+
+**セッションを作り直さずに回復した**: 値（FQDN と証明書 ARN）はどちらも秘密ではないので、
+`OR_CUSTOM_DOMAIN=... ./scripts/aws-cloud-deploy.sh diff` と**コマンドへ前置**して渡した。
+`scripts/aws-deploy-context.ts` は `process.env` を読むだけなので、これで
+`-c customDomain=...` が正しく渡る。**窓を消費せずに済む**ので、この型に当たったら
+セッション再作成より先にこちらを試すこと。
+
+#### 🔴 証明書 ARN はこの経路からは*発見*できない（Deny は正しい）
+
+`acm:ListCertificates` は explicit deny（実測）。ARN はリポジトリにも無いので、
+**人から受け取るしかない**。設計どおりなので緩めない。
+
+#### 🔴 検証用 CNAME があっても、公開ドメインは解決しない（alias は別物）
+
+証明書が `ISSUED` でも、それを成立させているのは
+`_15384d9c….open-reception.cinc.click → acm-validations.aws` という**検証用 CNAME** であって、
+`open-reception.cinc.click` を distribution へ向ける **alias/A（または CNAME）ではない**。
+
+実測（**対照付き**）:
+
+```
+https://dvxkh8nfwl334.cloudfront.net  → http=200
+https://open-reception.cinc.click     → curl: (56) CONNECT tunnel failed, 502（名前が解決しない）
+```
+
+🔴 **対照を置くこと。** 片方だけ見ても、サンドボックスに resolver が無いのか
+（`getent hosts` は `cinc.click` でも空を返す）、本当にレコードが無いのかを区別できない。
+
+今回は `OR_PUBLIC_ORIGIN_OVERRIDE` も `https://open-reception.cinc.click` へ揃えたので、
+**alias が出来るまでに発行される QR / エンロール URL は解決しないドメインを指す**（画面自体は
+`dvxkh8nfwl334.cloudfront.net` で引き続き開ける）。alias 作成は `route53:*` が deny のため人の作業。
+
+**同日 11:40:41Z に人が alias を UPSERT して解消した**（ゾーン `Z00026383ROYZSO2JGQL0`、
+A と AAAA の両方）。alias target のゾーン ID は **`Z2FDTNDATAQYW2`** ―― CloudFront 共通の
+固定値で、distribution ID（`E3JHU0VUXEJJ0J`）とは**別物**である。AAAA も入れるのは、
+CloudFront が IPv6 有効なので A だけだと IPv6 クライアントが落ちるため。
+
+伝播は**1 分未満**だった。11:41:29Z の実測:
+
+| 確認 | 結果 |
+| --- | --- |
+| `https://open-reception.cinc.click` | `http=200` / `ssl_verify_result=0`（ホスト名と証明書が一致） |
+| 主要ルート | `/` `/kiosk` `/admin/login` いずれも 200 |
+| 配信元 | `via: 1.1 ….cloudfront.net (CloudFront)` |
+| セキュリティヘッダ | CSP（nonce 付き）・HSTS `max-age=31536000` とも独自ドメインで有効 |
+
+🔴 **ここまでやって 1 周である。** `deploy` の `UPDATE_COMPLETE` と `CustomDomainUrl` の出力は
+「CloudFront 側の紐付けが済んだ」しか言わない。**公開ドメインで実際に 200 が返ることは、
+alias を作るまで誰も確かめていない。**
+
+#### lighthouse はこのサンドボックスでは測れない（proxy の CA）
+
+`CHROME_PATH=/opt/pw-browsers/chromium-1194/chrome-linux/chrome` を渡すと
+`Chrome installation not found` は解消して Chrome は起動するが、次に
+`CHROME_INTERSTITIAL_ERROR` で落ちる ―― エージェント proxy の CA を Chrome が信頼せず、
+TLS の interstitial で止まるため。**TLS 検証を切らないと通せないので、切らずに SKIP とする。**
+`url-quality-gate.sh` の判定は `PASS — SKIP: lighthouse(未実行) zap`（ZAP は docker デーモン無し）。
+
+#### live e2e は 5 回目と同じ理由で未実行
+
+`LIVE_BASE_URL` / `LIVE_ADMIN_USER` / `LIVE_ADMIN_PASSWORD` の 3 つとも UNSET。
+ステップ 6 の「live e2e の 3 変数も一緒に入れる」が**今回も守られていない**。
+
 ### 実施記録: 2026-09-09（5 回目 ―― ✅ **成功**。197 コミットぶんが dev へ反映された）
 
 HEAD `442aca3`（#1049）。3 スタックとも `UPDATE_COMPLETE`。2026-08-15 の初回に続く
@@ -1859,17 +1924,25 @@ Alarm 12・MetricFilter 3 のうち唯一の新顔が `KioskRealDialingUnavailab
 推定した。**推定はデプロイのイベントログで裏が取れた**（`CREATE_COMPLETE` がその 2 件）。
 `describe-change-set` で直接読む道は無い ―― 下記のとおり caller には権限が無い。
 
-#### 🔴 caller の資格情報では change set を読めない（`DescribeChangeSet` / `GetTemplate` が Deny）
+#### 🔴 caller が読めないのは `GetTemplate` だけ（`DescribeChangeSet` は読める ―― 2026-09-14 訂正）
 
-「findings の形を change set 実体で裏取りする」ことは**この経路ではできない**:
+> 🔴 **本節はかつて「`DescribeChangeSet` も Deny」と書いていたが、それは誤りである。**
+> 2026-09-14 の 6 回目で、caller（`OpenReceptionClaudeDeploy-dev`）から
+> `aws cloudformation describe-change-set --stack-name OpenReception-Web-dev
+> --change-set-name claude-gate-<sha> --region ap-northeast-1` が**通った**。
+> ステップ 1 の `claude-deploy-entry.json` は元々 `cloudformation:DescribeChangeSet` を
+> Allow に列挙しており（「diff gate 自身が使う読み取り」）、散文だけが実態から遅れていた。
+> **findings の形は、推定ではなく change set 実体で裏取りできる。**
+
+`GetTemplate` は**今も Deny**（2026-09-14 実測）:
 
 ```
-An error occurred (AccessDenied) when calling the DescribeChangeSet operation:
-User: .../OpenReceptionClaudeDeploy-dev/... is not authorized to perform: cloudformation:DescribeChangeSet
+An error occurred (AccessDenied) when calling the GetTemplate operation:
+User: .../OpenReceptionClaudeDeploy-dev/... is not authorized to perform: cloudformation:GetTemplate
 ```
 
-`GetTemplate` も同じく Deny。change set を作るのは wrapper が assume する CDK の deploy role で、
-セッションの caller ではないため。最小権限として正しい状態なので**権限を足すべきではない**。
+最小権限として正しい状態なので**権限を足すべきではない**。テンプレート側を読みたいときは、
+`cdk deploy --no-execute` が書いた `infra/cdk.out/<stack>.template.json`（＝**提出したもの**）を読む。
 
 裏取りは代わりに**検出器の実装**で行う。`src/domain/governance/deploy-diff-gate.ts` は
 `action === 'Remove'` に対して必ず `resourceRemoval` を、`replacement` が `'True'` または
@@ -1976,7 +2049,7 @@ Web-dev が依存の先頭なので、失敗した時点で残り 2 スタック
 復旧手順は不要**。`ServerFn` / `ImageFn` / `IAM::Policy` は一度 `UPDATE_COMPLETE` まで進んだ後、
 rollback で元の版へ戻っている（イベントを 1 件ずつ確認済み）。drift は無い。
 
-**再開手順**: 実値の `OR_ORIGIN_VERIFY_SECRET` を環境ダイアログへ入れて**新規セッション**を
+**再開手順（当時。#1148 で廃止 ―― 現在はこの変数が残っていると wrapper が止まる。ステップ 8b の移行手順を参照）**: 実値の `OR_ORIGIN_VERIFY_SECRET` を環境ダイアログへ入れて**新規セッション**を
 作り、ステップ 7 からやり直す（スタンプは持ち越せない ―― ステップ 5 の表）。
 findings は同じ形になるはずだが、**承認トークンは差分に固定されているので今回の値を
 再利用しない**。必ずその回の `diff` が印字した値を使う。

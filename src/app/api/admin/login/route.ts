@@ -10,6 +10,7 @@ import {
 import { getAdminAuthConfig } from '@/lib/auth/admin-auth-config';
 import { cognitoSrpLogin } from '@/lib/auth/cognito-srp';
 import { createJwksResolver, verifyOidcToken } from '@/lib/auth/entra';
+import { reportIncompleteConfig, reportSecretUnavailable } from '@/lib/auth/secret-unavailable';
 
 /**
  * POST /api/admin/login — 管理ログイン (issue #24 / #70 / #238)。
@@ -33,7 +34,13 @@ export async function POST(request: Request): Promise<NextResponse> {
   if (cfg.provider === 'cognito') {
     if (!cfg.cognito?.userPoolId || !cfg.cognito.clientId || !cfg.cognito.region) {
       // 公開エンドポイントのため内部の設定状態を本文に出さない（レビュー#7）。詳細はサーバログへ。
-      console.error('[auth] cognito provider selected but COGNITO_* is incomplete');
+      // 🔴 ログはラッチへ寄せる (#1123)。ここも未認証で叩けるので、毎リクエスト出すと
+      // **出力量を攻撃者が制御できる**（下の ADMIN_PASSWORD 側と同じ理由）。
+      // 🔴 欠けているのは**いずれか**なので、「全部未設定」と読める文にしない。
+      reportIncompleteConfig(
+        'COGNITO_*',
+        'cognito provider selected but COGNITO_USER_POOL_ID / COGNITO_CLIENT_ID / COGNITO_REGION is incomplete',
+      );
       return NextResponse.json({ error: 'server_error' }, { status: 500 });
     }
     const body = (await request.json().catch(() => null)) as
@@ -89,8 +96,29 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   // provider=none: 既存パスワード認証。
+  //
+  // 🔴 **鍵の解決は body を見る前に行う (#1021)。** 後にすると、設定漏れのデプロイで
+  // `{"password":123}` は 401（型で弾かれ `getAdminPassword()` に到達しない）、
+  // `{"password":"x"}` は 500 となり、**応答の差から「この環境は ADMIN_PASSWORD を
+  // 持っていない」が未認証で読める**。先に解決すれば、body が何であれ 500 に揃う。
+  // （設定済みデプロイの 401 との差は残る。500 = 誰も入れない状態なので実害は小さい。）
+  //
+  // 🔴 **throw を素通しにしない。** 公開エンドポイントなので内部の設定状態は本文に出さず、
+  // 詳細はサーバログへ（上の cognito 枝と同じ方針）。素通しにすると Next の既定 500 になり、
+  // 未認証で例外とスタックトレースを無制限に生ませられるうえ、運用者が受け取る応答が
+  // テストで固定できない。
+  let configuredPassword: string;
+  try {
+    configuredPassword = getAdminPassword();
+  } catch {
+    // ラッチ付きのログは `secret-unavailable.ts` に集約してある（機構を 2 つ持たない）。
+    // 🔴 status は 500 のまま。ここを 503 に揃えるかは #1127 の判断で、この増分では触らない。
+    reportSecretUnavailable('ADMIN_PASSWORD');
+    return NextResponse.json({ error: 'server_error' }, { status: 500 });
+  }
+
   const body = (await request.json().catch(() => null)) as { password?: unknown } | null;
-  if (!body || typeof body.password !== 'string' || body.password !== getAdminPassword()) {
+  if (!body || typeof body.password !== 'string' || body.password !== configuredPassword) {
     return NextResponse.json({ error: 'unauthorized', message: 'invalid password' }, { status: 401 });
   }
   const exp = Date.now() + ADMIN_SESSION_TTL_MS;

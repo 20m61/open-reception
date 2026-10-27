@@ -1,0 +1,766 @@
+{
+  "/OpenReception-Web-dev": [
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    },
+    {
+      "type": "aws:cdk:stack-tags",
+      "data": [
+        {
+          "key": "Component",
+          "value": "web"
+        },
+        {
+          "key": "Environment",
+          "value": "dev"
+        },
+        {
+          "key": "ManagedBy",
+          "value": "cdk"
+        },
+        {
+          "key": "Owner",
+          "value": "open-reception-team"
+        },
+        {
+          "key": "Project",
+          "value": "open-reception"
+        }
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/Custom::S3AutoDeleteObjectsCustomResourceProvider": [
+    {
+      "type": "aws:cdk:is-custom-resource-handler-customResourceProvider",
+      "data": true
+    }
+  ],
+  "/OpenReception-Web-dev/Custom::CDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C": [
+    {
+      "type": "aws:cdk:is-custom-resource-handler-singleton",
+      "data": true
+    },
+    {
+      "type": "aws:cdk:is-custom-resource-handler-runtime-family",
+      "data": 2
+    }
+  ],
+  "/OpenReception-Web-dev/AdminUserPoolId": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "AdminUserPoolId"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:467:7)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/AdminUserPoolClientId": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "AdminUserPoolClientId"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:471:7)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/DistributionDomainName": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "DistributionDomainName"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:775:5)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/DistributionId": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "DistributionId"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:779:5)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/AssetBucketName": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "AssetBucketName"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:783:5)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/DataTableName": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "DataTableName"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:787:5)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/Custom::CrossRegionExportWriterCustomResourceProvider": [
+    {
+      "type": "aws:cdk:is-custom-resource-handler-customResourceProvider",
+      "data": true
+    }
+  ],
+  "/OpenReception-Web-dev/BootstrapVersion": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "BootstrapVersion"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...aws-cdk-lib...",
+        "(no user code in 10 frames, use --stack-trace-limit to capture more)"
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/CheckBootstrapVersion": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "CheckBootstrapVersion"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...aws-cdk-lib...",
+        "(no user code in 10 frames, use --stack-trace-limit to capture more)"
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/AssetBucket/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "AssetBucket1D025086"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new Bucket2 in aws-cdk-lib...",
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:290:25)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    },
+    {
+      "type": "aws:cdk:analytics:mixin",
+      "data": {
+        "mixin": "aws-cdk-lib.aws_s3.mixins.BucketAutoDeleteObjects"
+      }
+    }
+  ],
+  "/OpenReception-Web-dev/Custom::S3AutoDeleteObjectsCustomResourceProvider/Role": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...aws-cdk-lib...",
+        "(no user code in 10 frames, use --stack-trace-limit to capture more)"
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/Custom::S3AutoDeleteObjectsCustomResourceProvider/Handler": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...aws-cdk-lib...",
+        "(no user code in 10 frames, use --stack-trace-limit to capture more)"
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/Custom::CDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C81C01536"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new BucketDeployment2 in aws-cdk-lib...",
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:305:5)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)"
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/DataTable/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "DataTable447BC44E"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new Table2 in aws-cdk-lib...",
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:318:23)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/ServerFnLogs/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ServerFnLogs851AA923"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new LogGroup2 in aws-cdk-lib...",
+        "makeLogGroup (/home/user/open-reception/infra/lib/stacks/web-stack.ts:287:7)",
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:347:17)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/ServerFn/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ServerFn4F3A536E"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new Function2 in aws-cdk-lib...",
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:338:22)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/ServerFn/invoke-function-url": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ServerFninvokefunctionurl715820CF"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...WrappedClass.addFunctionUrl in aws-cdk-lib...",
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:489:34)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/ServerFn/invoke-function": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ServerFninvokefunctionA3A7399A"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...WrappedClass.addFunctionUrl in aws-cdk-lib...",
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:489:34)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/AdminUserPool/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "AdminUserPoolD0AF18CF"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new UserPool2 in aws-cdk-lib...",
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:429:24)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/ImageFnLogs/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ImageFnLogs6F804F98"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new LogGroup2 in aws-cdk-lib...",
+        "makeLogGroup (/home/user/open-reception/infra/lib/stacks/web-stack.ts:287:7)",
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:504:17)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/ImageFn/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ImageFnCD541B83"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new Function2 in aws-cdk-lib...",
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:495:21)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/ImageFn/CloudFrontOacInvokeFunction": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ImageFnCloudFrontOacInvokeFunctionE7C31E3A"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...WrappedClass.addPermission in aws-cdk-lib...",
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:735:13)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/ImageCachePolicy/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ImageCachePolicy3A3980AA"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new CachePolicy2 in aws-cdk-lib...",
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:551:30)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/StaticSecurityHeaders/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "StaticSecurityHeaders1016F314"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new ResponseHeadersPolicy2 in aws-cdk-lib...",
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:565:33)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/Distribution/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "Distribution830FAC52"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new Distribution2 in aws-cdk-lib...",
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:638:26)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/CDKMetadata/Default": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "CDKMetadata"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...App.synth in aws-cdk-lib...",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:219:5)",
+        "...node internals..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/Exports/Output{\"Ref\":\"ServerFn4F3A536E\"}": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ExportsOutputRefServerFn4F3A536E686CAA43"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...App.synth in aws-cdk-lib...",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:219:5)",
+        "...node internals..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/Exports/Output{\"Ref\":\"ImageFnCD541B83\"}": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ExportsOutputRefImageFnCD541B833F594573"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...App.synth in aws-cdk-lib...",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:219:5)",
+        "...node internals..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/Exports/Output{\"Ref\":\"DataTable447BC44E\"}": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ExportsOutputRefDataTable447BC44E7F3657BE"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...App.synth in aws-cdk-lib...",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:219:5)",
+        "...node internals..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/Exports/Output{\"Ref\":\"ServerFnLogs851AA923\"}": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ExportsOutputRefServerFnLogs851AA92397744C9A"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...App.synth in aws-cdk-lib...",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:219:5)",
+        "...node internals..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/Exports/Output{\"Ref\":\"Distribution830FAC52\"}": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ExportsOutputRefDistribution830FAC524DF81588"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...App.synth in aws-cdk-lib...",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:219:5)",
+        "...node internals..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/Custom::CrossRegionExportWriterCustomResourceProvider/Role": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "CustomCrossRegionExportWriterCustomResourceProviderRoleC951B1E1"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...aws-cdk-lib...",
+        "(no user code in 10 frames, use --stack-trace-limit to capture more)"
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/Custom::CrossRegionExportWriterCustomResourceProvider/Handler": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "CustomCrossRegionExportWriterCustomResourceProviderHandlerD8786E8A"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...aws-cdk-lib...",
+        "(no user code in 10 frames, use --stack-trace-limit to capture more)"
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/AssetBucket/Policy/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "AssetBucketPolicy6A11ED41"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new Bucket2 in aws-cdk-lib...",
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:290:25)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)"
+      ]
+    },
+    {
+      "type": "aws:cdk:analytics:mixin",
+      "data": {
+        "mixin": "aws-cdk-lib.aws_s3.mixins.BucketPolicyStatements"
+      }
+    }
+  ],
+  "/OpenReception-Web-dev/AssetBucket/AutoDeleteObjectsCustomResource/Default": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "AssetBucketAutoDeleteObjectsCustomResource5FFEAE83"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...aws-cdk-lib...",
+        "(no user code in 10 frames, use --stack-trace-limit to capture more)"
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/AssetDeployment/AwsCliLayer/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "AssetDeploymentAwsCliLayerC0B4D779"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new BucketDeployment2 in aws-cdk-lib...",
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:305:5)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/AssetDeployment/CustomResource/Default": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "AssetDeploymentCustomResource810D2826"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new BucketDeployment2 in aws-cdk-lib...",
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:305:5)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/Custom::CDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C/ServiceRole/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRole89A01265"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...aws-cdk-lib...",
+        "(no user code in 10 frames, use --stack-trace-limit to capture more)"
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/ServerFn/ServiceRole/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ServerFnServiceRole282D3E61"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new Function2 in aws-cdk-lib...",
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:338:22)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/ServerFn/FunctionUrl/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ServerFnFunctionUrlFFF9E3E1"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...WrappedClass.addFunctionUrl in aws-cdk-lib...",
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:489:34)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/AdminUserPool/AdminAppClient/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "AdminUserPoolAdminAppClient43C1FAD5"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...WrappedClass.addClient in aws-cdk-lib...",
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:441:39)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/ImageFn/ServiceRole/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ImageFnServiceRoleCD4FF0E0"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...new Function2 in aws-cdk-lib...",
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:495:21)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/ImageFn/FunctionUrl/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ImageFnFunctionUrlBBD47D3E"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...WrappedClass.addFunctionUrl in aws-cdk-lib...",
+        "new WebStack (/home/user/open-reception/infra/lib/stacks/web-stack.ts:517:32)",
+        "<anonymous> (/home/user/open-reception/infra/bin/open-reception.ts:108:13)",
+        "...node internals, ts-node, ts-node..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/Distribution/Origin2/InvokeFromApiForOpenReceptionWebdevDistributionOrigin20C7BB572": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "DistributionOrigin2InvokeFromApiForOpenReceptionWebdevDistributionOrigin20C7BB5724FCA73E7"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        ".../home/user/open-reception/infra/node_modules/aws-cdk-lib/aws-cloudfront/lib/distribution.js:1:148 in aws-cdk-lib...",
+        "Array.forEach (:)",
+        "...aws-cdk-lib..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/ExportsWriteruseast10F67B507/Resource/Default": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ExportsWriteruseast10F67B507DDE2E818"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...aws-cdk-lib...",
+        "(no user code in 10 frames, use --stack-trace-limit to capture more)"
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/Custom::CDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C/ServiceRole/DefaultPolicy/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRoleDefaultPolicy88902FDF"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...aws-cdk-lib...",
+        "(no user code in 10 frames, use --stack-trace-limit to capture more)"
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/ServerFn/ServiceRole/DefaultPolicy/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ServerFnServiceRoleDefaultPolicyBF3298B4"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...aws-cdk-lib...",
+        "(no user code in 10 frames, use --stack-trace-limit to capture more)"
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/ImageFn/ServiceRole/DefaultPolicy/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "ImageFnServiceRoleDefaultPolicyAC508253"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        "...aws-cdk-lib...",
+        "(no user code in 10 frames, use --stack-trace-limit to capture more)"
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/Distribution/Origin2/FunctionUrlOriginAccessControl/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "DistributionOrigin2FunctionUrlOriginAccessControlAC8EE0B1"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        ".../home/user/open-reception/infra/node_modules/aws-cdk-lib/aws-cloudfront/lib/distribution.js:1:148 in aws-cdk-lib...",
+        "Array.forEach (:)",
+        "...aws-cdk-lib..."
+      ]
+    }
+  ],
+  "/OpenReception-Web-dev/Distribution/Origin3/S3OriginAccessControl/Resource": [
+    {
+      "type": "aws:cdk:logicalId",
+      "data": "DistributionOrigin3S3OriginAccessControl9DA31435"
+    },
+    {
+      "type": "aws:cdk:creationStack",
+      "data": [
+        ".../home/user/open-reception/infra/node_modules/aws-cdk-lib/aws-cloudfront/lib/distribution.js:1:148 in aws-cdk-lib...",
+        "Array.forEach (:)",
+        "...aws-cdk-lib..."
+      ]
+    }
+  ]
+}

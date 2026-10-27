@@ -102,3 +102,40 @@ export function stripBashStringLiterals(source: string): string {
 export function stripBashCommentsAndStrings(source: string): string {
   return stripBashStringLiterals(stripBashComments(source));
 }
+
+/**
+ * `case "$1" in` の節から、そのスクリプトが**実際に受け付けるフラグ**を取り出す。
+ *
+ * ## なぜ要るか
+ *
+ * 🔴 **2026-09-14、`deploy-context.ts` の doc コメントが
+ * `aws-issue-credentials.sh --with-context` と書いていた。** 実装は `--no-context`
+ * （オプトアウト）で、`--with-context` というフラグは存在しない。散文を実装で裏取り
+ * せずにユーザーへ案内し、`未知の引数: --with-context` を踏ませた。
+ *
+ * 「フラグ名が実装からずれる」は目視では気づけない（散文はもっともらしく読める）。
+ * 実装側の集合を機械で取り出せて初めて、散文がそれを名乗っているかを検査できる。
+ *
+ * 🔴 **行頭アンカーが唯一の絞り込みである。** `^\s*<token>)` の形しか拾わないので、
+ * usage 行（`# ... [--print]`）やエラー文言（`echo "--no-context を..."`）は原理的に
+ * 一致しない ―― 行頭が `#` や `echo` になるためである。
+ *
+ * 以前はここで `stripBashCommentsAndStrings` を通していたが、**除去しても結果が変わらず**
+ * （変異検証で生存した）、「コメントを拾わない」という主張はアンカーが担っていた。
+ * 効いていない前処理と、それを主張する空虚なテストを両方落とした。
+ * アンカーを緩める変異は `bash-source.test.ts` が kill する。
+ *
+ * 結果は昇順・重複なし。
+ */
+export function parseAcceptedFlags(source: string): ReadonlyArray<string> {
+  const flags = new Set<string>();
+  // `    --hours)` / `    -h|--help)` の形。`*)` や `-h` 単体（短縮形）は対象外。
+  for (const line of source.split('\n')) {
+    const match = /^\s*([-|a-zA-Z0-9_]+)\)/.exec(line);
+    if (match === null) continue;
+    for (const token of match[1]!.split('|')) {
+      if (token.startsWith('--')) flags.add(token);
+    }
+  }
+  return [...flags].sort();
+}

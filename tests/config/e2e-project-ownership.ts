@@ -28,6 +28,7 @@ export type E2eProjectSlice = {
   name: string;
   testMatch?: unknown;
   testIgnore?: unknown;
+  dependencies?: readonly string[];
 };
 
 /** testDir からの相対 POSIX パス（例: `kiosk-flow-integration.spec.ts`, `soak/foo.spec.ts`）。 */
@@ -156,5 +157,108 @@ export function collectOwnershipViolations(
       violations.push(`${spec}: ${owners.length === 0 ? 'どこにも載っていない' : owners.join(',')}`);
     }
   }
+  return violations;
+}
+
+/**
+ * **同居者 0 で走らなければならない終端 project** (#787 / #1161)。
+ *
+ * グローバル状態（在席状態・既定スコープのフロー・セキュリティ設定）を書き換える spec の置き場。
+ * `fullyParallel` は config 全体に効くので、project を分けても**その中では並行実行される**。
+ * ここに載せた project は (1) spec をちょうど 1 本だけ持ち、(2) 自分と並行しうる project を
+ * 持たない（他の全 project が自分の祖先か子孫）ことを要求する。
+ */
+export const SOLO_TERMINAL_PROJECTS = [
+  'flow-mutation-kiosk',
+  'staff-availability-mutation',
+  'security-settings-mutation',
+] as const;
+
+/**
+ * 並行して走っても状態を共有しない project。`platform-developer` は**別プロセスの別サーバ**
+ * （別ポート・メモリ上の状態も別）へ向くので、依存を持たずに並行してよい（playwright.config.ts）。
+ */
+const SEPARATE_SERVER_PROJECTS = new Set(['platform-developer']);
+
+function transitiveDependencies(name: string, byName: ReadonlyMap<string, E2eProjectSlice>): Set<string> {
+  const seen = new Set<string>();
+  const stack = [...(byName.get(name)?.dependencies ?? [])];
+  while (stack.length > 0) {
+    const next = stack.pop()!;
+    if (seen.has(next)) continue;
+    seen.add(next);
+    stack.push(...(byName.get(next)?.dependencies ?? []));
+  }
+  return seen;
+}
+
+/**
+ * 終端 project の同居者・並行者の違反。空配列なら不変条件を満たす。
+ *
+ * - spec が 0 本 → 隔離先が空（testMatch の書き忘れ、または spec の改名で外れた）
+ * - spec が 2 本以上 → 同居者がいる（#787 で実際に 4 回中 2 回落ちた形）
+ * - 依存で前後が決まっていない project がある → project 同士で並行する
+ */
+export function collectSoloProjectViolations(
+  specs: readonly SpecRelPath[],
+  projects: readonly E2eProjectSlice[],
+  soloNames: readonly string[] = SOLO_TERMINAL_PROJECTS,
+): string[] {
+  const byName = new Map(projects.map((p) => [p.name, p]));
+  const violations: string[] = [];
+  for (const solo of soloNames) {
+    const project = byName.get(solo);
+    if (!project) {
+      violations.push(`${solo}: project が無い`);
+      continue;
+    }
+    const owned = specs.filter((spec) => projectOwnsSpec(project, spec));
+    if (owned.length !== 1) {
+      violations.push(
+        `${solo}: spec は 1 本だけのはずが ${owned.length} 本${owned.length > 0 ? `（${owned.join(', ')}）` : ''}`,
+      );
+    }
+    const ancestors = transitiveDependencies(solo, byName);
+    for (const other of projects) {
+      if (other.name === solo || SEPARATE_SERVER_PROJECTS.has(other.name)) continue;
+      if (ancestors.has(other.name)) continue;
+      if (transitiveDependencies(other.name, byName).has(solo)) continue;
+      violations.push(`${solo}: ${other.name} と依存で前後が決まっておらず並行しうる`);
+    }
+  }
+  return violations;
+}
+
+/**
+ * **実サーバのセキュリティ設定へ書き込む**呼び出し（`page.request.put('/api/admin/security', …)` 等）。
+ * `page.route` で書き込みを注入して落とす spec（`admin-write-failure`）は当たらない。
+ */
+const SECURITY_SETTINGS_WRITE = /request\.(put|post|patch|delete)\(\s*["'`]\/api\/admin\/security(?=["'`?\/])/;
+
+export function writesSecuritySettings(source: string): boolean {
+  return SECURITY_SETTINGS_WRITE.test(source);
+}
+
+/**
+ * 書き換える spec の後始末の形 (#1161 AC3)。空配列なら満たす。
+ *
+ * - `finally` で戻さない: timeout でページが閉じられると `finally` の中の `await` は即 reject し、
+ *   復元されないまま run の残り全部が汚染される（`.claude/rules/opus5-autonomous-loop.md` の実測）
+ * - `test.afterEach` で戻し、**その応答を `expect` で検査する**: 見ないと復元の失敗が沈黙する
+ *
+ * 字面の検査なので「正しく戻せているか」までは見ない（それは e2e 自身が見る）。
+ * 見るのは、上の 2 つの退行が**黙って**入ることだけ。
+ */
+export function collectRestoreShapeViolations(source: string): string[] {
+  const violations: string[] = [];
+  if (/\bfinally\s*\{/.test(source)) violations.push('finally で後始末している');
+  const start = source.indexOf('test.afterEach(');
+  if (start < 0) {
+    violations.push('test.afterEach が無い');
+    return violations;
+  }
+  const end = source.indexOf('\n});', start);
+  const body = source.slice(start, end < 0 ? undefined : end);
+  if (!/expect\(\s*\w+\.ok\(\)/.test(body)) violations.push('afterEach が復元の応答を expect していない');
   return violations;
 }

@@ -82,7 +82,7 @@ aws cognito-idp admin-add-user-to-group --user-pool-id "$POOL" --username admin@
 
 `infra/lib/config/environments.ts` の既定で **deploy は cognito**。`ADMIN_AUTH_PROVIDER` を
 appEnv で渡す必要はない（bin が畳み込む）。`-c appEnv='{"ADMIN_AUTH_PROVIDER":"none"}'` で明示退避も可。
-`docs/deploy-aws.md` の originVerifySecret / 公開 base-URL 必須は引き続き必要。
+`docs/deploy-aws.md` の origin-verify（`originVerifySecretName`。#1148 で生値の `originVerifySecret` は廃止）/ 公開 base-URL 必須は引き続き必要。
 
 > ⚠️ **cutover の注意（ロックアウト防止）**: cognito へ切替えると **パスワードログイン（none）は無効**に
 > なる。新規 User Pool は selfSignUp 無効・**ユーザー 0** の状態で作られるため、**管理者ユーザーを

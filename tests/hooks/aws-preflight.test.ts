@@ -9,16 +9,16 @@
  * Important 4（2026-08-12 レビュー）で追加した「公開された argv 契約」の実行時検証を固定する。
  */
 import { spawnSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { makeTempFile } from '../helpers/temp';
+import { DEV_ACCOUNT_ID } from '../../src/domain/governance/dev-account';
 
 const CLI = resolve(process.cwd(), 'scripts/aws-preflight.ts');
 
 const validObservation = {
-  callerArn: 'arn:aws:sts::822063948773:assumed-role/OpenReceptionClaudeDeploy-dev/cloud-session',
-  accountId: '822063948773',
+  callerArn: `arn:aws:sts::${DEV_ACCOUNT_ID}:assumed-role/OpenReceptionClaudeDeploy-dev/cloud-session`,
+  accountId: `${DEV_ACCOUNT_ID}`,
   region: 'ap-northeast-1',
   qualifier: 'orcloud01',
   environment: 'dev',
@@ -30,9 +30,8 @@ const validObservation = {
 };
 
 function writeObservation(value: unknown): string {
-  const path = join(tmpdir(), `aws-preflight-test-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
-  writeFileSync(path, JSON.stringify(value));
-  return path;
+  // 🔴 一時ファイルは helper 経由で作る（後始末が afterEach に載る。#1136）。
+  return makeTempFile('aws-preflight-test-', JSON.stringify(value));
 }
 
 function run(args: ReadonlyArray<string>) {

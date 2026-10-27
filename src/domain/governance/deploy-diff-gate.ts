@@ -207,8 +207,8 @@ export const CARVE_OUT_ALLOWED_ACTIONS: ReadonlySet<string> = new Set([
  * action と同じく **synth の実測**から取った。両 provider とも `Fn::Join` で
  * 次を組む（`Ref: AWS::Partition` を含む。リテラル ARN ではない）:
  *
- *  - Writer … `arn:${AWS::Partition}:ssm:us-east-1:822063948773:parameter/cdk/exports/*`
- *  - Reader … `arn:${AWS::Partition}:ssm:us-east-1:822063948773:parameter/cdk/exports/OpenReception-CfMon-dev/*`
+ *  - Writer … `arn:${AWS::Partition}:ssm:us-east-1:<DEV_ACCOUNT_ID>:parameter/cdk/exports/*`
+ *  - Reader … `arn:${AWS::Partition}:ssm:us-east-1:<DEV_ACCOUNT_ID>:parameter/cdk/exports/OpenReception-CfMon-dev/*`
  *
  * 前者が後者を含むので、確認するのは **`parameter/cdk/exports/` の下**であること。
  */
@@ -258,7 +258,7 @@ const CDK_ASSET_BUCKET_QUALIFIER = 'orcloud01';
  * （`arn:aws:s3:::<bucket>[/<key>]`）ので、SSM とは別の形で確かめる。
  *
  * synth 実測（`infra/tmp-synth-measure.ts` で `@aws-cdk/core:bootstrapQualifier=orcloud01`
- * を渡して synth）: `arn:${AWS::Partition}:s3:::cdk-orcloud01-assets-822063948773-ap-northeast-1`
+ * を渡して synth）: `arn:${AWS::Partition}:s3:::cdk-orcloud01-assets-<DEV_ACCOUNT_ID>-ap-northeast-1`
  * と同じ ARN に `/*` を足したもの。
  */
 function isConfinedCdkAssetBucketArn(resolvedArn: string): boolean {
@@ -790,7 +790,7 @@ const PSEUDO_PARAMETERS: Readonly<Record<string, string>> = {
  * `Fn::Join` / `Fn::Sub` / 擬似パラメータの `Ref` を、判定できる範囲で文字列へ潰す。
  *
  * 実測: CDK は同じ distribution ARN を **2 通り**で書く ——
- * `arn:aws:cloudfront::822063948773:distribution/` + `Ref`（アカウントがリテラル）と、
+ * `arn:aws:cloudfront::<DEV_ACCOUNT_ID>:distribution/` + `Ref`（アカウントがリテラル）と、
  * `arn:` + `Ref(AWS::Partition)` + `:cloudfront::` + `Ref(AWS::AccountId)` + …。
  * どちらも通さないと初回デプロイが止まるので、両方を扱う。
  * 解決できない部分は `UNRESOLVED_MARKER` になり、**アカウント一致には決してならない**。

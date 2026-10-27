@@ -1,0 +1,21 @@
+{
+  "version": "54.0.0",
+  "files": {
+    "ca66fa6e7fca04194417899cf9a147af14e8ab84d56dfc2bcb94ea832357ed03": {
+      "displayName": "OpenReception-WebMonitoring-dev Template",
+      "source": {
+        "path": "OpenReception-WebMonitoring-dev.template.json",
+        "packaging": "file"
+      },
+      "destinations": {
+        "123456789012-ap-northeast-1-c6882cee": {
+          "bucketName": "cdk-orcloud01-assets-123456789012-ap-northeast-1",
+          "objectKey": "ca66fa6e7fca04194417899cf9a147af14e8ab84d56dfc2bcb94ea832357ed03.json",
+          "region": "ap-northeast-1",
+          "assumeRoleArn": "arn:${AWS::Partition}:iam::123456789012:role/cdk-orcloud01-file-publishing-role-123456789012-ap-northeast-1"
+        }
+      }
+    }
+  },
+  "dockerImages": {}
+}

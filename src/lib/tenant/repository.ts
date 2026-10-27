@@ -39,6 +39,14 @@ export interface SiteRepository {
   putSite(site: Site): Promise<void>;
 }
 
+/** {@link DeviceRepository.updateDeviceFields} が書いてよい欄。status と世代は含めない。 */
+export type DeviceFieldChanges = Partial<
+  Pick<
+    Device,
+    'name' | 'location' | 'kind' | 'maintenance' | 'tokenRegistered' | 'enrollmentTokenId' | 'updatedAt'
+  >
+>;
+
 export interface DeviceRepository {
   /** 指定サイト配下の端末のみ返す。 */
   listDevices(tenantId: TenantId, siteId: SiteId): Promise<Device[]>;
@@ -67,7 +75,37 @@ export interface DeviceRepository {
    */
   findDeviceById(id: DeviceId): Promise<Device | undefined>;
   createDevice(device: Device): Promise<RepoResult<Device>>;
+  /**
+   * レコード全体を置き換える。🔴 **seed・テスト専用。DeviceService の書き込み経路では使わない**。
+   * 読んだ時点の値で丸ごと上書きするため、read→write の間に consumeEnrollment が上げた
+   * `credentialGeneration` や、別の管理操作が変えた `status` を巻き戻す（#1237 の follow-up）。
+   * サービスは {@link updateDeviceFields} / {@link changeDeviceStatus} を使う。
+   */
   putDevice(device: Device): Promise<void>;
+  /**
+   * 表示メタ・エンロール URL の欄だけを**部分更新**する（条件なし。端末が無ければ false）。
+   * 型の上で `status` と `credentialGeneration` を書けないので、並行する登録状態の切替や
+   * エンロールの消費を巻き戻さない（#1237 の follow-up）。値が `undefined` の欄は消える。
+   */
+  updateDeviceFields(deviceId: DeviceId, changes: DeviceFieldChanges): Promise<boolean>;
+  /**
+   * 登録状態を**条件付き部分更新**で切り替える（#1237 の follow-up）。現在の
+   * `credentialGeneration` が `expectedGeneration` と一致するときだけ `status` と世代を書き、
+   * 保留中のエンロール URL（`enrollmentTokenId`）を消して true。一致しない・端末が無いなら
+   * 何も書かず false。`expectedGeneration` の `undefined` は「欄が無い」を要求する（旧レコード）。
+   * 条件は世代だけで足りる —— status の切替とエンロールの消費は必ず世代を上げるので、
+   * 読んだあとに status が変わっていれば世代も変わっている。
+   * `credentialGeneration` を省くと世代は書かない。
+   */
+  changeDeviceStatus(
+    deviceId: DeviceId,
+    change: {
+      expectedGeneration: number | undefined;
+      status: Device['status'];
+      credentialGeneration?: number;
+      updatedAt: string;
+    },
+  ): Promise<boolean>;
   /**
    * `lastSeenAt` **だけ**を部分更新する（heartbeat 用, issue #239）。全置換 put は read→write 間に
    * 別経路（consumeEnrollment の消去）で変わった `enrollmentTokenId` を stale 値で書き戻し、消費済
@@ -79,8 +117,16 @@ export interface DeviceRepository {
    * `expectedJti` に一致するときのみ、enrollmentTokenId を消去し lastSeenAt を更新して true。
    * 一致しない（消費済 / 競合で他が先に消費 / 端末なし）なら false。アイテム全体を置換せず
    * 当該フィールドのみ条件付き部分更新するため、他フィールドの並行更新を失わない（lost-update 回避）。
+   *
+   * 同じ書込で端末証明の世代を `generation.next` へ上げる (#1237)。世代も `generation.expected`
+   * （読んだ時点の値。未設定は undefined）との一致を条件にするので、間に世代が変わっていれば false。
    */
-  consumeEnrollment(deviceId: DeviceId, expectedJti: string, lastSeenAt: string): Promise<boolean>;
+  consumeEnrollment(
+    deviceId: DeviceId,
+    expectedJti: string,
+    lastSeenAt: string,
+    generation: { expected: number | undefined; next: number },
+  ): Promise<boolean>;
 }
 
 export interface AdminUserRepository {

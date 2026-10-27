@@ -14,6 +14,7 @@ import type {
   APIGatewayRequestAuthorizerEventV2,
   APIGatewaySimpleAuthorizerWithContextResult,
 } from 'aws-lambda';
+import { awsClientConfig } from '@/lib/aws/client-config';
 
 export interface AuthContext {
   siteId: string;
@@ -78,7 +79,7 @@ async function resolveSiteTokenSecret(
   const { SecretsManagerClient, GetSecretValueCommand } = await import(
     '@aws-sdk/client-secrets-manager'
   );
-  const client = new SecretsManagerClient({ region: env.AWS_REGION ?? 'ap-northeast-1' });
+  const client = new SecretsManagerClient(awsClientConfig(undefined, { region: env.AWS_REGION }));
   const res = await client.send(new GetSecretValueCommand({ SecretId: arn }));
   cachedSecret = res.SecretString ?? undefined;
   return cachedSecret;

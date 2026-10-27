@@ -370,6 +370,19 @@ if [ -z "${required}" ]; then
     required="full"; action="REST でのマージ (gh api .../pulls/<n>/merge)"
   elif printf '%s' "${scan}" | grep -Eq '(^|[;&|[:space:]])gh[[:space:]]+pr[[:space:]]+create([[:space:]]|$)'; then
     required="pr"; action="gh pr create"
+  # 🔴 **生の REST での PR 作成（`POST .../pulls`）はここでは見ていない (#1120)。**
+  #
+  # #1117 で一度足して、**独立レビューの実測で撤回した**。URL と「本体を送る形」の AND で
+  # 判定したところ、止めたい形を 5 通り以上取りこぼし（`gh api …/pulls -f title=x` ＝
+  # `gh api` での PR 作成の**最も普通の形**、`curl --json`、`-XPOST`、`-d@file`、
+  # `--data-urlencode`）、止めてはいけない読み取りを 3 通り止めた
+  # （2 つの grep が同一コマンド内かを見ずに payload 全体へ独立に当たるため、
+  # `curl …/pulls -o p.json; date -d …` のような並びが誤爆する）。
+  #
+  # **薄い保護と実在する誤検出を引き換えにしない** —— 誤検出はガードごと迂回される動機を
+  # 作る、というのがこのフックが #960 で学んだことである。マージ側（`.../pulls/<n>/merge`）は
+  # URL だけで一意に決まるので残っている。作成側を塞ぐなら「数え上げ」ではなく
+  # **読み取りと判る option の allowlist へ裏返す**必要があり、それは #1120 で扱う。
   elif printf '%s' "${scan}" | grep -q 'scripts/create-pull-request\.ts'; then
     # 🔴 **REST 経由の PR 作成も同じ門を通す (#678)。**
     # クラウドセッションでは `gh pr create` が GraphQL 403 で使えないため PR 作成を
