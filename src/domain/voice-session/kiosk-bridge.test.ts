@@ -324,33 +324,39 @@ describe('bridgeCommittedTurn: 同じ姓の別人がいれば必ず復唱する 
     });
   });
 
-  it('不変条件: 自動確定・不在の断定をした相手には、どちらの辞書にも同じ姓の別人がいない', () => {
-    const NAMES: Array<[string, string]> = [
-      ['田中太郎', 'たなかたろう'],
-      ['田中花子', 'たなかはなこ'],
-      ['田中', 'たなか'],
-      ['田中 次郎', 'たなか じろう'],
-      ['佐藤', 'さとう'],
-      ['佐野', 'さの'],
-      ['鈴木 一郎', 'すずき いちろう'],
-    ];
-    const QUERIES = [...NAMES.map(([n]) => n), '田中', 'たなか', '佐'];
+  /*
+   * 不変条件は、実装の述語（sharesSurname）ではなく**テスト側で持つ姓の正解表**で判定する。
+   * 実装の述語で判定すると、述語の見落とし（1 文字の姓など）がそのまま素通りする。
+   */
+  const PEOPLE: Array<{ name: string; kana: string; surname: string }> = [
+    { name: '田中太郎', kana: 'たなかたろう', surname: '田中' },
+    { name: '田中 花子', kana: 'たなか はなこ', surname: '田中' },
+    { name: '田中', kana: 'たなか', surname: '田中' },
+    { name: '田中島 一郎', kana: 'たなかじま いちろう', surname: '田中島' },
+    { name: '林太郎', kana: 'はやしたろう', surname: '林' },
+    { name: '林 花子', kana: 'はやし はなこ', surname: '林' },
+    { name: '森', kana: 'もり', surname: '森' },
+    { name: '森花子', kana: 'もりはなこ', surname: '森' },
+    { name: '東 太郎', kana: 'ひがし たろう', surname: '東' },
+    { name: '東山 花子', kana: 'ひがしやま はなこ', surname: '東山' },
+    { name: 'タナカ ジロウ', kana: 'たなか じろう', surname: '田中' },
+    { name: '佐藤', kana: 'さとう', surname: '佐藤' },
+    { name: '佐野', kana: 'さの', surname: '佐野' },
+    { name: '鈴木 一郎', kana: 'すずき いちろう', surname: '鈴木' },
+  ];
+
+  it('不変条件: 自動確定・不在の断定をした相手には、どちらの辞書にも同じ姓の別人がいない（姓の正解表で判定）', () => {
+    const QUERIES = [...PEOPLE.map((p) => p.name), '田中', 'たなか', '林', 'はやし', '森', '東'];
     let decided = 0;
-    NAMES.forEach(([pn, pk], i) => {
-      NAMES.forEach(([an, ak], j) => {
+    PEOPLE.forEach((p, i) => {
+      PEOPLE.forEach((a, j) => {
         if (i === j) return;
         for (const q of QUERIES) {
-          const present = [staff('p', pn, pk)];
-          const absent = [away('a', an, ak)];
-          const result = turn(q, present, absent);
-          const label = `${q} / 在席 ${pn} / 不在 ${an}`;
-          if (result.event.type === 'heardAccepted') {
+          const result = turn(q, [staff('p', p.name, p.kana)], [away('a', a.name, a.kana)]);
+          const label = `${q} / 在席 ${p.name} / 不在 ${a.name}`;
+          if (result.event.type === 'heardAccepted' || result.event.type === 'heardUnavailable') {
             decided += 1;
-            expect(sharesSurname(pn, an), label).toBe(false);
-          }
-          if (result.event.type === 'heardUnavailable') {
-            decided += 1;
-            expect(sharesSurname(an, pn), label).toBe(false);
+            expect(p.surname === a.surname, label).toBe(false);
           }
         }
       });
@@ -358,23 +364,69 @@ describe('bridgeCommittedTurn: 同じ姓の別人がいれば必ず復唱する 
     // 下界: 自動の判断が一度も起きないなら、上の主張は空虚に満たされる。
     expect(decided).toBeGreaterThan(0);
   });
+
+  it('1 文字の姓: 林太郎と林花子、森（姓だけ）と森花子でも自動で確定・断定しない', () => {
+    expect(
+      turn('林太郎', [staff('t', '林太郎', 'はやしたろう')], [away('h', '林花子', 'はやしはなこ')]).event.type,
+    ).toBe('heardNeedsConfirmation');
+    expect(
+      turn('林 太郎', [staff('t', '林 太郎', 'はやし たろう')], [away('h', '林花子', 'はやしはなこ')]).event.type,
+    ).toBe('heardNeedsConfirmation');
+    const mori = turn('森', [staff('h', '森花子', 'もりはなこ')], [away('m', '森', 'もり')]);
+    expect(mori.event).toMatchObject({ type: 'heardNeedsConfirmation', unavailable: true });
+  });
+
+  it('無効になった担当者（enabled: false）は、同じ姓の比較の相手に入れない', () => {
+    const disabled = { ...staff('x', '田中 太郎', 'たなか たろう'), enabled: false };
+    expect(turn('田中花子', [staff('h', '田中花子', 'たなかはなこ'), disabled]).event.type).toBe('heardAccepted');
+  });
+
+  it('在席の 2 つが近く、不在の一致は遠い（0 ではない）ときも、曖昧さを失わない', () => {
+    // 部署は姓の規則の対象外なので、曖昧さの判定（合算の top3）そのものを見られる。
+    const result = bridgeCommittedTurn({
+      text: '総務',
+      directory: {
+        staff: [],
+        departments: [
+          { id: 'g1', name: '総務部', displayOrder: 0, enabled: true },
+          { id: 'g2', name: '総務課', displayOrder: 1, enabled: true },
+        ],
+      },
+      unavailableDirectory: dir([away('z', '山総務', 'やまそうむ')]),
+      sttConfidence: 0.95,
+      thresholds: T,
+      t: 0,
+    });
+    expect(result.event).toMatchObject({ type: 'heardNeedsConfirmation', reason: 'ambiguous_candidates' });
+  });
 });
 
 describe('sharesSurname', () => {
+  const n = (displayName: string, kana?: string) => ({ displayName, kana });
   it.each([
-    ['田中 花子', '田中 太郎', true],
-    ['田中\u3000花子', '田中 太郎', true],
-    ['田中', '田中 花子', true],
-    ['田中花子', '田中太郎', true],
-    ['田中', '田中太郎', true],
-    ['佐藤', '佐野', false],
-    ['田中 花子', '田村 花子', false],
+    [n('田中 花子'), n('田中 太郎'), true],
+    [n('田中　花子'), n('田中 太郎'), true],
+    [n('田中'), n('田中 花子'), true],
+    [n('田中花子'), n('田中太郎'), true],
+    [n('田中花子'), n('田中 太郎'), true],
+    [n('田中'), n('田中太郎'), true],
+    [n('林 太郎'), n('林花子'), true],
+    [n('森'), n('森花子'), true],
+    [n('林太郎', 'はやしたろう'), n('林花子', 'はやしはなこ'), true],
+    [n('林太郎'), n('林花子'), false],
+    [n('タナカ'), n('たなか はなこ'), true],
+    [n('Tanaka Hanako'), n('tanaka Taro'), true],
+    [n('ＴＡＮＡＫＡ'), n('TANAKA Taro'), true],
+    [n('佐藤'), n('佐野'), false],
+    [n('佐藤', 'さとう'), n('佐野', 'さの'), false],
+    [n('田中 花子'), n('田村 花子'), false],
+    [n('田中 花子'), n('鈴木 花子'), false],
+    [n('東'), n('東山 花子'), false],
     // 区切りがあれば先頭の語で比べる（先頭 2 文字が同じでも別の姓）。全角の空白も区切りとして扱う。
-    ['田中 花子', '田中島 太郎', false],
-    ['田中\u3000花子', '田中島\u3000太郎', false],
-    ['田中 花子', '鈴木 花子', false],
-    ['', '田中', false],
-  ])('%s と %s → %s', (a, b, expected) => {
+    [n('田中 花子'), n('田中島 太郎'), false],
+    [n('田中　花子'), n('田中島　太郎'), false],
+    [n(''), n('田中'), false],
+  ])('%o と %o → %s', (a, b, expected) => {
     expect(sharesSurname(a, b)).toBe(expected);
     expect(sharesSurname(b, a)).toBe(expected);
   });

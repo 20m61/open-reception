@@ -21,6 +21,7 @@ import {
   type EntityCandidate,
   type EntityResolutionThresholds,
 } from '@/domain/voice-stt/entity-resolver';
+import { normalize } from '@/domain/staff/search';
 import type { VoiceKioskEvent } from './kiosk-view';
 
 export type BridgeCommittedTurnInput = {
@@ -168,29 +169,49 @@ function mergeTop3(
  */
 function hasSurnamePeer(input: BridgeCommittedTurnInput, candidate: EntityCandidate | null): boolean {
   if (candidate === null || candidate.kind === 'department') return false;
-  const staff = [...input.directory.staff, ...(input.unavailableDirectory?.staff ?? [])];
-  return staff.some((s) => s.id !== candidate.id && sharesSurname(candidate.displayName, s.displayName));
+  // 解決は enabled の担当者だけを対象にする（`resolveStaffEntities`）。比較の相手も同じにそろえる。
+  const staff = [...input.directory.staff, ...(input.unavailableDirectory?.staff ?? [])].filter((s) => s.enabled);
+  const self = staff.find((s) => s.id === candidate.id) ?? { displayName: candidate.displayName };
+  return staff.some((s) => s.id !== candidate.id && sharesSurname(self, s));
 }
 
+/** 姓の判定に使う、担当者の名前の最小形。 */
+export type NameForSurname = { readonly displayName: string; readonly kana?: string };
+
 /**
- * 2 つの表示名が同じ姓とみなせるか。
+ * 2 人の担当者が同じ姓とみなせるか。
  *
- * 担当者の辞書は姓と名を別の欄で持たないので、表示名から推定する。
- *  - 両方が空白（全角を含む）で区切られていれば、先頭の語どうしを比べる（「田中 花子」と「田中 太郎」）
- *  - 片方だけが区切りを持たない（姓だけ、または区切りの無い氏名）なら、区切りを除いた文字列の
- *    **先頭 2 文字以上が一致する**ときに同じ姓とみなす（「田中」と「田中 花子」、「田中花子」と「田中太郎」）
+ * 担当者の辞書は姓と名を別の欄で持たないので、表示名と読み（kana）から推定する。どちらか一方で
+ * 同じ姓とみなせれば真。比較の前に、検索と同じ正規化（NFKC・小文字・カタカナ→ひらがな）をかける。
  *
- * 1 文字だけの一致（「佐藤」と「佐野」）は同じ姓とみなさない。推定は安全側（復唱が増える側）に
- * 倒れることがある（「佐々木」と「佐々川」）が、それは自動確定を減らすだけで、誤接続は増やさない。
+ * 1 つの表記（表示名どうし、または読みどうし）の中では、次の順で判定する。
+ *  - 両方が空白（全角を含む）で区切られていれば、先頭の語どうしを比べる（「田中 花子」と「田中島 太郎」は別の姓）
+ *  - 片方だけが区切られていれば、その先頭の語を姓とし、もう片方（空白を除く）がそれで始まるかを見る。
+ *    **1 文字の姓も許す**（「林 太郎」と「林花子」）
+ *  - どちらも区切られていなければ、片方がもう片方で始まる（姓だけの表示名。「森」と「森花子」）か、
+ *    先頭 2 文字以上が一致するとき（「田中花子」と「田中太郎」）に同じ姓とみなす
+ *
+ * 表示名だけでは決められない 1 文字の姓（「林太郎」と「林花子」）は、読み（「はやしたろう」と
+ * 「はやしはなこ」）で拾う。読みも区切りも無い 1 文字の姓は拾えない（`docs/adr/0011` 3-f）。
+ * 推定は復唱が増える側に倒れることがある（「佐藤」と「里見」は読みが「さと」で始まる）が、
+ * それは自動確定を減らすだけで、誤接続は増やさない。
  */
-export function sharesSurname(a: string, b: string): boolean {
-  const tokens = (name: string) => name.trim().split(/[\s\u3000]+/).filter((t) => t !== '');
+export function sharesSurname(a: NameForSurname, b: NameForSurname): boolean {
+  if (sharesSurnameIn(a.displayName, b.displayName)) return true;
+  return a.kana !== undefined && b.kana !== undefined && sharesSurnameIn(a.kana, b.kana);
+}
+
+function sharesSurnameIn(a: string, b: string): boolean {
+  const tokens = (name: string) => normalize(name).split(/[\s\u3000]+/).filter((t) => t !== '');
   const ta = tokens(a);
   const tb = tokens(b);
   if (ta.length === 0 || tb.length === 0) return false;
   if (ta.length >= 2 && tb.length >= 2) return ta[0] === tb[0];
   const fa = ta.join('');
   const fb = tb.join('');
+  if (ta.length >= 2) return fb.startsWith(ta[0] ?? '');
+  if (tb.length >= 2) return fa.startsWith(tb[0] ?? '');
+  if (fa.startsWith(fb) || fb.startsWith(fa)) return true;
   let common = 0;
   while (common < fa.length && common < fb.length && fa[common] === fb[common]) common += 1;
   return common >= 2;
