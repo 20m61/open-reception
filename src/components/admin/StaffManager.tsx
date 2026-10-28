@@ -12,6 +12,8 @@ import { paginate, sortRows } from './list-io';
 import { Button, DataTable, Field, Form, Pager, SaveFeedback, useSaveFeedback, type Column } from '@/components/admin/ui';
 import { color, font, space } from '@/components/admin/ui/tokens';
 import { enablementState } from './state-vocabulary';
+import { StaffKanaEditor, StaffKanaFlag, StaffKanaNotice, kanaFieldState } from './StaffKana';
+import { assessStaffKana, kanaIssueMessage } from '@/domain/staff/kana';
 
 /**
  * 担当者管理 (issue #26; 検索/フィルタ #330 item2)。
@@ -69,6 +71,8 @@ export function StaffManager() {
   const [busy, setBusy] = useState(false);
   const { feedback, success, failure, clear } = useSaveFeedback();
   const [editingId, setEditingId] = useState<string | null>(null);
+  /** 読みの入力欄の表示と送信可否（方針 `STAFF_KANA_POLICY` に従う。#1287）。 */
+  const kanaField = kanaFieldState(kana);
 
   const { get, setMany } = useQueryParams();
   const { sort, setSort } = useTableSort();
@@ -158,7 +162,7 @@ export function StaffManager() {
   }, [load]);
 
   const add = useCallback(async () => {
-    if (displayName.trim() === '' || departmentId === '' || busy) return;
+    if (displayName.trim() === '' || departmentId === '' || busy || kanaField.blocksSubmit) return;
     setBusy(true);
     clear();
     try {
@@ -178,11 +182,13 @@ export function StaffManager() {
       setDisplayName('');
       setKana('');
       await load();
-      success('担当者を追加しました。');
+      // 案 B（encouraged）では読みが正しくなくても保存できる。そのことを保存の直後にも告げる。
+      const kanaWarning = kanaIssueMessage(assessStaffKana(kana || undefined));
+      success(kanaWarning === null ? '担当者を追加しました。' : `担当者を追加しました。${kanaWarning}`);
     } finally {
       setBusy(false);
     }
-  }, [displayName, kana, departmentId, busy, load, clear, success, failure]);
+  }, [displayName, kana, departmentId, busy, kanaField.blocksSubmit, load, clear, success, failure]);
 
   const patch = useCallback(
     async (s: Staff, body: Record<string, unknown>) => {
@@ -196,10 +202,11 @@ export function StaffManager() {
         // 失敗したら `load()` しない。取り直すと行が元へ戻り、**何も起きなかったのか
         // 失敗したのかが区別できない**（viewer が在席を切り替えたつもりで切り替わっていない）。
         failure('変更を保存できませんでした。');
-        return;
+        return false;
       }
       await load();
       success('変更を保存しました。');
+      return true;
     },
     [load, clear, success, failure],
   );
@@ -258,6 +265,13 @@ export function StaffManager() {
           <>
             {s.displayName}
             {s.kana ? <span style={{ opacity: 0.6 }}>（{s.kana}）</span> : null}
+            {/* 読みが無い・区切られていない担当者を一目で分かるようにする (#1287)。 */}
+            <StaffKanaFlag kana={s.kana} />
+            {assessStaffKana(s.kana) === 'ok' ? null : (
+              <div style={{ marginTop: 4 }}>
+                <StaffKanaEditor staffId={s.id} kana={s.kana} onSave={(next) => patch(s, { kana: next })} />
+              </div>
+            )}
           </>
         ),
       },
@@ -369,8 +383,21 @@ export function StaffManager() {
         <Field label="氏名" htmlFor="staff-name-input">
           <input id="staff-name-input" data-testid="staff-name-input" value={displayName} onChange={(e) => setDisplayName(e.target.value)} style={inputStyle} />
         </Field>
-        <Field label="よみがな（任意）" htmlFor="staff-kana-input">
-          <input id="staff-kana-input" data-testid="staff-kana-input" value={kana} onChange={(e) => setKana(e.target.value)} style={inputStyle} />
+        <Field
+          label={kanaField.label}
+          htmlFor="staff-kana-input"
+          hint={kanaField.hint}
+          error={kanaField.error}
+          required={kanaField.required}
+        >
+          <input
+            id="staff-kana-input"
+            data-testid="staff-kana-input"
+            value={kana}
+            onChange={(e) => setKana(e.target.value)}
+            placeholder="さとう たろう"
+            style={inputStyle}
+          />
         </Field>
         <Field label="部署" htmlFor="staff-dept-select">
           <select
@@ -399,7 +426,7 @@ export function StaffManager() {
           variant="primary"
           type="submit"
           data-testid="staff-add"
-          disabled={busy || displayName.trim() === '' || departments === null}
+          disabled={busy || displayName.trim() === '' || departments === null || kanaField.blocksSubmit}
         >
           追加
         </Button>
@@ -471,6 +498,8 @@ export function StaffManager() {
           {items.length} 件中 {filtered.length} 件を表示
         </p>
       )}
+
+      {items === null ? null : <StaffKanaNotice staff={items} />}
 
       {listError ? (
         <p role="alert" data-testid="staff-list-error" style={{ color: color.danger }}>
