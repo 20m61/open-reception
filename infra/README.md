@@ -69,7 +69,7 @@ npx cdk deploy OpenReception-Web-prod -c env=prod -c appEnv.ADMIN_PASSWORD=...
 
 - `cdk synth` / `deploy` 前にリポジトリルートで `npm run build:open-next` が必要。
   未ビルドの場合 `WebStack` が明示的にエラーを出す。
-- デプロイ先は `CDK_DEFAULT_ACCOUNT` / `CDK_DEFAULT_REGION`（既定 `ap-northeast-1`）。
+- デプロイ先の account は `CDK_DEFAULT_ACCOUNT`。region は `ap-northeast-1` 固定で、`CDK_DEFAULT_REGION`（CLI が `AWS_REGION` / プロファイルから埋める）が別 region なら synth を拒否する（#1221）。
   `OpenReception-CfMon-*` のみ us-east-1（CloudFront メトリクスの発行先）。
   認証情報なしの synth では `CDK_DEFAULT_ACCOUNT` が未解決のため CfMonitoring は
   synth 対象から除外される（cross-region 参照に concrete account が必要）。
