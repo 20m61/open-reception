@@ -1,3 +1,5 @@
+import { pinnedStackRegion } from './stack-region';
+
 /**
  * The CDK bootstrap qualifier dedicated to the human-managed dev-deploy broker stack
  * (owner decision 2026-09-28, #1146).
@@ -35,12 +37,5 @@ export const BROKER_STACK_DEPLOY_ROLE_ARN_PATTERN = `^arn:aws:iam::[0-9]{12}:rol
 export const BROKER_STACK_REGION = 'ap-northeast-1';
 
 export function brokerStackRegion(env: Readonly<Record<string, string | undefined>>): string {
-  const configured = env.CDK_DEFAULT_REGION;
-  if (configured !== undefined && configured !== BROKER_STACK_REGION) {
-    throw new Error(
-      `The dev deploy broker stack must be synthesized for ${BROKER_STACK_REGION}, but CDK_DEFAULT_REGION is ${JSON.stringify(configured)}. ` +
-        `Set AWS_REGION=${BROKER_STACK_REGION} instead of relying on the profile's region.`,
-    );
-  }
-  return BROKER_STACK_REGION;
+  return pinnedStackRegion(env, BROKER_STACK_REGION, 'The dev deploy broker stack');
 }
