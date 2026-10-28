@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { defineConfig, devices } from '@playwright/test';
-import { missingPinnedFamilies, pinnedFontEnv, unexpectedFamilies } from './tests/config/vrt-font-pin';
+import { checkPinnedFontsOnce, pinnedFontEnv } from './tests/config/vrt-font-pin';
 
 const PORT = Number(process.env.PORT ?? 3000);
 /**
@@ -89,28 +89,12 @@ const pinnedFonts = pinnedFontEnv(process.platform, process.env);
 
 /**
  * 許可リストのフォントが入っていない linux では、VRT は描画差で落ちる。コードの退行と
- * 見分けられるよう、何が足りないかを 1 度だけ名指しする（config は worker ごとに読まれる）。
+ * 見分けられるよう、何が足りない・混ざっているかを実行全体で 1 度だけ名指しする。
  */
-if (pinnedFonts.FONTCONFIG_FILE && !process.env.OPEN_RECEPTION_FONT_PIN_CHECKED) {
-  process.env.OPEN_RECEPTION_FONT_PIN_CHECKED = '1';
-  try {
-    const listing = execFileSync('fc-list', [':', 'family'], {
-      encoding: 'utf8',
-      env: { ...process.env, ...pinnedFonts },
-    });
-    const missing = missingPinnedFamilies(listing);
-    const unexpected = unexpectedFamilies(listing);
-    if (missing.length > 0 || unexpected.length > 0) {
-      console.warn(
-        `[vrt-font-pin] 撮影フォントが baseline と一致しません（VRT は描画差で落ちます）。` +
-          ` 不足: ${missing.join(' / ') || 'なし'}、混入: ${unexpected.join(' / ') || 'なし'}` +
-          `（docs/quality-gate.md「VRT の撮影フォント」）`,
-      );
-    }
-  } catch {
-    console.warn('[vrt-font-pin] fc-list を実行できず、撮影フォントを確かめられませんでした。');
-  }
-}
+const fontPinWarning = checkPinnedFontsOnce(process.platform, process.env, (env) =>
+  execFileSync('fc-list', [':', 'family'], { encoding: 'utf8', env }),
+);
+if (fontPinWarning !== null) console.warn(fontPinWarning);
 
 // executablePath の解決と**マージ**する（置き換えると Claude Code on the web の
 // プリインストール Chromium 解決が壊れる）。

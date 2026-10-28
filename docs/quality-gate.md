@@ -720,8 +720,10 @@ linux の chromium には、撮影に使うフォントの**許可リスト**（
 `FONTCONFIG_FILE` で渡している（`playwright.config.ts` / `tests/config/vrt-font-pin.ts`）。
 darwin は CoreText なので何も変わらない。
 
-**なぜ要るか。** linux の baseline は `playwright install-deps` のフォント群と fontconfig 既定の
-DejaVu だけがある環境で撮られている。Cloud の環境にはそれ以外のフォントが入っていて、
+**なぜ要るか。** linux の baseline は、`playwright install-deps` のフォント群から **IPA ゴシックと
+Unifont を除き**、fontconfig 既定の DejaVu を足した環境と同じ描画になる（IPA と Unifont は
+install-deps 自身が入れるが、どちらかが見えると baseline と合わない。下の表）。Cloud の環境には
+さらに Noto Sans CJK・システムの Inter なども入っていて、
 日本語の描画が変わり、**手を加えていない main でも VRT が 14 件落ちていた**（2026-10 の PR は
 全部「VRT 14 件だけ FAIL」として扱われていた）。コードの退行ではない。
 
@@ -743,13 +745,24 @@ DejaVu だけがある環境で撮られている。Cloud の環境にはそれ�
 | **許可リスト** | **16 passed（3 回連続）** |
 
 - **baseline は撮り直していない。** 許可リストで既存の baseline と画素単位で一致する
-- 許可リストのフォントが入っていない linux では、`playwright.config.ts` が不足・混入している
-  ファミリーを `[vrt-font-pin]` の警告で名指しする（VRT は描画差で落ちる）。Debian/Ubuntu では
-  `npx playwright install-deps chromium` と `fonts-dejavu-core` で揃う
+- 混入の判定は**許可したファミリーの一覧**（`ALLOWED_FAMILIES`）に無いものすべて。禁止の列挙には
+  しない —— 許可したディレクトリへ別のパッケージがフォントを置く（例: `fonts-noto-core` は
+  Noto Sans を `truetype/noto` へ置き、`60-latin.conf` が sans-serif の先頭にする）と、禁止の一覧に
+  無い名前で描画が変わるため
+- 許可リストのフォントが揃っていない・許可していないフォントが見える linux では、
+  `playwright.config.ts` がそれを `[vrt-font-pin]` の警告で実行ごとに 1 度だけ名指しする（VRT は
+  描画差で落ちる）。Debian/Ubuntu では `npx playwright install-deps chromium`・`fonts-dejavu-core`・
+  `fontconfig`（`fc-list` の CLI。install-deps はライブラリしか入れない）で揃う。IPA と Unifont は
+  install-deps が入れるが、許可したディレクトリの外なので見えない
+- 🔴 **linux の unit（`--fast`）も、これらのフォントと `fc-list` を要求する。**
+  `tests/config/vrt-font-pin.test.ts` は `fc-list` がある linux で、許可リストの中身を実際に
+  解決して確かめる（`fc-list` が無ければその検査だけ飛ぶ）。フォントの欠けた開発機では unit が赤くなる
 - **許可リストに足す・外すのは、baseline を撮り直すのと同じ重さの変更**として扱う
   （描画が変わる。差分の画像を見てから決める）
 - system のフォントで撮った描画と比べたいときは `FONTCONFIG_FILE=/etc/fonts/fonts.conf` を
   明示する（明示した値が優先される）
+- 撮影用の `capture-screens*.spec.ts` も同じ chromium の project で走るので、linux で撮る
+  レビュー用の画面も同じフォント（日本語は WenQuanYi Zen Hei）になる
 
 ### `platform-developer` が別サーバな理由（#423）
 
