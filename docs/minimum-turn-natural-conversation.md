@@ -2,438 +2,445 @@
 
 対象: #1077 / #1057 / #1055 / #779
 
-この文書は、No Typing 方針を守りつつ、受付を「フォーム項目を順番に埋める体験」にしないための会話設計契約を定義する。
+この文書は、受付を「フォームの欄を順番に埋める体験」にしないための会話設計の契約を定める。
+同時に、音声で扱える範囲を **[ADR 0011](adr/0011-voice-visitor-name-confirmation.md)**
+（音声で聞き取った氏名を、復唱の確認を経て確定する。ADR 0007 の一部を置き換える）の境界の内側に留める。
 
-実装の状態遷移の真実源は引き続き `src/domain/reception/state.ts`、表示契約は `src/domain/reception/ui-contract.ts`。本書は **来訪者が体感する会話ターンの設計原則**を定める。内部 `ReceptionState` と visible turn を 1:1 にしない。
+- 状態遷移の正本は `src/domain/reception/state.ts`、表示契約の正本は `src/domain/reception/ui-contract.ts`。
+  本書は**来訪者が体感する会話ターン**の原則を定める。内部の `ReceptionState` と、見えるターンを 1:1 にしない。
+- 本書と ADR 0011 が食い違ったら ADR 0011 が優先する。本書と実装が食い違ったら実装を正本とし、本書を直す。
+- 体験の原則・Journey ID・例外状態の正本は `docs/experience/README.md`（J-OR-01〜05）。
+
+---
+
+## 0. 音声が起こせること・起こせないこと（ADR 0011 §1 の要約）
+
+| イベント | 音声から | 条件 |
+| --- | --- | --- |
+| `SELECT_TARGET` | 起こせる（ADR 0007 のとおり） | 高信頼なら自動採用しうる。ただし**同じ姓の担当者が 2 人以上いる名簿、または読みの無い担当者が 1 人でもいる名簿では、必ず復唱するか選ばせる**（ADR 0011 §3-f / #1284） |
+| `SUBMIT_VISITOR_INFO` | 起こせる（ADR 0011 で新規） | `inputVisitorInfo` の画面で、通知を読み上げ終えた後に聞いた氏名を、**必ず復唱して「はい」を得たときだけ**。カスタムフローでは必須の欄が全部埋まっているときだけ（§6） |
+| `SELECT_PURPOSE` | **起こせない** | 目的は画面のボタンで選ぶ。音声から目的を抜き出しても使わない（別の ADR で扱う） |
+| `CONFIRM`（発信） | **起こせない** | 発信の直前の確認は、タッチの 1 か所（`ConfirmView`）だけ。音声のどの経路からも、フォームの submit を経由した間接の経路からも起きない |
+| `BACK` / `CANCEL` / `RESET` | 起こせない | 画面の逃げ道バー（タッチ）と、無操作のリセット（#125）で行う |
+
+音声は**タッチとキーボードの上に足す入力手段**であって、置き換えではない（ADR 0011 §4）。
 
 ---
 
 ## 1. ゴール
 
-受付のゴールは、入力項目を全部順番に聞くことではない。
+受付のゴールは、欄を全部順番に聞くことではない。
 
-**自然な会話とタッチの中で、受付成立に必要な情報だけを最短で揃え、誤接続を防ぎながら正しい相手へつなぐこと。**
+**音声とタッチ（とキーボード）の中で、受付の成立に要る情報だけを短く揃え、誤接続と聞き違いを防いで、正しい相手へつなぐこと。**
 
-標準 journey の設計目安:
+手数の目安は、#1080 の実測で決める（ここでは数値を製品要件にしない）。ADR 0011 の境界の下で、
+既定の受付経路の最短の手数は次のとおり（クイックアクションで目的を先取りした場合は 1 つ減る）。
 
-| Journey | visitor actions / utterances | 目安 |
-| --- | ---: | --- |
-| 通常の担当者受付 | 2〜4 | 5を超えたら質問の必要性をレビュー |
-| QR / 予約済み | 0〜2 | 取得済みslotを再質問しない |
-| 配送・定型受付 | 1〜3 | 名前や会社名を機械的に要求しない |
-| 例外 / ambiguity | 必要分のみ | 修復対象slotだけを扱う |
+| 経路 | 来訪者の操作・発話 | 数 |
+| --- | --- | ---: |
+| 音声を併用 | 開始（タップ）→ 目的（タップ）→ 相手（発話）→ 氏名（発話。通知の読み上げの後）→ 復唱に「はい」（発話かタップ）→ 呼び出す（タップ） | 6 |
+| タッチとキーボード | 開始 → 目的 → 相手（タップ）→ 氏名（キーボード）＋次へ → 呼び出す | 5〜6 |
+| QR / 予約（ADR 0008） | 別の状態機械。読み取り → 内容の確認 → 呼び出す（タップ） | 2〜3 |
 
-時間は呼び出し待ちを除き、通常受付 10〜20秒程度を設計目安とする。数値は製品要件ではなく、#1080 の実測で調整する。
+音声の経路が手数で勝たないのは、氏名の復唱（ADR 0011 §3-b）と通知の読み上げ（§2）を、
+手数より優先しているからである。ADR 0011「影響」のとおり、所要時間と完遂率を計測して確かめる。
 
 ---
 
 ## 2. 原則
 
-### 2.1 One focus, multi-slot acceptance
+### 2.1 One focus, multi-slot acceptance（ただし、使える slot は画面で決まる）
 
-システムは一度に **ひとつの自然な会話焦点**だけを提示する。
-
-ただし来訪者が質問以上の情報を話した場合、取得できた情報を捨てない。
+システムは一度に**ひとつの問い**だけを示す。来訪者が問い以上を話したときに何を使えるかは、
+ADR 0011 の境界で決まる。
 
 例:
 
-- system: 「どなたにご用ですか？」
-- visitor: 「営業の鈴木さんに打ち合わせで来ました。張です」
-- extracted: `target=鈴木 / purpose=meeting / visitorName=張`
-- next: 同じ項目を聞き直さず、曖昧なslotだけ修復して final confirmation へ
+- 画面: `selectingTarget`。system:「どなたにご用ですか？」
+- visitor:「営業の鈴木さんに打ち合わせで来ました。張です」
+- 使う: `target=鈴木`（`SELECT_TARGET` の候補。§2.3 の規則で自動採用か復唱かを決める）
+- **使わない**: `purpose=打ち合わせ`（音声から目的は扱わない。目的はすでにタップで選んである）
+- **使わない**: `visitorName=張`（氏名を聞き取るのは `inputVisitorInfo` で通知を読み終えた後だけ。
+  ほかの画面の発話から抜き出した氏名は、その場で使わず、`inputVisitorInfo` を飛ばす根拠にもしない。ADR 0011 §2）
 
 **禁止:**
 
-- 「担当者名、用件、お名前を順番に話してください」のように複数回答を一度に要求する
-- 発話から取得できた情報を state の順番に合わないという理由で捨てる
+- 「担当者名、用件、お名前を順番に話してください」のように、複数の答えを一度に求める
+- 中間の画面（特に `inputVisitorInfo` とその通知）を飛ばして `confirming` へ畳む
+- 音声から `SELECT_PURPOSE` / `CONFIRM` を起こす
 
-### 2.2 Ask only missing or ambiguous
+### 2.2 聞くのは、足りないものと曖昧なものだけ
 
-次に聞く対象は以下の優先順位で決める。
+次に聞く対象は、次の順で決める。
 
-1. 受付成立に必須だが未取得
-2. 誤るコストが高く曖昧
-3. routing に必要
-4. 任意情報は原則聞かない
+1. 受付の成立に必須で、まだ無いもの
+2. 誤ると高くつき、曖昧なもの（同じ姓の担当者・低確信の氏名）
+3. 取次に要るもの
 
-現行の通常受付 persistence 契約では `purpose / target / visitor.name` が必要。まずこの3つを minimum required slots とする。
+何が必須かは、**選ばれたフローが決める**。
 
-`company / note` は default journey では収集しない。業務要件が明示された場合のみ追加する。
+- 既定の受付経路（`VisitorInfoView`）: 必須は `purpose` / `target` / 氏名。会社名とメモは任意の欄で、
+  **音声では尋ねない**が、画面の欄は残す（入れたい来訪者はキーボードで入れる。ADR 0011 §5）。
+- カスタム受付フロー（#100）: 運用者が定めた `steps` と、欄（`text`/`textarea`/`select`/`checkbox`）の
+  `required` が必須を決める（§6）。たとえば配送の目的で氏名を要らないとするなら、運用者は
+  `visitorInfo` の step を省くか、`name` を任意にする。その場合、システムは氏名を聞かない。
 
-### 2.3 Progressive disambiguation
+### 2.3 確信度に応じた確かめ方（slot ごとに違う）
 
-すべての音声結果を毎回 yes/no で確認しない。
-
-| Evidence | UX |
+| slot / evidence | 確かめ方 |
 | --- | --- |
-| touchで明示選択 | `confirmed`。再確認しない |
-| QR / reservation | `confirmed`。表示のみ |
-| voice + 一意 + high | provisional。次へ進み final confirmation に含める |
-| voice + 複数候補 | 2〜4候補ボタン |
-| voice + low | short readback + yes/no または候補 |
-| missing | 次の自然な質問 |
-| STT unavailable | 候補 / retry / #1074 assistance。keyboardには戻らない |
+| タッチで選んだ（全 slot） | 確定。もう一度は聞かない |
+| QR / 予約（ADR 0008） | 内容の確認画面で示す |
+| 相手（voice）・一意・高信頼・同じ姓の人が居ない・全員に読みがある | 自動採用しうる（`SELECT_TARGET`）。最後の確認画面に含める |
+| 相手（voice）・同じ姓の人が 2 人以上 / 読みの無い担当者が居る名簿 | **必ず復唱するか、候補から選ばせる**（ADR 0011 §3-f）。不在の人を名指しされても「不在です」と断定しない |
+| 相手（voice）・複数候補 | 2〜4 件の候補ボタン |
+| 相手（voice）・低信頼 / 認識できない | 聞き直しか候補。画面の検索欄（キーボード）も使える |
+| 氏名（voice） | **確信度に関係なく必ず復唱する**（画面と読み上げの両方）。STT の確信度が `minSttConfidence` 未満、または抽出器の確信度が `minProposalConfidence` 未満なら、候補として出さずに聞き直す（数値は定数を参照する。ADR 0011 §3-a） |
+| 氏名（キーボード） | 入力欄の値をそのまま使う。最後の確認画面で示す |
+| 目的 | タッチだけ（音声から扱わない） |
 
-### 2.4 Single final confirmation
+### 2.4 最後の確認は 1 か所、ただし氏名の復唱は省かない
 
-`confirming` を全体の最終確認に使う。
+`confirming`（`ConfirmView`）を、発信の前の全体の確認に使う。呼び出しはタッチの「呼び出す」だけで起きる。
 
 例:
 
-> 張さま、営業部の鈴木さんに打ち合わせでお取り次ぎします。よろしいですか？
+> 張さま、営業部の鈴木さんにお取り次ぎします。よろしいですか？
 
-CTA:
+- 「呼び出す」（`CONFIRM`。タッチのみ）
+- 「戻る」（`BACK`。戻って直す）
 
-- `呼び出す`
-- `修正する`
+**同じ slot を二度確かめない**のを原則とするが、**音声で聞き取った氏名は例外**である。氏名は
+`inputVisitorInfo` で必ず復唱し（ADR 0011 §3-b）、さらに `ConfirmView` にも表示する（§3-d）。
+これは意図した二重の確認で、聞き違えた氏名が担当者へ届くのを防ぐ最後の安全弁を残すためである。
+相手の slot は、§2.3 で自動採用したものは `ConfirmView` でだけ確かめる。
 
-氏名を先に `はい/いいえ` で確認し、その直後に同じ氏名を含む全体確認をもう一度要求する、といった **同一slotの二重確認を原則禁止**する。
+### 2.5 直すのは、間違った slot だけ（できる範囲を正確に書く）
 
-個別確認は ambiguity / low confidence / duplicate names など修復が必要なslotだけ。
+直す操作は、今の状態機械の上で次のとおりに働く。
 
-### 2.5 Repair, don't restart
+- 確認画面から「戻る」（`BACK`）を重ねても、入力済みの値（相手・来訪者情報）は残る
+  （`flow-state.ts` の reducer。`flow-state.test.ts` の「BACK / CANCEL は…入力済みの値は保持する」が縛っている）。
+- **確認画面での音声による訂正（「鈴木さんじゃなくて佐藤さん」）は受け付けない。** `confirming` から
+  `SELECT_TARGET` は起こせない（`state.ts`）。相手を直すなら、タッチで `selectingTarget` まで戻る。
+- 氏名を直すのは、`inputVisitorInfo` でのキーボードの入力である。確認画面から戻ったとき（氏名がすでに
+  入っているとき）は、通知の読み上げも音声での聞き取りも自動では始めない（ADR 0011 §3-c）。
+- 復唱に「いいえ」と答えたときは、`inputVisitorInfo` の中で氏名から聞き直す（言い直しの 1 回と数える）。
+- **目的を直すと、相手は選び直しになる。** `SELECT_PURPOSE` は `target` を消す（`flow-state.ts`）。
+  目的によってカスタムフローが変わり、相手や欄の意味が変わりうるためで、本書ではこの挙動を変えない。
+- カスタムフローの入力画面（`VisitorInfoForm`）は、今は初期値を受け取れない。戻ったときに入力済みの値を
+  欄へ戻すには、ADR 0011 §5 の改修が要る。
 
-訂正されたslotだけを修復する。
+最初からやり直すのは、来訪者が「最初に戻る」（`RESET`）を選んだときと、無操作のリセット（#125）のときだけ。
 
-- 「鈴木さんじゃなくて佐藤さん」→ targetだけ更新
-- 「張じゃなくてチャンです」→ visitorNameだけ更新
-- purpose / 他slot は維持
-- Single Reception Stage を維持
+### 2.6 手段を混ぜるのが普通
 
-最初からやり直すのは `reset` を明示的に選んだ場合のみ。
+音声の受付とタッチの受付を、別のアプリのように分けない。
 
-### 2.6 Mixed modality is normal
+- 相手を声で言い、候補をタップで選ぶ
+- 相手をタップで選び、氏名を声で言う（復唱に、声かタップで答える）
+- 氏名の聞き取りが 3 回失敗したら、同じ画面のキーボードで続ける
+- 声に出したくない来訪者は、最初からキーボードで氏名を入れる（通知の読み上げで、そうできることを伝える）
 
-音声journeyとタッチjourneyを別アプリのように分けない。
-
-自然な組み合わせ例:
-
-- targetをvoice → candidateをtouch
-- departmentをtouch → visitorNameをvoice
-- QR → 不足slotだけvoice
-- voice failure → department candidatesをtouch
-
-入力方式はそのターンの目的を達成する手段であり、journey自体ではない。
+入力の手段は、そのターンの目的を果たす手段であって、ジャーニーそのものではない。
 
 ---
 
 ## 3. Slot model
 
-### 3.1 Minimum required slots
+実装の正本は `src/domain/reception/conversation-draft.ts`（#1088。ADR 0011 に合わせて改修中）。
+ここに書く型は概念で、名前は #1088 に揃える。食い違ったら実装を正とし、本節を直す。
+
+### 3.1 Slot
 
 ```ts
-type ReceptionSlotKey =
-  | 'purpose'
-  | 'target'
-  | 'visitorName'
-  | 'company';
+type RequiredConversationSlot = 'purpose' | 'target' | 'visitorName';
 ```
 
-`company` は optional。`note` は default slot から外し、業務固有要件でのみ扱う。
+- 会社名（`company`）は確定に使わない。音声から埋めない（ADR 0011 §5。#1090 の company の slot は確定へ使わない）。
+- メモ（`note`）は slot にしない。既定の受付経路の任意の欄として、画面に残るだけ。
+- `purpose` は slot として持つが、値の出どころはタッチ（またはクイックアクションの先取り）だけ。
 
 ### 3.2 Evidence
 
 ```ts
-type SlotSource = 'touch' | 'voice' | 'qr' | 'reservation';
-type SlotCertainty = 'confirmed' | 'high' | 'ambiguous' | 'missing';
-
-type SlotEvidence = {
-  source: SlotSource;
-  certainty: SlotCertainty;
-};
+type ConversationSlotSource = 'touch' | 'voice' | 'qr' | 'reservation';
+type ResolvedSlotCertainty = 'confirmed' | 'high';
+// 曖昧なときは別の形（kind: 'ambiguous'）で候補を持つ。値が無いことは slot が無いことで表す。
 ```
 
-provider固有の confidence 数値をそのままUI判断へ漏らさない。正規化した certainty を conversation policy が扱う。
+- provider 固有の確信度の数値を、UI の判断へそのまま漏らさない。ただし、氏名を候補にしてよいかの
+  下限は `DEFAULT_ENTITY_RESOLUTION_THRESHOLDS.minSttConfidence` と
+  `DEFAULT_SLOT_PROPOSAL_RESOLUTION_POLICY.minProposalConfidence` で判定する（ADR 0011 §3-a）。
+- 声の「はい」「いいえ」にも同じ STT の下限を課す。下回った答えは「はい」とみなさない。
 
 ### 3.3 ConversationDraft
 
-state順より先に情報を得る場合があるため、短命な draft を持てるようにする。
+状態の順より先に情報が来ることがある（相手の発話に氏名が混ざる等）ので、短命の draft を持てる。
+ただし draft に何が入っていても、**状態は `state.ts` の許可された遷移でしか進まない**し、
+氏名は §2.1 のとおり `inputVisitorInfo` の外では使わない。
 
-```ts
-type ConversationDraft = {
-  purpose?: {
-    value: ReceptionPurposeId;
-    evidence: SlotEvidence;
-  };
-  target?: {
-    value: Target;
-    evidence: SlotEvidence;
-  };
-  visitorName?: {
-    value: string;
-    evidence: SlotEvidence;
-  };
-  company?: {
-    value: string;
-    evidence: SlotEvidence;
-  };
-};
-```
+制約（ADR 0011 §6）:
 
-制約:
-
-- PII draftはメモリ内の短命状態
-- audit / experience metrics に値を保存しない
-- reset / completed / cancelled で破棄
-- targetは directory に存在する entity だけを確定値にできる
+- draft はメモリの中だけに置く。監査ログ・experience metrics・アプリログに値を出さない
+- `RESET`、無操作のリセット（#125）、キャンセル、受付の完了のときは、draft と聞き取りの途中の状態を**必ず捨てる**
+  （前の来訪者の氏名を、次の来訪者の画面に出さない）
+- 途中の認識結果（interim）は、氏名の欄にも記録にも残さない。復唱に出すのは、確定した 1 つの候補だけ
+- 相手は、名簿（directory）に実在する entity だけを確定の値にできる
 
 ---
 
-## 4. State と visible turn の分離
+## 4. State と見えるターン
 
-`ReceptionState` は安全な内部遷移として維持する。
+`ReceptionState` は安全な内部の遷移として、そのまま使う。
 
 ```text
 idle
- → selectingPurpose
- → selectingTarget
- → inputVisitorInfo
- → confirming
+ → selectingPurpose        （目的: タッチ）
+ → selectingTarget         （相手: タッチ / 音声 / 検索欄）
+ → inputVisitorInfo        （通知 → 氏名: キーボード / 音声＋復唱）
+ → confirming              （発信前の確認: タッチのみ）
  → calling
+ → connected / timeout / failed
+      timeout / failed → fallback（代わりの連絡手段）
+      confirming から発信前に撃てないと分かったら → failed（#764）
+ → completed
+selectingPurpose / selectingTarget / inputVisitorInfo から CANCEL → idle
+confirming / calling から CANCEL → cancelled
+（どの状態からも RESET → idle。無操作は #125 のカウントダウンつきで idle へ）
 ```
 
-ただし来訪者にこの6段階を全部見せる必要はない。
+ADR 0011 の下で、**見せない画面は作らない。** 特に次を守る。
 
-同一発話で複数slotが解決した場合、許可されたイベントを内部で順に適用し、**意味のない intermediate UI を表示しない**。
+- `inputVisitorInfo` は、音声で相手や氏名が分かっていても**飛ばさない**。この画面で `PrivacyNotice`（#314）を
+  入力欄より上に表示し、TTS で通知の短い版を読み上げてから氏名を尋ねる（ADR 0011 §2）。
+- 通知を**正常に**読み上げ終えたときだけ、氏名の聞き取りを始める。読み上げの失敗・中断・終了の通知が
+  一定時間来ないとき、および TTS が使えないとき（`ttsEnabled: false` 等）は、音声での氏名の聞き取りを
+  始めず、キーボードの欄だけを使う。
+- 通知の読み上げは、毎回の受付で行う（省略の設定は設けない。ADR 0011「owner の決定」）。
 
-例:
-
-1. internal: `selectingPurpose`
-2. utteranceから purpose + target + visitorName を取得
-3. internal event sequence:
-   - `SELECT_PURPOSE`
-   - `SELECT_TARGET`
-   - `SUBMIT_VISITOR_INFO`
-4. visible next turn: `confirming`
-
-呼び出し確定 `CONFIRM` は必ず来訪者の明示操作を要求する。
-
-state順より先に取得した値は ConversationDraft に保持し、正規のstateへ到達した時に適用する。
+#1088 の planner（`materializationActionsForDraft`）は、`inputVisitorInfo` で止まる形にする（ADR 0011 §2 / 影響）。
+本書の旧版にあった「`SELECT_PURPOSE` → `SELECT_TARGET` → `SUBMIT_VISITOR_INFO` を内部で順に適用して
+`confirming` を直接見せる」は、ADR 0011 で採らないことになった（代替案 2）。
 
 ---
 
-## 5. Slot extraction の責務境界
+## 5. 抽出・解決の責務の境界
 
-自然発話の解析器 / LLM は状態を進めない。
+自然発話の解析器や LLM は、状態を進めない。
 
 ```ts
+// 概念。実装は #1090 の slot proposal。
 type ReceptionSlotProposal = {
-  purpose?: {
-    value: ReceptionPurposeId;
-    confidence: number;
-  };
-  target?: {
-    query: string;
-    confidence: number;
-  };
-  visitorName?: {
-    value: string;
-    confidence: number;
-  };
+  target?: { query: string; confidence: number };
+  visitorName?: { value: string; confidence: number }; // inputVisitorInfo で通知の後に聞いたものだけ使う
+  // purpose / company を抜き出しても、確定には使わない
 };
 ```
 
 責務:
 
-1. STT: transcriptを生成
-2. extractor: slot proposalを生成
-3. resolver: target queryをdirectory entityへ解決
-4. conversation planner: certainty / missing / ambiguityから次のfocusを決定
-5. state adapter: `state.ts` の許可遷移だけを適用
-6. final confirmation: 明示touchで `CONFIRM`
+1. STT: transcript と、その確信度を出す
+2. extractor: slot の候補（proposal）と、その確信度を出す
+3. resolver: 相手の query を名簿の entity へ解決する（同じ姓の判定は `kiosk-bridge.ts` の `sharesSurname`。ADR 0011 §3-f）
+4. conversation planner: 確信度・不足・曖昧さから、次の問いを決める（§6）
+5. state adapter: `state.ts` の許可された遷移だけを適用する。音声から起こせるのは `SELECT_TARGET` と
+   `SUBMIT_VISITOR_INFO` だけ（§0）。公開する hook は `onResolved` と `onVisitorNameConfirmed` だけ
+6. 最後の確認: タッチで `CONFIRM`
 
-LLM / extractor が staff ID を創作したり、`CONFIRM` を実行したりしてはならない。
+LLM や extractor が、担当者 ID を作り出したり、`CONFIRM` / `SELECT_PURPOSE` を起こしたりしてはならない。
 
 ---
 
-## 6. Next conversation focus
+## 6. 次の問い（planner）とカスタムフロー
 
-概念API:
+概念 API（実装は #1088 の `ConversationFocus`）:
 
 ```ts
 type ConversationFocus =
-  | { kind: 'target' }
-  | { kind: 'purpose' }
-  | { kind: 'visitorName' }
-  | { kind: 'disambiguateTarget'; candidateIds: string[] }
-  | { kind: 'confirmLowConfidenceName'; candidate: string }
-  | { kind: 'finalConfirmation' }
-  | { kind: 'assistance' };
-
-function nextConversationFocus(
-  draft: ConversationDraft,
-  capabilities: ConversationCapabilities,
-): ConversationFocus;
+  | { kind: 'disambiguate'; slot: 'target'; candidateCount: number }
+  | { kind: 'collect'; slot: RequiredConversationSlot }   // 画面で尋ねる。キーボードを含む
+  | { kind: 'assistance'; slot: RequiredConversationSlot } // 有人支援（#1074）が使えるとき
+  | { kind: 'finalConfirmation' };
 ```
 
 原則:
 
-- `ambiguous` を `missing` より優先して修復してよい。ただし画面の文脈を崩さない
-- confirmed slotは質問対象に戻さない
-- high slotはfinal confirmationまで持ち越せる
-- required slotsが揃ったらfinalConfirmation
-- STT不能でvoice-required slotが残ればassistance
+- 確定（`confirmed`）の slot を、問いへ戻さない
+- 曖昧な slot（同じ姓の担当者・低確信）を、不足より先に直してよい。ただし画面の文脈を崩さない
+- 必須の slot が揃っても、`inputVisitorInfo` を飛ばして `finalConfirmation` へは行かない（§4）
+- **音声も有人支援も使えないときに、`blocked`（行き止まり）を返さない。** キーボードでの入力（`collect`）を返す
+  （ADR 0011 §4。#1088 MAJOR-2）
+
+カスタム受付フロー（#100）との関係（ADR 0011 §5）:
+
+- 音声で埋めるのは `name` の欄だけ。運用者が定めたほかの必須の欄は、画面で埋める
+- `onVisitorNameConfirmed` を受けたら、氏名を入力欄に入れる。**必須の欄がすべて埋まっているときだけ**
+  `SUBMIT_VISITOR_INFO` を起こす。残っていれば `inputVisitorInfo` に留まり、その欄の入力を案内する
+- 目的に応じて選ばれたフロー（`selectedFlow`）は、音声の経路でも変えない
+- フローに `name` の欄が無いとき、または `visitorInfo` の step が無いときは、氏名を聞き取らない
+- 今の `KioskFlow` は、カスタムフローの `steps` のうち `visitorInfo` の有無だけを見ている
+  （`KioskFlow.tsx` の `CustomVisitorInfoView`）。`target` を省いたフローでも `selectingTarget` を通る。
+  この挙動は本書の範囲外で、音声の経路でも変えない
 
 ---
 
-## 7. 会話コピー
+## 7. 会話の文面
 
-会話コピーは自由生成に依存させず、基本パターンをi18nで固定する。
+文面は自由な生成に頼らず、基本の型を i18n で固定する。
 
-### target focus
+### 相手を尋ねる
 
-「どなたにご用ですか？」
+「どなたにご用ですか？」（候補と検索欄も同時に示す）
 
-### visitor name focus
+### 目的を尋ねる
+
+「どのようなご用件ですか？」（ボタンで選ぶ。音声では受け付けない）
+
+### 入力前の通知（`inputVisitorInfo` に入ったとき）
+
+「受付のため、お名前をお伺いします。声に出したくない場合は、画面から入力できます。記録の扱いは画面に表示しています」
+
+- 固定の前置き（氏名を伺うこと・画面から入力できること）＋要約。要約は、テナントが上書きしていれば
+  その上書き、していなければ同じ module に置く短い版（文面の正本は `resolvePrivacyNoticeContent`）。
+- 前置きは、上書きの有無に関係なく必ず読む（ADR 0011 §2）。
+
+### 氏名を尋ねる
 
 「お名前をお願いします。」
 
-### purpose focus
+### 氏名の復唱（必ず行う）
 
-「どのようなご用件ですか？」
+「張さまでよろしいですか？」＋ `はい` / `いいえ` ボタン（声でも答えられる）
 
-定型候補がある場合はボタンを同時に提示する。
+### 相手の復唱（同じ姓の担当者がいるとき）
 
-### target ambiguity
+「営業部の佐藤 花子さんでよろしいですか？」、または「佐藤さんが 2 名います。どちらの方ですか？」＋候補ボタン
 
-「佐藤さんが2名います。どちらの方ですか？」
+### 聞き直し
 
-+ 2〜4 candidate buttons
+「うまく聞き取れませんでした。もう一度お名前をお願いします。」
 
-### low-confidence name
+### 言い直しが尽きたとき（最初＋言い直し 2 回の計 3 回が失敗）
 
-「『チャン』さまでよろしいですか？」
+「画面から入力してください。」（キーボードの欄へフォーカスを移す。有人支援が使えるときは、その導線も示す）
 
-+ `はい` / `もう一度`
+### 最後の確認
 
-### final confirmation
+「張さま、営業部の鈴木さんにお取り次ぎします。よろしいですか？」
 
-「張さま、営業部の鈴木さんに打ち合わせでお取り次ぎします。よろしいですか？」
+### 担当者に応答が無い（J-OR-05）
 
-### correction
+「鈴木さんは現在応答できません。」＋代わりの連絡手段（`USE_FALLBACK`）
 
-「担当者を変更します。どなたにご用ですか？」
-
-他slotは維持する。
-
-### STT failure
-
-「うまく聞き取れませんでした。もう一度お話しいただくか、画面からお選びください。」
-
-候補が無い場合は #1074 の有人支援を提示する。
-
-### unavailable staff
-
-「鈴木さんは現在応答できません。営業部または受付担当へおつなぎできます。」
-
-実接続できない環境で「おつなぎします」と約束しない。
+- 実際につなげない環境で「おつなぎします」と約束しない。
+- 電話番号・Vonage・内部エラーコードを来訪者に見せない（結果は `result-tone` の抽象的なトーンだけ）。
 
 ---
 
-## 8. Journey examples
+## 8. ジャーニーの例（`docs/experience/README.md` の J-OR-xx に対応づける）
 
-### J-01: 一発話で全部揃う
+### 例 A（J-OR-01）: 相手を声で、氏名を声で
 
-1. Visitor: `担当者を呼ぶ`
-2. System: 「どなたにご用ですか？」
-3. Visitor: 「営業の鈴木さんに打ち合わせで来ました。張です」
-4. System: final confirmation
-5. Visitor: `呼び出す`
+1. `担当者を呼ぶ`（タップ）→ 目的（タップ）
+2. system:「どなたにご用ですか？」 / visitor:「営業の鈴木さんに打ち合わせで来ました。張です」
+3. 相手 = 鈴木（同じ姓の人が居なければ自動採用。居れば復唱か候補）。目的と氏名の部分は使わない
+4. `inputVisitorInfo`: 通知を表示・読み上げ → 「お名前をお願いします」 / visitor:「張です」
+5. 復唱「張さまでよろしいですか？」 / visitor:「はい」（またはタップ）→ `SUBMIT_VISITOR_INFO`
+6. `confirming`: 最後の確認 → `呼び出す`（タップ）
 
-visitor actions = 3
+### 例 B（J-OR-01）: 同じ姓の担当者
 
-### J-02: targetしか言わない
+1. visitor:「佐藤さん」
+2. 候補: `佐藤 花子 / 営業部`、`佐藤 太郎 / 開発部`（同じ姓なので、完全一致が 1 人でも自動確定しない）
+3. タップで選ぶ（または復唱に答える）→ 例 A の 4 以降
 
-1. `担当者を呼ぶ`
-2. 「鈴木さん」
-3. systemは取得済みtargetを保持
-4. 未取得slotだけ質問
-5. final confirmation
+### 例 C（J-OR-04）: 氏名の聞き取りが続けて失敗する
 
-targetを再質問しない。
+1. `inputVisitorInfo` で、騒音のため氏名の確信度が下限を下回る → 聞き直し（1 回目）
+2. 復唱に「いいえ」→ 氏名から聞き直し（2 回目）
+3. 無応答 → 3 回目の失敗。音声での聞き取りをやめ、キーボードの欄へフォーカスを移す
+4. 同じ画面のキーボードで氏名を入れる → `confirming` → `呼び出す`
 
-### J-03: 同姓
+この画面の中では、音声の聞き取りを自動で再開しない。来訪者がキーボードで打ち始めたら、その時点で
+聞き取りと復唱を止める（打ちかけの値を音声で上書きしない。ADR 0011 §3-c）。
 
-1. 「佐藤さん」
-2. candidate: `佐藤 花子 / 営業部`, `佐藤 太郎 / 開発部`
-3. visitor selects
-4. 未取得slotだけ質問
-5. final confirmation
+### 例 D（J-OR-04）: マイクの権限が無い / STT が無効 / TTS が無効
 
-### J-04: 修正
+- マイクの権限の拒否（`privacy_blocked`）、`sttEnabled: false`（既定）、STT の障害、TTS が使えない、のどれでも、
+  相手はタップか検索欄で、氏名はキーボードで入れて、`SUBMIT_VISITOR_INFO` → `CONFIRM` まで進める（ADR 0011 §4）。
+- 権限を何度も求めて追い詰めない。
 
-1. final confirmation
-2. Visitor: `修正する`
-3. 修正対象を選択または「鈴木さんじゃなくて佐藤さん」
-4. targetだけ更新
-5. final confirmationへ戻る
+### 例 E（J-OR-01）: 修正
 
-### J-05: QR all-known
+1. 最後の確認で、相手が違うと気づく
+2. 「戻る」を 2 回（`confirming` → `inputVisitorInfo` → `selectingTarget`）。入力済みの氏名は残る
+3. 相手を選び直す → `inputVisitorInfo`（氏名が入っているので、通知の読み上げと音声の聞き取りは自動では始めない）
+4. 「次へ」→ 最後の確認
 
-1. QR scan
-2. final confirmation
-3. `呼び出す`
+### 例 F（J-OR-03）: QR / 予約
 
-同じ氏名・担当者を再入力させない。
+QR の受付は別の状態機械（`src/domain/checkin/state.ts`、ADR 0008）で、読み取るだけでは発信しない
+（`scanning` → `resolving` → `confirming` → `calling`。発信の確定はタッチのみ）。予約から分かっている氏名や相手を、
+もう一度入れさせない。統合のシェルと手数の削減は #1083 で扱う。
 
-### J-06: STT unavailable
+### 例 G（J-OR-05）: 担当者が応答しない・発信に失敗する
 
-1. voice-required slotでSTT failure
-2. known candidatesがあればtouch
-3. numeric代替があればnumpad
-4. retry
-5. 解決不能なら #1074 assistance
-
-software keyboardは出さない。
+1. `calling` → `timeout` / `failed`
+2. 謝罪と代わりの連絡手段（`fallback`）を主な CTA として示す
+3. `completed` または「最初に戻る」で `idle` へ。draft と聞き取りの状態はここで捨てる
 
 ---
 
-## 9. Anti-patterns
+## 9. やってはいけないこと
 
-禁止/要レビュー:
-
-- 1 field = 1 screen を機械的に実装
-- STT結果を常に個別yes/noし、その後同じ内容をfinal confirmationでも確認
-- 「承知しました」だけの独立ターン
-- 取得済み情報をstate遷移順の都合で再質問
-- correctionで最初からやり直す
-- STT failure時にsoftware keyboardを表示
-- company / noteを「フォームにあるから」という理由で収集
-- voice mode / touch modeを別journeyとして分断
-- LLMがstaff id / state transition / call確定を直接生成
+- 1 つの欄に 1 つの画面を、機械的に割り当てる
+- 相手の STT の結果を、毎回 `はい/いいえ` で確かめ、さらに同じ内容を最後の確認でも確かめる
+  （氏名の復唱は例外で、必ず行う。§2.4）
+- 「承知しました」だけの独立したターン
+- 取得済みの slot を、状態の順の都合で聞き直す
+- 修正のたびに最初からやり直させる
+- **`inputVisitorInfo` と通知を飛ばして、氏名を声で取る**
+- **通知を読み上げ終える前、または TTS が使えないときに、氏名の聞き取りを始める**
+- **音声も有人支援も使えないときに、キーボードを出さずに行き止まりにする**（キーボードを外すのは、
+  有人支援（#1074）が本番に配線され、owner が別途承認してから。ADR 0011 §4）
+- 会社名やメモを「フォームにあるから」という理由で声で尋ねる
+- 音声のモードとタッチのモードを、別のジャーニーとして分ける
+- LLM が担当者 ID・状態の遷移・発信の確定を直接作る
 
 ---
 
-## 10. Metrics
+## 10. 計測
 
-#1080 でPIIなしに以下を測る。
+#1080 で、個人情報を入れずに次を測る（件数・回数・経過時間だけ。ADR 0011 §6）。
 
-- visitorActionCount
-- voiceUtteranceCount
-- touchActionCount
-- clarificationCount
-- reaskCount
-- correctionCount
-- candidateDisambiguationCount
+- visitorActionCount / voiceUtteranceCount / touchActionCount
+- clarificationCount / reaskCount（言い直しの回数）/ correctionCount
+- 氏名の復唱の回数・「いいえ」の回数・キーボードへ移った回数（名前は #1080 で決める）
+- candidateDisambiguationCount（同じ姓の復唱を含む）
 - assistanceRequested
 - timeToConfirmMs
 
-発話本文、氏名、会社名、担当者名はmetricsへ入れない。
+発話の本文・氏名・会社名・担当者名は、metrics・監査ログ・アプリログへ入れない。
+氏名を含む発話（復唱など）は、動的な TTS キャッシュ（ADR 0002 の S3・CDN、端末の Service Worker / IndexedDB）に
+書かない。合成は端末の中で行うか、サーバで合成するならキャッシュしない（ADR 0011 §6）。
 
 ---
 
-## 11. Acceptance criteria
+## 11. 受け入れ条件
 
-- 取得済みslotを再質問しない
-- 1発話から複数slotを受け取れる
-- 1画面の主指示は1focus
-- high-confidence voice slotは毎回個別確認しない
-- ambiguous / low-confidence slotだけをrepairする
-- final confirmationにprovisionalな重要slotを含める
-- same slotの二重確認を原則しない
-- correctionで他slotを失わない
-- No Typingを維持する
-- purpose / target / visitorNameが揃ったら不要なcompany/noteを挟まない
-- standard journeyのvisitor action数を計測できる
+- 取得済みの slot を聞き直さない（氏名の復唱を除く）
+- 相手の画面の 1 発話から、相手を受け取れる。目的と氏名はその発話から使わない
+- 1 つの画面の主な問いは 1 つ
+- 相手（voice）は、高信頼で同じ姓の人が居なければ、個別の確認を省ける。同じ姓の人が居れば必ず復唱する
+- 氏名（voice）は、確信度に関係なく必ず復唱し、「はい」のときだけ確定する
+- 氏名の聞き取りは、`inputVisitorInfo` で通知を正常に読み上げ終えた後にだけ始める
+- 言い直しは 2 回まで。尽きたらキーボードへ移り、有人支援が使えればその導線も示す
+- キーボードの入力欄は、既定の経路（`VisitorInfoView`）とカスタムフロー（`VisitorInfoForm`）の両方で常に使える
+- 音声のどの経路からも `CONFIRM` と `SELECT_PURPOSE` が起きない
+- 修正で、ほかの slot を失わない（ただし目的を直すと相手は選び直し。§2.5）
+- `RESET` / 無操作のリセット / キャンセル / 完了で、draft と聞き取りの状態を捨てる
+- 氏名を metrics・ログ・TTS キャッシュに残さない
+- 既定の経路の手数を計測できる（#1080）
 
-Refs: #1077 #1079 #1080 #1081 #1082 #1083 #1074 #1057 #361
+Refs: #1077 #1079 #1080 #1081 #1082 #1083 #1074 #1057 #361 / ADR 0011
