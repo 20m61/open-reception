@@ -11,14 +11,14 @@
 5. **人につながる逃げ道を残す** — 自動受付を完遂できない場合に代表窓口や有人支援へ移れる。
 6. **公共空間のプライバシーを守る** — 個人情報、発話内容、担当者情報を必要以上に表示・読み上げない。
 7. **受付開始後は一つの視覚空間から退出しない** — 状態遷移を別ページの列ではなく、同じ Reception Stage 上の会話ターンの更新として表現する（下記「Single Reception Stage contract」）。
-8. **来訪者にタイプさせない（目標）** — 入力は選択ボタンとテンキーを優先し、それらで表現できない自由入力（氏名など）は音声で受け取る方向へ寄せる。**ただし当面は、来訪者情報入力のキーボード欄を残す。** 音声も有人支援も使えない来訪者を行き止まりにしないため、キーボードを外すのは有人支援（#1074）が本番に配線され、owner が別途承認してからとする（[ADR 0011](../adr/0011-voice-visitor-name-confirmation.md)、提案中）。
+8. **来訪者にタイプさせない（目標）** — 入力は選択ボタンとテンキーを優先し、それらで表現できない自由入力（氏名など）は音声で受け取る方向へ寄せる。**ただし当面は、来訪者情報入力のキーボード欄を残す。** 音声も有人支援も使えない来訪者を行き止まりにしないため、キーボードを外すのは有人支援（#1074）が本番に配線され、owner が別途承認してからとする（[ADR 0011](../adr/0011-voice-visitor-name-confirmation.md)、提案中・#1286）。キーボードを外した後も、STT が失敗したときの例外としてキーボードを残すかどうかは、外すときに改めて判断する。
 
 > 番号は既存の参照（コード・テスト・ADR の「原則 N」）を壊さないよう、1〜6 を据え置き、7・8 を末尾に足している。
 > 原則 7・8 は**現状まだ満たしていない**（来訪者向けの自由入力欄が `reception-screens.tsx`・`VisitorInfoForm.tsx`・`CheckoutFlow.tsx` などに実在する）。移行は #1055 / #1057 で行う。運用者向けの入力（担当者の PIN など）は対象外。
 
 ### Single Reception Stage contract
 
-`idle -> selectingPurpose -> selectingTarget -> inputVisitorInfo -> confirming -> calling -> connected | failed | timeout | fallback -> completed`（`ReceptionState`）は、
+`idle -> selectingPurpose -> selectingTarget -> inputVisitorInfo -> confirming -> calling -> connected -> completed`（`ReceptionState` の主経路の略記。`failed` / `timeout` / `fallback` / `cancelled` を含む全遷移は `src/domain/reception/state.ts`）は、
 来訪者にとって「複数画面を順番に進むフロー」ではなく、**同じ受付空間で質問と回答が一段ずつ進む会話**である。
 URL、`ReceptionState`、内部コンポーネントが変わること自体は許容するが、実装都合をページ遷移として
 知覚させない。
@@ -28,8 +28,8 @@ URL、`ReceptionState`、内部コンポーネントが変わること自体は�
 - **Back**: 「前ページへ戻る」ではなく、一つ前の回答を訂正する会話操作として扱う。
 - **Error / recovery**: 失敗専用画面へ飛ばさず、理由と修正操作を同一 viewport・同一 Stage に置く。
 - **Input mode**: touch / voice / QR の切替を理由に Stage 全体を別 UI へ置換しない。
-- **Voice confirmation**: 音声で聞き取った氏名は、確信度に関係なく復唱で確かめてから確定する。相手（担当者）は、高信頼で他に近い候補が無いときだけ復唱を省ける（`kiosk-bridge.ts`、#1284）。発信の直前の確認（`confirming`）はタッチで行う（ADR 0007 / ADR 0011）。
-- **Fallback**: VRM / TTS が無くても同じ情報構造を保つ。STT が利用不能・権限拒否・継続失敗の場合は、既知候補・再発話・有人支援・**キーボード入力**へ文脈を保って戻す（原則 8 の例外。ADR 0011）。
+- **Voice confirmation**: 音声で聞き取った氏名は、確信度に関係なく復唱で確かめてから確定する。相手（担当者）は、高信頼で他に近い候補が無いときだけ復唱を省ける（`kiosk-bridge.ts`。不在で同じ姓の人も「近い候補」に数えるのは #1285 の merge 後）。発信の直前の確認（`confirming`）はタッチで行う（ADR 0007 / ADR 0011）。
+- **Fallback**: VRM / TTS が無くても同じ情報構造を保つ。来訪者情報入力のキーボード欄は、当面は音声の有無にかかわらず常に表示して使える主経路の 1 つである（ADR 0011 §4）。STT が利用不能・権限拒否・継続失敗の場合は、既知候補・再発話・有人支援・キーボード入力へ文脈を保って戻す。
 - **Motion**: 全面 slide / 全面 fade / blank frame を進行の主表現にしない。局所 transition は連続性を補助する場合だけ使い、reduced motion でも意味が成立すること。
 - **Accessibility**: 視覚連続性のために heading、focus、live region 等の semantics を弱めない。音声を使えない来訪者を行き止まりにしない。
 
