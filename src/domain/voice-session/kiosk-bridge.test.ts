@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bridgeCommittedTurn } from './kiosk-bridge';
+import { bridgeCommittedTurn, sharesSurname } from './kiosk-bridge';
 import { resolveEntities } from '@/domain/voice-stt/entity-resolver';
 import type { Staff } from '@/domain/staff/types';
 import type { Department } from '@/domain/department/types';
@@ -130,7 +130,7 @@ describe('bridgeCommittedTurn: 不在者と近い在席者を自動確定しな�
     });
   });
 
-  it('不在の人の方がはっきり一致するなら、在席の別人を選ばない（「田中太郎」と、在席の田中太郎丸）', () => {
+  it('不在の人の方がはっきり一致するなら、在席の別人を選ばない（同じ姓なので「不在です」と断定もしない）', () => {
     const result = bridgeCommittedTurn({
       text: '田中太郎',
       directory: dir([staff('m', '田中太郎丸', 'たなかたろうまる')]),
@@ -140,7 +140,24 @@ describe('bridgeCommittedTurn: 不在者と近い在席者を自動確定しな�
       t: 0,
     });
     expect(result.resolved).toBeNull();
-    expect(result.event).toEqual({ type: 'heardUnavailable', displayName: '田中太郎' });
+    // 田中太郎丸と同じ姓なので、不在の告知も断定せず復唱する（owner の判断、2026-10-28）。
+    expect(result.event).toMatchObject({
+      type: 'heardNeedsConfirmation',
+      displayName: '田中太郎',
+      unavailable: true,
+    });
+  });
+
+  it('同じ姓の別人がいなければ、不在の人ははっきり告知する（#803 を保つ）', () => {
+    const result = bridgeCommittedTurn({
+      text: '田中太郎',
+      directory: dir([staff('s', '佐藤', 'さとう')]),
+      unavailableDirectory: dir([away('t', '田中太郎', 'たなかたろう')]),
+      sttConfidence: 0.95,
+      thresholds: T,
+      t: 0,
+    });
+    expect(result).toEqual({ event: { type: 'heardUnavailable', displayName: '田中太郎' }, resolved: null });
   });
 
   /*
@@ -242,5 +259,123 @@ describe('bridgeCommittedTurn: 不在者と近い在席者を自動確定しな�
         t: 0,
       }).event.type,
     ).toBe('heardAccepted');
+  });
+});
+
+/**
+ * 同じ姓の人が 2 人以上いるときは、完全一致の人が 1 人だけでも自動で確定しない
+ * （owner の判断、2026-10-28 / #1284）。表示名が姓だけの人がいる場合も同じ。
+ */
+describe('bridgeCommittedTurn: 同じ姓の別人がいれば必ず復唱する (#1284)', () => {
+  const away = (id: string, displayName: string, kana: string): Staff => ({
+    ...staff(id, displayName, kana),
+    available: false,
+  });
+  const dir = (s: Staff[]) => ({ staff: s, departments: [] as Department[] });
+  const T = { minSttConfidence: 0.6, minEntityConfidence: 0.5, minMarginOverSecond: 0.1 };
+  const turn = (text: string, present: Staff[], absent: Staff[] = []) =>
+    bridgeCommittedTurn({
+      text,
+      directory: dir(present),
+      unavailableDirectory: dir(absent),
+      sttConfidence: 0.95,
+      thresholds: T,
+      t: 0,
+    });
+
+  it('完全一致でも、同じ姓の在席者が他にいれば自動確定しない', () => {
+    const result = turn('田中花子', [staff('h', '田中花子', 'たなかはなこ'), staff('t', '田中太郎', 'たなかたろう')]);
+    expect(result.event).toMatchObject({ type: 'heardNeedsConfirmation', displayName: '田中花子' });
+    expect(result.resolved).toMatchObject({ id: 'h' });
+  });
+
+  it('完全一致でも、同じ姓の不在者がいれば自動確定しない', () => {
+    const result = turn('田中花子', [staff('h', '田中花子', 'たなかはなこ')], [away('t', '田中太郎', 'たなかたろう')]);
+    expect(result.event.type).toBe('heardNeedsConfirmation');
+  });
+
+  it('表示名が姓だけの人がいる場合も同じ（「田中」と「田中 花子」）', () => {
+    const exactSurnameOnly = turn('田中', [staff('a', '田中', 'たなか'), staff('h', '田中 花子', 'たなか はなこ')]);
+    expect(exactSurnameOnly.event.type).toBe('heardNeedsConfirmation');
+    const fullName = turn('田中 花子', [staff('a', '田中', 'たなか'), staff('h', '田中 花子', 'たなか はなこ')]);
+    expect(fullName.event.type).toBe('heardNeedsConfirmation');
+  });
+
+  it('部署は姓を持たないので、名前の先頭が担当者と重なっても部署の自動確定は止めない', () => {
+    const result = bridgeCommittedTurn({
+      text: '総務部',
+      directory: { staff: [staff('s', '総務 太郎', 'そうむ たろう')], departments },
+      unavailableDirectory: dir([]),
+      sttConfidence: 0.95,
+      thresholds: T,
+      t: 0,
+    });
+    expect(result.event.type).toBe('heardAccepted');
+    expect(result.resolved).toMatchObject({ kind: 'department', id: 'd1' });
+  });
+
+  it('下界: 同じ姓の別人がいなければ、完全一致は従来どおり自動確定する', () => {
+    const result = turn('田中花子', [staff('h', '田中花子', 'たなかはなこ'), staff('s', '佐藤', 'さとう')], [
+      away('z', '鈴木', 'すずき'),
+    ]);
+    expect(result).toEqual({
+      event: { type: 'heardAccepted' },
+      resolved: expect.objectContaining({ id: 'h' }),
+    });
+  });
+
+  it('不変条件: 自動確定・不在の断定をした相手には、どちらの辞書にも同じ姓の別人がいない', () => {
+    const NAMES: Array<[string, string]> = [
+      ['田中太郎', 'たなかたろう'],
+      ['田中花子', 'たなかはなこ'],
+      ['田中', 'たなか'],
+      ['田中 次郎', 'たなか じろう'],
+      ['佐藤', 'さとう'],
+      ['佐野', 'さの'],
+      ['鈴木 一郎', 'すずき いちろう'],
+    ];
+    const QUERIES = [...NAMES.map(([n]) => n), '田中', 'たなか', '佐'];
+    let decided = 0;
+    NAMES.forEach(([pn, pk], i) => {
+      NAMES.forEach(([an, ak], j) => {
+        if (i === j) return;
+        for (const q of QUERIES) {
+          const present = [staff('p', pn, pk)];
+          const absent = [away('a', an, ak)];
+          const result = turn(q, present, absent);
+          const label = `${q} / 在席 ${pn} / 不在 ${an}`;
+          if (result.event.type === 'heardAccepted') {
+            decided += 1;
+            expect(sharesSurname(pn, an), label).toBe(false);
+          }
+          if (result.event.type === 'heardUnavailable') {
+            decided += 1;
+            expect(sharesSurname(an, pn), label).toBe(false);
+          }
+        }
+      });
+    });
+    // 下界: 自動の判断が一度も起きないなら、上の主張は空虚に満たされる。
+    expect(decided).toBeGreaterThan(0);
+  });
+});
+
+describe('sharesSurname', () => {
+  it.each([
+    ['田中 花子', '田中 太郎', true],
+    ['田中\u3000花子', '田中 太郎', true],
+    ['田中', '田中 花子', true],
+    ['田中花子', '田中太郎', true],
+    ['田中', '田中太郎', true],
+    ['佐藤', '佐野', false],
+    ['田中 花子', '田村 花子', false],
+    // 区切りがあれば先頭の語で比べる（先頭 2 文字が同じでも別の姓）。全角の空白も区切りとして扱う。
+    ['田中 花子', '田中島 太郎', false],
+    ['田中\u3000花子', '田中島\u3000太郎', false],
+    ['田中 花子', '鈴木 花子', false],
+    ['', '田中', false],
+  ])('%s と %s → %s', (a, b, expected) => {
+    expect(sharesSurname(a, b)).toBe(expected);
+    expect(sharesSurname(b, a)).toBe(expected);
   });
 });

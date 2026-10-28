@@ -81,8 +81,8 @@ export function bridgeCommittedTurn(input: BridgeCommittedTurnInput): BridgeComm
     input.t,
   );
 
-  if (confirmation === null) {
-    // 高信頼 → 自動採用（復唱なし）。top1 を選択対象として持ち回す。
+  if (confirmation === null && !hasSurnamePeer(input, resolution.top1)) {
+    // 高信頼で、同じ姓の別人もいない → 自動採用（復唱なし）。top1 を選択対象として持ち回す。
     return { event: { type: 'heardAccepted' }, resolved: resolution.top1 };
   }
 
@@ -96,7 +96,8 @@ export function bridgeCommittedTurn(input: BridgeCommittedTurnInput): BridgeComm
     event: {
       type: 'heardNeedsConfirmation',
       displayName: resolution.top1.displayName,
-      reason: confirmation.reason,
+      // 確信度では自動採用できたが、同じ姓の別人がいるので復唱する（owner の判断、#1284）。
+      reason: confirmation?.reason ?? 'ambiguous_candidates',
       // 復唱テンプレートの出し分け (issue #361 申し送り)。resolveEntities は staff/department
       // 以外を返さないが、型上は EntityCandidateKind が広いため department 以外は 'staff' へ
       // 正規化する（安全側デフォルト = 従来の担当者向けテンプレート）。
@@ -126,7 +127,7 @@ function unavailableResult(
 ): BridgeCommittedTurnResult {
   const confirmation = decideEntityConfirmation(input.sttConfidence, top3, thresholds, input.t);
 
-  if (confirmation === null) {
+  if (confirmation === null && !hasSurnamePeer(input, top1)) {
     return {
       event: { type: 'heardUnavailable', displayName: top1.displayName },
       resolved: null,
@@ -137,7 +138,7 @@ function unavailableResult(
     event: {
       type: 'heardNeedsConfirmation',
       displayName: top1.displayName,
-      reason: confirmation.reason,
+      reason: confirmation?.reason ?? 'ambiguous_candidates',
       kind: top1.kind === 'department' ? 'department' : 'staff',
       unavailable: true,
     },
@@ -154,4 +155,43 @@ function mergeTop3(
   second: readonly EntityCandidate[],
 ): EntityCandidate[] {
   return [...first, ...second].sort((a, b) => b.entityConfidence - a.entityConfidence).slice(0, 3);
+}
+
+/**
+ * 同じ姓の別人が、在席・不在のどちらかの辞書にいるか（owner の判断、2026-10-28 / #1284）。
+ *
+ * 🔴 **同じ姓の人が 2 人以上いるときは、完全一致の人が 1 人だけでも自動で確定しない。**
+ * 来訪者が姓だけで呼ぶ／聞き違える余地があるので、必ず復唱して確かめる。表示名が姓だけの人
+ * （「田中」）がいる場合も同じ。確信度の差（完全一致 1.0 と前方一致 0.8）では区別しない。
+ *
+ * 担当者だけを見る（部署は姓を持たない）。判定は `sharesSurname`。
+ */
+function hasSurnamePeer(input: BridgeCommittedTurnInput, candidate: EntityCandidate | null): boolean {
+  if (candidate === null || candidate.kind === 'department') return false;
+  const staff = [...input.directory.staff, ...(input.unavailableDirectory?.staff ?? [])];
+  return staff.some((s) => s.id !== candidate.id && sharesSurname(candidate.displayName, s.displayName));
+}
+
+/**
+ * 2 つの表示名が同じ姓とみなせるか。
+ *
+ * 担当者の辞書は姓と名を別の欄で持たないので、表示名から推定する。
+ *  - 両方が空白（全角を含む）で区切られていれば、先頭の語どうしを比べる（「田中 花子」と「田中 太郎」）
+ *  - 片方だけが区切りを持たない（姓だけ、または区切りの無い氏名）なら、区切りを除いた文字列の
+ *    **先頭 2 文字以上が一致する**ときに同じ姓とみなす（「田中」と「田中 花子」、「田中花子」と「田中太郎」）
+ *
+ * 1 文字だけの一致（「佐藤」と「佐野」）は同じ姓とみなさない。推定は安全側（復唱が増える側）に
+ * 倒れることがある（「佐々木」と「佐々川」）が、それは自動確定を減らすだけで、誤接続は増やさない。
+ */
+export function sharesSurname(a: string, b: string): boolean {
+  const tokens = (name: string) => name.trim().split(/[\s\u3000]+/).filter((t) => t !== '');
+  const ta = tokens(a);
+  const tb = tokens(b);
+  if (ta.length === 0 || tb.length === 0) return false;
+  if (ta.length >= 2 && tb.length >= 2) return ta[0] === tb[0];
+  const fa = ta.join('');
+  const fb = tb.join('');
+  let common = 0;
+  while (common < fa.length && common < fb.length && fa[common] === fb[common]) common += 1;
+  return common >= 2;
 }
