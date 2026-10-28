@@ -242,6 +242,8 @@ test('担当者を絞り込んでも・スクロールしても復唱ボタン�
  * 動く実ブラウザでしか通知は流れない）。
  */
 test('?voiceOrchestrator=1 で、音声の局面が companion のアバターに届く', async ({ page }) => {
+  // companion は横向きでは相手選択でも出る（縦向きは一部の局面だけ。`showAvatarCompanion`）。
+  await page.setViewportSize({ width: 1180, height: 820 });
   await page.goto('/kiosk?voiceOrchestrator=1');
   await page.getByTestId('start-reception').click();
   await page.getByTestId('purpose-meeting').click();
