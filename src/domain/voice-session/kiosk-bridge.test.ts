@@ -29,9 +29,10 @@ const directory = {
 
 describe('bridgeCommittedTurn (#364 発話確定 → #370 Entity 解決への橋渡し)', () => {
   it('高信頼・完全一致は復唱を挟まず自動採用（heardAccepted）し、対象を解決する', () => {
-    const result = bridgeCommittedTurn({ text: 'さとう', directory, sttConfidence: 0.95, t: 10 });
+    // 「佐藤」と「佐野」は、表示名にも読みにも区切りが無いので同じ姓とみなす（owner の判断）。別の姓の鈴木で見る。
+    const result = bridgeCommittedTurn({ text: 'すずき', directory, sttConfidence: 0.95, t: 10 });
     expect(result.event).toEqual({ type: 'heardAccepted' });
-    expect(result.resolved?.id).toBe('s1');
+    expect(result.resolved?.id).toBe('s2');
   });
 
   it('STT confidence が低いと候補が明確でも復唱確認（low_stt_confidence）へ回す', () => {
@@ -352,6 +353,9 @@ describe('bridgeCommittedTurn: 同じ姓の別人がいれば必ず復唱する 
     { name: 'Taro Suzuki', surname: 'Suzuki' },
     { name: 'Hanako Suzuki', surname: 'Suzuki' },
     { name: '佐々木', surname: '佐々木' },
+    { name: '井太郎', kana: 'いたろう', surname: '井' },
+    { name: '井花子', kana: 'いはなこ', surname: '井' },
+    { name: '東花子', kana: 'あずまはなこ', surname: '東' },
     { name: '渡辺 一郎', surname: '渡辺' },
     { name: '渡邊 花子', surname: '渡辺' },
     { name: '髙橋 次郎', surname: '高橋' },
@@ -436,15 +440,72 @@ describe('bridgeCommittedTurn: 同じ姓の別人がいれば必ず復唱する 
     expect(unit(0.1)).toEqual({ type: 'heardUnavailable', displayName: '佐藤' });
   });
 
-  it('下界: ラテン文字・かなの名前の人が 1 人いても、ほかの担当者の自動確定は止めない', () => {
+  it('下界: ラテン文字・かなの名前の人が 1 人いても、全員に読みがあれば、ほかの担当者の自動確定は止めない', () => {
     const latin = turn('鈴木一郎', [
       staff('s', '鈴木一郎', 'すずきいちろう'),
       staff('h', '佐藤 花子', 'さとう はなこ'),
-      staff('j', 'John Smith'),
+      staff('j', 'John Smith', 'じょん すみす'),
     ]);
     expect(latin.event.type).toBe('heardAccepted');
-    const kana = turn('鈴木一郎', [staff('s', '鈴木一郎'), staff('h', '佐藤花子'), staff('g', 'グエン ヴァン アン')]);
+    const kana = turn('鈴木一郎', [
+      staff('s', '鈴木一郎', 'すずきいちろう'),
+      staff('h', '佐藤花子', 'さとうはなこ'),
+      staff('g', 'グエン ヴァン アン', 'ぐえん ゔぁん あん'),
+    ]);
     expect(kana.event.type).toBe('heardAccepted');
+  });
+
+  /*
+   * owner の判断（2026-10-28）: 読みを登録していない担当者が 1 人でもいる名簿では、姓を推定しきれないので、
+   * 担当者を自動で確定せず（不在の断定もせず）、常に復唱する。
+   */
+  describe('読みの無い担当者がいる名簿', () => {
+    const roster = (extra: Staff[]) => [
+      staff('s', '鈴木 一郎', 'すずき いちろう'),
+      staff('h', '佐藤 花子', 'さとう はなこ'),
+      ...extra,
+    ];
+
+    it('在席に読みの無い人がいれば、別の姓の人でも自動で確定しない', () => {
+      const result = turn('鈴木一郎', roster([staff('x', '山田 太郎')]));
+      expect(result.event).toMatchObject({ type: 'heardNeedsConfirmation', reason: 'ambiguous_candidates' });
+      expect(result.resolved).toMatchObject({ id: 's' });
+    });
+
+    it('不在に読みの無い人がいても同じ。不在の名指しも断定しない', () => {
+      expect(turn('鈴木一郎', roster([]), [away('x', '山田 太郎')]).event.type).toBe('heardNeedsConfirmation');
+      expect(turn('佐藤花子', [staff('s', '鈴木 一郎', 'すずき いちろう')], [
+        away('h', '佐藤 花子', 'さとう はなこ'),
+        away('x', '山田 太郎'),
+      ]).event).toMatchObject({ type: 'heardNeedsConfirmation', unavailable: true });
+    });
+
+    it('空の読み（空白だけ）も、読みが無いものとして扱う', () => {
+      expect(turn('鈴木一郎', roster([staff('x', '山田 太郎', '　 ')])).event.type).toBe('heardNeedsConfirmation');
+    });
+
+    it('下界: 全員に読みがあれば、従来どおり自動で確定する', () => {
+      const result = turn('鈴木一郎', roster([staff('x', '山田 太郎', 'やまだ たろう')]));
+      expect(result).toEqual({ event: { type: 'heardAccepted' }, resolved: expect.objectContaining({ id: 's' }) });
+      expect(turn('佐藤花子', [staff('s', '鈴木 一郎', 'すずき いちろう')], [away('h', '佐藤 花子', 'さとう はなこ')]).event)
+        .toEqual({ type: 'heardUnavailable', displayName: '佐藤 花子' });
+    });
+
+    it('無効の担当者（enabled: false）は、読みが無くても数えない', () => {
+      const disabled = { ...staff('x', '山田 太郎'), enabled: false };
+      expect(turn('鈴木一郎', roster([disabled])).event.type).toBe('heardAccepted');
+    });
+
+    it('部署は姓を持たないので、読みの無い担当者がいても部署の自動確定は止めない', () => {
+      const result = bridgeCommittedTurn({
+        text: '総務部',
+        directory: { staff: [staff('x', '山田 太郎')], departments },
+        sttConfidence: 0.95,
+        thresholds: T,
+        t: 0,
+      });
+      expect(result.event.type).toBe('heardAccepted');
+    });
   });
 
   it('無効になった担当者（enabled: false）は、同じ姓の比較の相手に入れない', () => {
@@ -532,8 +593,13 @@ describe('sharesSurname', () => {
     [n('高槗 花子'), n('高橋 太郎'), true],
     [n('桒原 花子'), n('桑原 太郎'), true],
     [n('藏本 花子'), n('蔵本 太郎'), true],
+    // 表に無い異体字（邨）でも、読みが両方にあれば読みの先頭 2 音で拾う。
+    [n('邨 花子', 'むらはなこ'), n('村 太郎', 'むらたろう'), true],
     // 標準の異体字セレクタ（SVS）も取り除く。
     [n('葛\uFE00城 花子'), n('葛城 太郎'), true],
+    // 範囲の両端も取り除く（範囲を狭める変更を見逃さないため）。
+    [n('葛\uFE0F城 花子'), n('葛城 太郎'), true],
+    [n('葛\u{E01EF}城 花子'), n('葛城 太郎'), true],
     // 丸括弧以外の注記も姓に含めない。
     [n('【営業】田中 花子'), n('田中 太郎'), true],
     [n('田中［営業］ 花子'), n('田中 太郎'), true],
@@ -547,7 +613,14 @@ describe('sharesSurname', () => {
     [n('タナカ'), n('たなか はなこ'), true],
     [n('Tanaka Hanako'), n('tanaka Taro'), true],
     [n('ＴＡＮＡＫＡ'), n('TANAKA Taro'), true],
-    [n('佐藤', 'さとう'), n('佐野', 'さの'), false],
+    // 表示名にも読みにも区切りが無ければ、表示名の先頭 1 文字で判定する（owner の判断。1 文字・1 音の姓を拾う）。
+    [n('佐藤', 'さとう'), n('佐野', 'さの'), true],
+    [n('井太郎', 'いたろう'), n('井花子', 'いはなこ'), true],
+    [n('東太郎', 'あずまたろう'), n('東花子', 'ひがしはなこ'), true],
+    // 下界: 表示名か読みのどちらかに区切りがあれば、それで姓が分かるので先頭 1 文字では判定しない。
+    [n('佐藤 花子', 'さとう はなこ'), n('佐野 太郎', 'さの たろう'), false],
+    [n('佐藤花子', 'さとう はなこ'), n('佐野太郎', 'さの たろう'), false],
+    [n('佐藤 花子', 'さとうはなこ'), n('佐野 太郎', 'さのたろう'), false],
     [n('田中 花子'), n('田村 花子'), false],
     [n('田中 花子'), n('鈴木 花子'), false],
     [n('東'), n('東山 花子'), false],
