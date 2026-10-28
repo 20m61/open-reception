@@ -14,6 +14,13 @@ import type { Department } from '@/domain/department/types';
 import { normalizeCallTargets, type MockCallOutcome, type Staff } from '@/domain/staff/types';
 import { MOCK_DEPARTMENTS, MOCK_STAFF } from '@/domain/staff/mock-data';
 import { searchStaff } from '@/domain/staff/search';
+import {
+  STAFF_KANA_POLICY,
+  assessStaffKana,
+  kanaIssueMessage,
+  rejectsStaffKana,
+  type StaffKanaPolicy,
+} from '@/domain/staff/kana';
 import { DataBackedDirectoryRepository, type DirectoryRepository } from './directory-repository';
 import { defaultTenantIdFrom } from '@/lib/tenant/default-scope';
 
@@ -176,6 +183,18 @@ export type StaffInput = {
   mockCallOutcome?: MockCallOutcome;
 };
 
+/**
+ * 担当者の書き込み（作成・更新・CSV 取り込み）の選択肢 (#1287)。
+ * `kanaPolicy` を省くと `STAFF_KANA_POLICY`（owner が選ぶ 1 行）に従う。テストは両方を渡して縛る。
+ */
+export type StaffWriteOptions = { kanaPolicy?: StaffKanaPolicy };
+
+/** 方針の下で読みが保存を拒否されるなら、その理由（日本語の案内文）を返す。 */
+function kanaRejection(kana: string | undefined, policy: StaffKanaPolicy): string | null {
+  const status = assessStaffKana(kana);
+  return rejectsStaffKana(status, policy) ? kanaIssueMessage(status) : null;
+}
+
 function validateStaffInput(input: unknown, knownDeptIds: Set<string>): Result<StaffInput> {
   if (typeof input !== 'object' || input === null) return err('invalid_input', 'body must be an object');
   const o = input as Record<string, unknown>;
@@ -197,11 +216,17 @@ function validateStaffInput(input: unknown, knownDeptIds: Set<string>): Result<S
   };
 }
 
-export async function createStaff(tenantId: string, input: unknown): Promise<Result<Staff>> {
+export async function createStaff(
+  tenantId: string,
+  input: unknown,
+  options: StaffWriteOptions = {},
+): Promise<Result<Staff>> {
   const repo = getDirectoryRepository();
   const deptIds = new Set((await repo.listDepartments(tenantId)).map((d) => d.id));
   const v = validateStaffInput(input, deptIds);
   if (!v.ok) return v;
+  const kanaError = kanaRejection(v.value.kana, options.kanaPolicy ?? STAFF_KANA_POLICY);
+  if (kanaError !== null) return err('invalid_input', kanaError);
   const member: Staff = {
     id: nextId('staff'),
     displayName: v.value.displayName,
@@ -217,12 +242,26 @@ export async function createStaff(tenantId: string, input: unknown): Promise<Res
   return { ok: true, value: member };
 }
 
-export async function updateStaff(tenantId: string, id: string, patch: unknown): Promise<Result<Staff>> {
+export async function updateStaff(
+  tenantId: string,
+  id: string,
+  patch: unknown,
+  options: StaffWriteOptions = {},
+): Promise<Result<Staff>> {
   const repo = getDirectoryRepository();
   const found = await repo.getStaff(tenantId, id);
   if (!found) return err('not_found', 'staff not found');
   if (typeof patch !== 'object' || patch === null) return err('invalid_input', 'body must be an object');
   const o = patch as Record<string, unknown>;
+  // 読みは patch に含まれるときだけ検証する。読みの無い旧レコードでも、読みに触れない更新
+  // （在席の切り替え・呼び出し先の変更）は方針によらずできる。どの欄も書き換える前に判定する。
+  if (o.kana !== undefined) {
+    const kanaError = kanaRejection(
+      typeof o.kana === 'string' ? o.kana : undefined,
+      options.kanaPolicy ?? STAFF_KANA_POLICY,
+    );
+    if (kanaError !== null) return err('invalid_input', kanaError);
+  }
   if (o.displayName !== undefined) {
     if (typeof o.displayName !== 'string' || o.displayName.trim() === '')
       return err('invalid_input', 'displayName is invalid');
@@ -266,6 +305,8 @@ export type ImportSummary = {
   created: number;
   updated: number;
   invalid: Array<{ row: number; reason: string }>;
+  /** 取り込める（または取り込んだ）が注意が要る行。読みの方針が `encouraged` のときの読みの警告 (#1287)。 */
+  warnings: Array<{ row: number; reason: string }>;
 };
 
 function parseBool(value: string | undefined, fallback: boolean): boolean {
@@ -279,7 +320,7 @@ export async function importDepartments(
   records: Record<string, string>[],
   mode: 'preview' | 'apply',
 ): Promise<ImportSummary> {
-  const summary: ImportSummary = { mode, created: 0, updated: 0, invalid: [] };
+  const summary: ImportSummary = { mode, created: 0, updated: 0, invalid: [], warnings: [] };
   const repo = getDirectoryRepository();
   const current = await repo.listDepartments(tenantId);
   let maxOrder = current.reduce((m, d) => Math.max(m, d.displayOrder), 0);
@@ -324,8 +365,10 @@ export async function importStaff(
   tenantId: string,
   records: Record<string, string>[],
   mode: 'preview' | 'apply',
+  options: StaffWriteOptions = {},
 ): Promise<ImportSummary> {
-  const summary: ImportSummary = { mode, created: 0, updated: 0, invalid: [] };
+  const kanaPolicy = options.kanaPolicy ?? STAFF_KANA_POLICY;
+  const summary: ImportSummary = { mode, created: 0, updated: 0, invalid: [], warnings: [] };
   const repo = getDirectoryRepository();
   const deptIds = new Set((await repo.listDepartments(tenantId)).map((d) => d.id));
   const current = await repo.listStaff(tenantId);
@@ -340,6 +383,14 @@ export async function importStaff(
       summary.invalid.push({ row: i + 2, reason: `unknown department_id: ${departmentId}` });
       continue;
     }
+    // CSV の行は読みの欄を毎回書き込む（空なら読みを消す）ので、新規・更新とも同じ規則を当てる。
+    const kanaStatus = assessStaffKana(rec.kana);
+    const kanaMessage = kanaIssueMessage(kanaStatus);
+    if (rejectsStaffKana(kanaStatus, kanaPolicy)) {
+      summary.invalid.push({ row: i + 2, reason: kanaMessage ?? 'kana is invalid' });
+      continue;
+    }
+    if (kanaMessage !== null) summary.warnings.push({ row: i + 2, reason: kanaMessage });
     const aliases = (rec.aliases ?? '')
       .split(';')
       .map((a) => a.trim())

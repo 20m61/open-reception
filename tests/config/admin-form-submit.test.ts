@@ -47,6 +47,7 @@ const CONVERTED: readonly { readonly file: string; readonly submit: string }[] =
   { file: 'ReceptionFlowsManager.tsx', submit: 'flow-add' },
   { file: 'StaffResponseManager.tsx', submit: 'staff-response-config-message-save' },
   { file: 'StaffEditor.tsx', submit: 'staff-editor-save' },
+  { file: 'StaffKana.tsx', submit: 'staff-kana-edit-save' },
 ];
 
 /**

@@ -2,7 +2,48 @@
 
 import { useState } from 'react';
 
-type Summary = { mode: string; created: number; updated: number; invalid: Array<{ row: number; reason: string }> };
+type RowIssue = { row: number; reason: string };
+type Summary = {
+  mode: string;
+  created: number;
+  updated: number;
+  invalid: RowIssue[];
+  /** 取り込める（取り込んだ）が注意が要る行。担当者の読みの警告 (#1287)。部署の取り込みは返さないことがある。 */
+  warnings?: RowIssue[];
+};
+
+/** 取り込み結果。件数に加え、エラーと警告を行ごとに示す (#1287)。 */
+export function CsvImportSummary({ summary, testId }: { summary: Summary; testId: string }) {
+  const warnings = summary.warnings ?? [];
+  return (
+    <div data-testid={`${testId}-csv-result`}>
+      <p data-testid={`${testId}-csv-summary`} style={{ margin: 0 }}>
+        {summary.mode === 'preview' ? 'プレビュー: ' : '取り込み完了: '}
+        新規 {summary.created} 件 / 更新 {summary.updated} 件
+        {summary.invalid.length > 0 ? ` / エラー ${summary.invalid.length} 件` : ''}
+        {warnings.length > 0 ? ` / 警告 ${warnings.length} 件` : ''}
+      </p>
+      {summary.invalid.length > 0 ? (
+        <ul data-testid={`${testId}-csv-invalid`} style={{ margin: '4px 0 0', color: 'var(--color-danger)' }}>
+          {summary.invalid.map((x) => (
+            <li key={`invalid-${x.row}`}>
+              {x.row} 行目: {x.reason}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {warnings.length > 0 ? (
+        <ul data-testid={`${testId}-csv-warnings`} style={{ margin: '4px 0 0', color: 'var(--color-warning)' }}>
+          {warnings.map((x) => (
+            <li key={`warning-${x.row}`}>
+              {x.row} 行目: {x.reason}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
 
 /** CSV インポート UI (issue #25, #26)。プレビューで差分件数を確認してから取り込む。 */
 export function CsvImport({
@@ -65,13 +106,7 @@ export function CsvImport({
             取り込む
           </button>
         </div>
-        {summary ? (
-          <p data-testid={`${testId}-csv-summary`} style={{ margin: 0 }}>
-            {summary.mode === 'preview' ? 'プレビュー: ' : '取り込み完了: '}
-            新規 {summary.created} 件 / 更新 {summary.updated} 件
-            {summary.invalid.length > 0 ? ` / エラー ${summary.invalid.length} 件` : ''}
-          </p>
-        ) : null}
+        {summary ? <CsvImportSummary summary={summary} testId={testId} /> : null}
       </div>
     </details>
   );
