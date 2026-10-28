@@ -282,8 +282,9 @@ type ConversationFocus =
   `SUBMIT_VISITOR_INFO` を起こす。残っていれば `inputVisitorInfo` に留まり、その欄の入力を案内する
 - 目的に応じて選ばれたフロー（`selectedFlow`）は、音声の経路でも変えない
 - フローに `name` の欄が無いとき、または `visitorInfo` の step が無いときは、氏名を聞き取らない
-- 今の `KioskFlow` は、カスタムフローに `visitorInfo` の step が無いとき、または欄が 0 個のときに入力画面を
-  省く（`KioskFlow.tsx` の `CustomVisitorInfoView`。その場合はプライバシー通知も出ない）。`target` を省いたフローでも `selectingTarget` を通る。
+- 今の `KioskFlow` は、カスタムフローに `visitorInfo` の step が無いとき、または欄が 0 個のときは、
+  `inputVisitorInfo` のまま入力欄の無い確認画面（フロー名・説明と「進む」ボタン 1 つ）を出す
+  （`KioskFlow.tsx` の `CustomVisitorInfoView`。その場合はプライバシー通知も出ない）。`target` を省いたフローでも `selectingTarget` を通る。
   この挙動は本書の範囲外で、音声の経路でも変えない
 
 ---
@@ -334,8 +335,9 @@ type ConversationFocus =
 
 ### 担当者に応答が無い（J-OR-05）
 
-「鈴木さんは現在応答できません。」＋代わりの連絡手段（`USE_FALLBACK`）。ただし失敗の理由によっては
-代わりの連絡手段を出さない（通信断・実発信の停止中・時間外。`call-failure.ts` の `shouldOfferAlternativeContact`）。
+「鈴木さんは現在応答できません。」＋代わりの連絡手段（`USE_FALLBACK`）。無応答（`timeout`）では、呼び出し自体は
+届いているので常に出す。発信の失敗（`failed`）のうち、通信断・実発信の停止中・時間外では出さない
+（`call-failure.ts` の `shouldOfferAlternativeContact`）。
 
 - 実際につなげない環境で「おつなぎします」と約束しない。
 - 電話番号・Vonage・内部エラーコードを来訪者に見せない（結果は `result-tone` の抽象的なトーンだけ）。
@@ -391,8 +393,8 @@ QR の受付は別の状態機械（`src/domain/checkin/state.ts`、ADR 0008）�
 ### 例 G（J-OR-05）: 担当者が応答しない・発信に失敗する
 
 1. `calling` → `timeout` / `failed`
-2. 謝罪と、出せるときは代わりの連絡手段（`fallback`）を主な CTA として示す（通信断・実発信の停止中・時間外では
-   出さない。`shouldOfferAlternativeContact`）
+2. 謝罪と代わりの連絡手段（`fallback`）を主な CTA として示す。`timeout` では常に出す。`failed` のうち、通信断・
+   実発信の停止中・時間外では出さない（`shouldOfferAlternativeContact`）
 3. `timeout` / `failed` からは `fallback` を経て `completed` へ、または「最初に戻る」で `idle` へ。
    draft と聞き取りの状態はここで捨てる
 
