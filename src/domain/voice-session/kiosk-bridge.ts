@@ -173,7 +173,8 @@ function hasSurnamePeer(input: BridgeCommittedTurnInput, candidate: EntityCandid
   const staff = [...input.directory.staff, ...(input.unavailableDirectory?.staff ?? [])].filter((s) => s.enabled);
   // 🔴 読みを登録していない担当者が 1 人でもいれば、姓を推定しきれないので常に復唱する（owner の判断、
   // 2026-10-28）。読みの無い人とは、文字の系統の違い・同音異字・表に無い異体字を比べられないため。
-  if (staff.some((s) => s.kana === undefined || plain(s.kana) === '')) return true;
+  // 空白・記号・注記だけの読み（「・」「（えいぎょう）」）も、読みが無いものとして扱う。
+  if (staff.some((s) => s.kana === undefined || tokens(s.kana).length === 0)) return true;
   const self = staff.find((s) => s.id === candidate.id) ?? { displayName: candidate.displayName };
   return staff.some((s) => s.id !== candidate.id && sharesSurname(self, s));
 }
@@ -193,8 +194,8 @@ export type NameForSurname = { readonly displayName: string; readonly kana?: str
  *    両方がラテン文字なら、語順が違いうるので、どれか 1 語が共通なら同じ姓とみなす
  *  - 片方だけが区切られていれば、その先頭の語を姓とし、もう片方（区切りを除く）がそれで始まるかを見る。
  *    **1 文字の姓も許す**（「林 太郎」と「林花子」）
- *  - どちらも区切られていなければ、先頭 2 文字以上が一致するときに同じ姓とみなす（姓だけの表示名
- *    「森」と「森花子」のような 1 文字の一致は、下の先頭 1 文字の規則で拾う）
+ *  - どちらも区切られていなければ、片方がもう片方で始まる（姓だけの表示名。「森」と「森花子」）か、
+ *    先頭 2 文字以上が一致するときに同じ姓とみなす
  *
  * 表示名で決まらなければ、読みで同じ判定をする。読みが登録されていない側は、表示名がかな・ラテン文字
  * だけならそれを読みとして使う（「タナカ」と「田中 花子／たなか はなこ」）。
@@ -279,6 +280,7 @@ function sharesSurnameIn(a: string, b: string): boolean {
   const fb = tb.join('');
   if (ta.length >= 2) return fb.startsWith(ta[0] ?? '');
   if (tb.length >= 2) return fa.startsWith(tb[0] ?? '');
+  if (fa.startsWith(fb) || fb.startsWith(fa)) return true;
   let common = 0;
   while (common < fa.length && common < fb.length && fa[common] === fb[common]) common += 1;
   return common >= 2;

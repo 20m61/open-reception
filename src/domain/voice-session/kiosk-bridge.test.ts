@@ -480,8 +480,10 @@ describe('bridgeCommittedTurn: 同じ姓の別人がいれば必ず復唱する 
       ]).event).toMatchObject({ type: 'heardNeedsConfirmation', unavailable: true });
     });
 
-    it('空の読み（空白だけ）も、読みが無いものとして扱う', () => {
-      expect(turn('鈴木一郎', roster([staff('x', '山田 太郎', '　 ')])).event.type).toBe('heardNeedsConfirmation');
+    it('空の読み（空白だけ、記号や注記だけ）も、読みが無いものとして扱う', () => {
+      for (const kana of ['　 ', '・', '（えいぎょう）']) {
+        expect(turn('鈴木一郎', roster([staff('x', '山田 太郎', kana)])).event.type, kana).toBe('heardNeedsConfirmation');
+      }
     });
 
     it('下界: 全員に読みがあれば、従来どおり自動で確定する', () => {
@@ -621,6 +623,14 @@ describe('sharesSurname', () => {
     [n('佐藤 花子', 'さとう はなこ'), n('佐野 太郎', 'さの たろう'), false],
     [n('佐藤花子', 'さとう はなこ'), n('佐野太郎', 'さの たろう'), false],
     [n('佐藤 花子', 'さとうはなこ'), n('佐野 太郎', 'さのたろう'), false],
+    // 4 つ（表示名 2・読み 2）のうち 1 つだけに区切りがあっても、姓は分かる。
+    [n('佐藤花子', 'さとう はなこ'), n('佐野太郎', 'さのたろう'), false],
+    [n('佐藤花子', 'さとうはなこ'), n('佐野太郎', 'さの たろう'), false],
+    [n('佐藤 花子', 'さとうはなこ'), n('佐野太郎', 'さのたろう'), false],
+    [n('佐藤花子', 'さとうはなこ'), n('佐野 太郎', 'さのたろう'), false],
+    // 姓だけの 1 文字の表示名は、同じ字で始まる表示名と同じ姓（読みが違っても。STT は字で返す）。
+    [n('東', 'あずま'), n('東太郎', 'ひがし たろう'), true],
+    [n('森', 'mori'), n('森花子', 'もり はなこ'), true],
     [n('田中 花子'), n('田村 花子'), false],
     [n('田中 花子'), n('鈴木 花子'), false],
     [n('東'), n('東山 花子'), false],
