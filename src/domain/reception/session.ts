@@ -16,6 +16,17 @@ export type VisitorInfo = {
   note?: string;
 };
 
+/**
+ * 来訪者の氏名の長さの上限（ADR 0011 §3-e）。音声とキーボードの両方に同じ値を課す正本。
+ * 前後の空白を除いた Unicode のコードポイント数で数える。
+ * 値は #1088 の提案値で、owner の確認を経る。
+ */
+export const VISITOR_NAME_MAX_LENGTH = 50;
+
+export function isVisitorNameWithinLimit(name: string): boolean {
+  return Array.from(name.trim()).length <= VISITOR_NAME_MAX_LENGTH;
+}
+
 export type CallOutcome = 'connected' | 'timeout' | 'failed' | 'cancelled';
 
 export type ReceptionSession = {
