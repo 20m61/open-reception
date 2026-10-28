@@ -615,8 +615,9 @@ describe('状態の遷移と draft (ADR 0011 §3-c・§6 / 前回 MAJOR-1)', () 
         const after = conversationDraftAfterTransition(completeDraft(), from, event);
         if (!PRE_CALL.includes(to)) {
           expect(after).toEqual({});
-        } else if (event !== 'BACK') {
-          // 下界: 受付途中の前進（と遷移しないイベント）では、取得済みの情報を捨てない。
+        } else if (event !== 'BACK' || transition(from, event) === null) {
+          // 下界: 受付途中の前進と、遷移しないイベント（遷移表に無い BACK を含む）では、
+          // 取得済みの情報を捨てない。
           kept += 1;
           expect(after).toEqual(normalizeConversationDraft(completeDraft()));
           expect(isDraftReadyForFinalConfirmation(after)).toBe(true);
