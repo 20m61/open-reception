@@ -58,6 +58,22 @@ describe('rejectionReason / withReason (#1287 m2)', () => {
     expect(await rejectionReason(res)).toBe('よみがなが未登録です。');
   });
 
+  it('読みの拒否以外の 400 の理由（英語の開発者向けの文）は出さない', async () => {
+    for (const message of ['departmentId is invalid', 'displayName is required', 'body must be an object']) {
+      expect(await rejectionReason(json(400, { error: 'invalid_input', message }))).toBeNull();
+    }
+  });
+
+  it('読みの拒否の理由は、3 種類とも出す（下界）', async () => {
+    for (const message of [
+      'よみがなが未登録です。',
+      '姓と名のあいだを空白で区切ってください（例: さとう たろう）。',
+      'よみがなは、ひらがなかカタカナと空白だけで入力してください。',
+    ]) {
+      expect(await rejectionReason(json(400, { error: 'invalid_input', message }))).toBe(message);
+    }
+  });
+
   it('届かない・400 以外・本文が読めない・理由が無いときは null', async () => {
     expect(await rejectionReason(null)).toBeNull();
     expect(await rejectionReason(json(500, { message: 'x' }))).toBeNull();
@@ -118,5 +134,19 @@ describe('StaffManager の配線 (#1287)', () => {
     // patch は渡された文で成功を告げる（固定の文へ戻すと、上で渡した警告が捨てられる）。
     expect(source).toMatch(/savedMessage = '変更を保存しました。'\) => \{/);
     expect(source).toMatch(/success\(savedMessage\);/);
+  });
+});
+
+describe('管理 API は読みの方針を既定（STAFF_KANA_POLICY）に任せる (#1287)', () => {
+  // route が方針を渡すと、STAFF_KANA_POLICY を 'required' に切り替えても効かなくなる。
+  const route = (path: string) => readFileSync(join(process.cwd(), path), 'utf8');
+  it.each([
+    ['src/app/api/admin/staff/route.ts', /createStaff\(tenantId, await readJson\(request\)\)/],
+    ['src/app/api/admin/staff/[id]/route.ts', /updateStaff\(tenantId, id, await readJson\(request\)\)/],
+    ['src/app/api/admin/staff/import/route.ts', /importStaff\(tenantId, records, mode\)/],
+  ])('%s は方針を渡さない', (path, call) => {
+    const source = route(path);
+    expect(source).toMatch(call);
+    expect(source).not.toMatch(/kanaPolicy/);
   });
 });

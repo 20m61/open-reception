@@ -58,7 +58,7 @@ export function kanaFieldState(kana: string, policy: StaffKanaPolicy = STAFF_KAN
 
 /**
  * 「よみがなを直す」の欄に添える案内。`required` の問題はエラー（危険色）、`encouraged` の問題は
- * 警告（注意色・`role="status"`）として出す（#1287 m4）。問題が無ければ何も描画しない。
+ * 警告（注意色。入力欄とは `aria-describedby` で結ぶ。打つたびに付け外しされるので live region にはしない）として出す（#1287 m4）。問題が無ければ何も描画しない。
  */
 export function KanaIssueText({ state, id }: { state: KanaFieldState; id?: string }) {
   if (state.error !== undefined) {
@@ -72,7 +72,6 @@ export function KanaIssueText({ state, id }: { state: KanaFieldState; id?: strin
     return (
       <span
         id={id}
-        role="status"
         data-testid="staff-kana-edit-warning"
         style={{ fontSize: font.caption, color: color.warning }}
       >

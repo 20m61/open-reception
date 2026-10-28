@@ -1,4 +1,4 @@
-import { assessStaffKana, kanaIssueMessage } from '@/domain/staff/kana';
+import { assessStaffKana, kanaIssueMessage, type StaffKanaStatus } from '@/domain/staff/kana';
 import type { KanaFieldState } from './StaffKana';
 
 /**
@@ -29,16 +29,23 @@ export function canSubmitStaff(input: {
   );
 }
 
+/** 読みの拒否でサーバが返す案内文（`kanaIssueMessage`）。これ以外の 400 の理由は開発者向けの英文なので出さない。 */
+const KANA_REJECTION_MESSAGES: ReadonlySet<string> = new Set(
+  (['missing', 'unseparated', 'invalid'] as const satisfies readonly StaffKanaStatus[])
+    .map((status) => kanaIssueMessage(status))
+    .filter((m): m is string => m !== null),
+);
+
 /**
- * サーバが入力を拒否した（400）ときの理由。管理 API は `{ error, message }` を返し、読みの拒否では
- * `message` が日本語の案内文になる。それ以外（届かない・400 以外・本文が読めない）は `null`。
+ * サーバが読みを理由に入力を拒否した（400）ときの理由。管理 API は `{ error, message }` を返し、読みの拒否では
+ * `message` が日本語の案内文になる。それ以外（届かない・400 以外・本文が読めない・読み以外の理由）は `null`。
  */
 export async function rejectionReason(res: Response | null): Promise<string | null> {
   if (res === null || res.status !== 400) return null;
   try {
     const body = (await res.json()) as { message?: unknown } | null;
     const message = typeof body?.message === 'string' ? body.message.trim() : '';
-    return message === '' ? null : message;
+    return KANA_REJECTION_MESSAGES.has(message) ? message : null;
   } catch {
     return null;
   }

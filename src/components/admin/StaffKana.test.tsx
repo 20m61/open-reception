@@ -143,7 +143,8 @@ describe('KanaIssueText（「よみがなを直す」の欄の案内） (#1287 m
   it('encouraged: 警告として出す（危険色・alert にしない）', () => {
     const html = renderToStaticMarkup(<KanaIssueText state={kanaFieldState('さとうたろう', 'encouraged')} />);
     expect(html).toContain('data-testid="staff-kana-edit-warning"');
-    expect(html).toContain('role="status"');
+    // 打つたびに付け外しされる live region にしない（aria-describedby で入力欄と結ぶだけ）。
+    expect(html).not.toContain('role="status"');
     expect(html).toContain('var(--color-warning)');
     expect(html).not.toContain('var(--color-danger)');
     expect(html).not.toContain('staff-kana-edit-error');
