@@ -38,8 +38,9 @@ function katakanaToHiragana(value: string): string {
   return value.replace(/[ァ-ヶ]/gu, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0x60));
 }
 
-/** NFKC 正規化 + trim + lowercase + カタカナ→ひらがな統一。空白は残す（トークン分割に使うため）。 */
-function normalize(value: string): string {
+/** NFKC 正規化 + trim + lowercase + カタカナ→ひらがな統一。空白は残す（トークン分割に使うため）。
+ * 担当者名の比較（`kiosk-bridge.ts` の `sharesSurname`）でも同じ正規化を使う。 */
+export function normalize(value: string): string {
   return katakanaToHiragana(value.normalize('NFKC').trim().toLowerCase());
 }
 
