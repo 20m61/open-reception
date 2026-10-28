@@ -29,6 +29,12 @@ import type {
 } from '@/domain/voice-stt/entity-resolver';
 import type { ReceptionState } from '@/domain/reception/state';
 import type { VoiceSessionCallbacks } from './orchestrator';
+import {
+  createVisitorNameRouter,
+  type VisitorNameCaptureInput,
+  type VisitorNameRouter,
+  type VisitorNameTimer,
+} from './visitor-name-router';
 
 /** UI 状態機械へイベントを流し込む口。 */
 export type VoiceKioskEmit = (event: VoiceKioskEvent) => void;
@@ -60,10 +66,23 @@ export interface VoiceSessionController {
    *    （selectingTarget 以外では no-op という設計のため）。
    */
   notifyReceptionState?(state: ReceptionState): void;
+  /**
+   * 氏名の聞き取り（ADR 0011、#1290）への入力。`KioskFlow` が `inputVisitorInfo` に入ったとき
+   * （`enter`。音声で聞いてよいか）、通知の読み上げが終わったとき（`noticeFinished`）、
+   * キーボードで入力したとき（`typing`）に呼ぶ。未実装の controller では no-op。
+   */
+  visitorName?(input: VisitorNameCaptureInput): void;
 }
 
 /** 解決済み候補を既存選択へ橋渡しするコールバック（Kiosk が selection を進める）。 */
 export type OnResolved = (candidate: EntityCandidate | null) => void;
+
+/**
+ * 復唱への「はい」で確定した来訪者の氏名を受け取るコールバック (ADR 0011 §1、#1290)。
+ * `KioskFlow` はこれを `SUBMIT_VISITOR_INFO` へだけ写す（`CONFIRM` は起こさない）。
+ * 氏名は入力欄と受付の送信値にだけ使い、ログ・計測へ渡さない。
+ */
+export type OnVisitorNameConfirmed = (name: string) => void;
 
 /**
  * マウント時に Kiosk（`KioskFlow`）が factory へ差し込む結線 hooks (issue #364)。
@@ -75,6 +94,7 @@ export type OnResolved = (candidate: EntityCandidate | null) => void;
  */
 export type VoiceSessionHooks = {
   onResolved?: OnResolved;
+  onVisitorNameConfirmed?: OnVisitorNameConfirmed;
 };
 
 /**
@@ -102,7 +122,25 @@ export type VoiceSessionBridgeDeps = {
   now?: () => number;
   /** 確定時に既存選択へ橋渡しする。 */
   onResolved?: OnResolved;
+  /** 氏名の聞き取りの待ち時間のタイマー（テスト用）。既定は setTimeout。 */
+  visitorNameTimer?: VisitorNameTimer;
 };
+
+/** 氏名の聞き取りの結線。hooks の `onVisitorNameConfirmed` へだけ渡す（構築時の既定は持たない）。 */
+function visitorNameRouterFor(
+  deps: VoiceSessionBridgeDeps,
+  emit: VoiceKioskEmit,
+  hooks: VoiceSessionHooks | undefined,
+  resetTurn: () => void,
+): VisitorNameRouter {
+  return createVisitorNameRouter({
+    emit,
+    onVisitorNameConfirmed: (name) => hooks?.onVisitorNameConfirmed?.(name),
+    sttConfidence: (text) => confidenceFor(deps.sttConfidence, text),
+    resetTurn,
+    ...(deps.visitorNameTimer ? { timer: deps.visitorNameTimer } : {}),
+  });
+}
 
 function confidenceFor(source: VoiceSessionBridgeDeps['sttConfidence'], text: string): number {
   if (typeof source === 'function') return source(text);
@@ -161,21 +199,30 @@ export function createSyntheticVoiceSession(deps: VoiceSessionBridgeDeps): Synth
     (activeHooks?.onResolved ?? deps.onResolved)?.(candidate);
   };
 
+  /** 氏名の聞き取り (#1290)。factory が呼ばれるたびに作り直す（emit / hooks が変わるため）。 */
+  let names: VisitorNameRouter | null = null;
+
   const factory: VoiceSessionFactory = (e, hooks) => {
     emit = e;
     activeHooks = hooks;
+    names = visitorNameRouterFor(deps, e, hooks, () => {});
+    const router = names;
     return {
       start: () => {},
       close: () => {},
       confirmYes: () => {
+        if (router.confirmYes()) return;
         emit({ type: 'confirmYes' });
         resolve(pendingResolved);
         pendingResolved = null;
       },
       confirmNo: () => {
+        if (router.confirmNo()) return;
         emit({ type: 'confirmNo' });
         pendingResolved = null;
       },
+      notifyReceptionState: (state) => router.notifyReceptionState(state),
+      visitorName: (input) => router.visitorName(input),
     };
   };
 
@@ -184,6 +231,7 @@ export function createSyntheticVoiceSession(deps: VoiceSessionBridgeDeps): Synth
     beginListening: () => emit({ type: 'listenStart' }),
     hearPartial: (text) => emit({ type: 'hearPartial', text }),
     hearTurn: (text) => {
+      if (names?.takeTurn(text)) return;
       const { event, resolved } = bridge(deps, text);
       if (event.type === 'heardAccepted') {
         emit(event);
@@ -247,9 +295,13 @@ export function createOrchestratorVoiceSession(
       (hooks?.onResolved ?? deps.onResolved)?.(candidate);
     };
 
+    // 氏名の聞き取り (#1290)。途中のターンを捨てるのは orchestrator（construct の後に代入される）。
+    const names = visitorNameRouterFor(deps, emit, hooks, () => orchestrator.resetTurn());
+
     const orchestrator = construct({
       now: deps.now,
       onTurnCommitted: (text) => {
+        if (names.takeTurn(text)) return;
         const { event, resolved } = bridge(deps, text);
         if (event.type === 'heardAccepted') {
           emit(event);
@@ -282,16 +334,20 @@ export function createOrchestratorVoiceSession(
       start: () => orchestrator.start(),
       close: () => orchestrator.close(),
       confirmYes: () => {
+        if (names.confirmYes()) return;
         emit({ type: 'confirmYes' });
         orchestrator.resetTurn();
         resolve(pendingResolved);
         pendingResolved = null;
       },
       confirmNo: () => {
+        if (names.confirmNo()) return;
         emit({ type: 'confirmNo' });
         orchestrator.resetTurn();
         pendingResolved = null;
       },
+      notifyReceptionState: (state) => names.notifyReceptionState(state),
+      visitorName: (input) => names.visitorName(input),
     };
   };
 }

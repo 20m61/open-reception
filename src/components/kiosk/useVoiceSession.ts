@@ -9,7 +9,13 @@
 
 import { useEffect, useMemo, useSyncExternalStore } from 'react';
 import { VoiceKioskStore } from '@/lib/voice-session/kiosk-store';
-import type { OnResolved, VoiceSessionFactory, VoiceSessionHooks } from '@/lib/voice-session/kiosk-binding';
+import type {
+  OnResolved,
+  OnVisitorNameConfirmed,
+  VoiceSessionFactory,
+  VoiceSessionHooks,
+} from '@/lib/voice-session/kiosk-binding';
+import type { VisitorNameCaptureInput } from '@/lib/voice-session/visitor-name-router';
 import type { VoiceKioskState } from '@/domain/voice-session/kiosk-view';
 import type { ReceptionState } from '@/domain/reception/state';
 
@@ -17,6 +23,8 @@ export type UseVoiceSessionResult = {
   state: VoiceKioskState;
   confirmYes: () => void;
   confirmNo: () => void;
+  /** 氏名の聞き取りへの入力（ADR 0011、#1290）。 */
+  visitorName: (input: VisitorNameCaptureInput) => void;
 };
 
 /**
@@ -27,13 +35,19 @@ export type UseVoiceSessionResult = {
  *   **安定参照を渡すこと**（呼び出し側で `useCallback` 等）。この identity が変わるとストアを作り直し、
  *   音声セッションが start/close で再起動する。KioskFlow は `dispatch`（useReducer 由来で安定）だけに
  *   依存した安定コールバックを渡すため、通常は再生成されない。
+ * @param onVisitorNameConfirmed 復唱への「はい」で確定した氏名を受け取る（ADR 0011、#1290）。
+ *   onResolved と同じく**安定参照を渡すこと**。
  */
 export function useVoiceSession(
   factory: VoiceSessionFactory,
   receptionState: ReceptionState,
   onResolved?: OnResolved,
+  onVisitorNameConfirmed?: OnVisitorNameConfirmed,
 ): UseVoiceSessionResult {
-  const hooks = useMemo<VoiceSessionHooks>(() => ({ onResolved }), [onResolved]);
+  const hooks = useMemo<VoiceSessionHooks>(
+    () => ({ onResolved, onVisitorNameConfirmed }),
+    [onResolved, onVisitorNameConfirmed],
+  );
   const store = useMemo(() => new VoiceKioskStore(factory, hooks), [factory, hooks]);
   const state = useSyncExternalStore(store.subscribe, store.getState, store.getState);
 
@@ -48,5 +62,10 @@ export function useVoiceSession(
     store.notifyReceptionState(receptionState);
   }, [store, receptionState]);
 
-  return { state, confirmYes: store.confirmYes, confirmNo: store.confirmNo };
+  return {
+    state,
+    confirmYes: store.confirmYes,
+    confirmNo: store.confirmNo,
+    visitorName: store.visitorName,
+  };
 }

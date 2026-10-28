@@ -12,6 +12,7 @@
 import type { KioskFlow, FlowFieldValues } from './custom-flow/types';
 import {
   isReceptionPurposeId,
+  normalizeVisitorNameInput,
   type ReceptionPurposeId,
   type VisitorInfo,
 } from '@/domain/reception/session';
@@ -66,7 +67,8 @@ export function flowValuesToVisitorInfo(flow: KioskFlow, values: FlowFieldValues
     return typeof v === 'string' ? v.trim() : '';
   };
 
-  const name = asText('name');
+  // 氏名は前後の空白・ゼロ幅文字を落として送る（キーボード・音声で同じ。#1290）。
+  const name = normalizeVisitorNameInput(asText('name'));
   const company = asText('company');
   const explicitNote = asText('note');
 

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createLocalVoiceSessionFactory,
   driveWithSyntheticAudio,
+  localVoiceScriptFromSearch,
   shouldUseLocalVoiceOrchestrator,
 } from './local-mode';
 import { VoiceSessionOrchestrator } from './orchestrator';
@@ -298,5 +299,73 @@ describe('driveWithSyntheticAudio の忠実度 (#788)', () => {
 
     expect(events.length).toBe(before);
     await orchestrator.close();
+  });
+});
+
+describe('合成の名乗り（検証用、#1290）', () => {
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+  it('URL から読むのは voiceVisitorName / voiceTarget だけ。空は無し、長すぎは切り詰める', () => {
+    expect(localVoiceScriptFromSearch('')).toEqual({});
+    expect(localVoiceScriptFromSearch('?voiceVisitorName=%E5%8F%97%E4%BB%98&voiceTarget=x')).toEqual({
+      visitorName: '受付',
+      target: 'x',
+    });
+    expect(localVoiceScriptFromSearch('?voiceVisitorName=%20%20')).toEqual({});
+    expect(localVoiceScriptFromSearch(`?voiceVisitorName=${'a'.repeat(500)}`).visitorName).toHaveLength(200);
+  });
+
+  async function onNameScreen(script: { visitorName?: string; target?: string }) {
+    const emit = vi.fn();
+    const onVisitorNameConfirmed = vi.fn();
+    const controller = createLocalVoiceSessionFactory(DIRECTORY, undefined, script)(emit, {
+      onVisitorNameConfirmed,
+    });
+    await controller.start();
+    controller.notifyReceptionState?.('inputVisitorInfo');
+    controller.visitorName?.({ type: 'enter', eligible: true });
+    controller.visitorName?.({ type: 'noticeFinished', ok: true });
+    await tick();
+    return { controller, emit, onVisitorNameConfirmed };
+  }
+
+  it('氏名を尋ねられたら合成の名乗りを流し、実 orchestrator を通って復唱になる。確定は「はい」の後', async () => {
+    const { controller, emit, onVisitorNameConfirmed } = await onNameScreen({ visitorName: '受付 太郎です' });
+    expect(emit).toHaveBeenCalledWith({ type: 'visitorNameReadback', name: '受付 太郎' });
+    expect(onVisitorNameConfirmed).not.toHaveBeenCalled();
+    controller.confirmYes();
+    expect(onVisitorNameConfirmed).toHaveBeenCalledExactlyOnceWith('受付 太郎');
+    await controller.close();
+  });
+
+  it('名乗りの指定が無ければ名乗らない（聞き取りを待つ）', async () => {
+    const { controller, emit } = await onNameScreen({});
+    expect(emit).toHaveBeenCalledWith({ type: 'visitorNameAsk', retry: false });
+    expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'visitorNameReadback' }));
+    await controller.close();
+  });
+
+  it('使えない名乗り（上限超え）は言い直しのたびに流し、3 回でキーボードへ案内する', async () => {
+    const { controller, emit } = await onNameScreen({ visitorName: 'あ'.repeat(51) });
+    await tick();
+    await tick();
+    expect(emit.mock.calls.filter(([e]) => e.type === 'visitorNameAsk')).toHaveLength(3);
+    expect(emit).toHaveBeenLastCalledWith({ type: 'visitorNameKeyboard' });
+    await controller.close();
+  });
+
+  it('voiceTarget を指定すると、相手選択ではその文を喋る（不在の名指しの再現）', async () => {
+    const emit = vi.fn();
+    const unavailable: EntityDirectory = {
+      staff: [{ ...DIRECTORY.staff[0]!, id: 'staff-2', displayName: '不在 次郎', available: false }],
+      departments: [],
+    };
+    const controller = createLocalVoiceSessionFactory(DIRECTORY, unavailable, { target: '不在 次郎' })(emit, {});
+    await controller.start();
+    controller.notifyReceptionState?.('selectingTarget');
+    expect(emit).toHaveBeenCalledWith(
+      expect.objectContaining({ displayName: '不在 次郎' }),
+    );
+    await controller.close();
   });
 });

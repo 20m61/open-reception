@@ -40,6 +40,11 @@ export const VOICE_KIOSK_MODES = [
    * 同じ事実を音声でも言う。**選択は進まない** —— 来訪者は部署か代表窓口を選び直す。
    */
   'unavailable',
+  /**
+   * 音声での氏名の聞き取りをやめ、キーボードへ案内している局面 (ADR 0011 §3-c、#1290)。
+   * 言い直しが尽きたときだけ。字幕で「画面から入力してください」を出す。
+   */
+  'keyboardGuide',
 ] as const;
 
 export type VoiceKioskMode = (typeof VOICE_KIOSK_MODES)[number];
@@ -49,12 +54,20 @@ export type VoiceKioskMode = (typeof VOICE_KIOSK_MODES)[number];
  * `EntityCandidate['kind']` は purpose/other も含むが、復唱確認は staff/department 解決結果
  * にしか出ないため（`kiosk-bridge.ts` 参照）、UI 状態機械側はこの 2 値に絞って持つ。
  */
-export type VoiceReadbackKind = 'staff' | 'department';
+export type VoiceReadbackKind = 'staff' | 'department' | 'visitorName';
+
+/** 氏名を尋ねている聞き取り（ADR 0011 §2・§3-c）。初回か言い直しか。 */
+export type VoiceListeningPrompt = 'visitorName' | 'visitorNameRetry';
 
 export type VoiceKioskState = {
   mode: VoiceKioskMode;
-  /** 復唱対象の表示名（担当者/部門名。UI 一時表示のみ・ログ/eval へ出さない）。 */
+  /**
+   * 復唱対象の表示名（担当者/部門名、または `readbackKind: 'visitorName'` のときは来訪者の氏名の候補）。
+   * UI 一時表示と読み上げのみ・ログ/eval へ出さない。氏名は復唱の局面を出たら持たない（#1290）。
+   */
   readbackName?: string;
+  /** listening のとき、氏名を尋ねているか（字幕の出し分け）。 */
+  listeningPrompt?: VoiceListeningPrompt;
   /**
    * 復唱対象の種別 (issue #361 申し送り: 部署復唱テンプレートの分離)。
    * 未指定（従来イベント/テスト互換）は 'staff' 相当として扱う（`captionKeyFor` 参照）。
@@ -134,7 +147,15 @@ export type VoiceKioskEvent =
   /** TTS 発話中のユーザー発話で barge-in（duck）が発生した。 */
   | { type: 'bargeInDuck' }
   /** いずれかの層の障害でタッチへ縮退する（正規化済みの単一フォールバック）。 */
-  | { type: 'fallbackRequired'; source: VoiceSessionFallbackSource };
+  | { type: 'fallbackRequired'; source: VoiceSessionFallbackSource }
+  /** 氏名を尋ねる（通知を読み終えた後、または言い直し）(ADR 0011 §2・§3-c、#1290)。 */
+  | { type: 'visitorNameAsk'; retry: boolean }
+  /** 氏名の候補を復唱する（必ず復唱する。§3-b）。`name` は UI 一時表示と読み上げだけに使う。 */
+  | { type: 'visitorNameReadback'; name: string }
+  /** 言い直しが尽きた。キーボードへ案内する（§3-c）。 */
+  | { type: 'visitorNameKeyboard' }
+  /** 氏名の聞き取りを畳む（打ち始めた・画面を出た）。氏名の局面にいるときだけ idle へ。 */
+  | { type: 'visitorNameStopped' };
 
 /** 初期状態。音声モードは未活性（注入なし時の Kiosk と同一 = 退行なし）。 */
 export function initialVoiceKioskState(): VoiceKioskState {
@@ -174,13 +195,30 @@ export function voiceKioskReducer(state: VoiceKioskState, event: VoiceKioskEvent
       // 新規リスニング（初回・聞き直し）。interim は明示的にクリアして「話しかけ待ち」から始める。
       return { mode: 'listening' };
 
+    case 'visitorNameAsk':
+      return { mode: 'listening', listeningPrompt: event.retry ? 'visitorNameRetry' : 'visitorName' };
+
+    case 'visitorNameReadback':
+      return { mode: 'readback', readbackKind: 'visitorName', readbackName: event.name };
+
+    case 'visitorNameKeyboard':
+      return { mode: 'keyboardGuide' };
+
+    case 'visitorNameStopped':
+      return isVisitorNameState(state) ? { mode: 'idle' } : state;
+
     case 'hearPartial': {
       // listening/idle のときだけ interim 字幕へ反映する（idle からは listening へ遷移＝発話検知）。
       // readback/speaking/ducked では無視して確定・発話の局面を壊さない。
       if (state.mode !== 'listening' && state.mode !== 'idle') return state;
       const next = event.text;
       if (state.mode === 'listening' && state.interimText === next) return state; // 無変化
-      return { mode: 'listening', interimText: next };
+      // 氏名を尋ねている字幕の出し分けは、発話の途中でも保つ。
+      return {
+        mode: 'listening',
+        interimText: next,
+        ...(state.listeningPrompt ? { listeningPrompt: state.listeningPrompt } : {}),
+      };
     }
 
     case 'heardAccepted':
@@ -240,6 +278,10 @@ export function voiceKioskReducer(state: VoiceKioskState, event: VoiceKioskEvent
 /** 字幕/インジケータへ描画する意味論キー（i18n MessageKey と一致）。表示不要な局面は null。 */
 export type VoiceKioskCaptionKey =
   | 'voice.caption.listening'
+  | 'voice.visitorName.ask'
+  | 'voice.visitorName.askAgain'
+  | 'voice.visitorName.keyboard'
+  | 'voice.readback.confirmVisitorName'
   | 'voice.caption.speaking'
   | 'voice.caption.ducked'
   | 'voice.readback.confirmTarget'
@@ -256,16 +298,21 @@ export type VoiceKioskCaptionKey =
  * 解消)。`readbackKind` 未指定（従来イベント/テスト互換）は 'staff' と同じ扱いにする。
  */
 export function captionKeyFor(
-  state: Pick<VoiceKioskState, 'mode' | 'readbackKind'>,
+  state: Pick<VoiceKioskState, 'mode' | 'readbackKind' | 'listeningPrompt'>,
 ): VoiceKioskCaptionKey | null {
   switch (state.mode) {
     case 'listening':
+      if (state.listeningPrompt === 'visitorName') return 'voice.visitorName.ask';
+      if (state.listeningPrompt === 'visitorNameRetry') return 'voice.visitorName.askAgain';
       return 'voice.caption.listening';
+    case 'keyboardGuide':
+      return 'voice.visitorName.keyboard';
     case 'speaking':
       return 'voice.caption.speaking';
     case 'ducked':
       return 'voice.caption.ducked';
     case 'readback':
+      if (state.readbackKind === 'visitorName') return 'voice.readback.confirmVisitorName';
       return state.readbackKind === 'department'
         ? 'voice.readback.confirmDepartment'
         : 'voice.readback.confirmTarget';
@@ -317,8 +364,31 @@ export function voiceListeningStage(
  * 見える —— 名前を声で言った来訪者が、画面下部の字幕へ視線を落とすとは限らない。
  */
 export function announcementFor(
-  state: Pick<VoiceKioskState, 'mode' | 'readbackName'>,
+  state: Pick<VoiceKioskState, 'mode' | 'readbackName' | 'readbackKind' | 'listeningPrompt'>,
 ): { key: VoiceKioskCaptionKey; name: string } | null {
-  if (state.mode !== 'unavailable') return null;
-  return { key: 'voice.unavailable.staffAbsent', name: state.readbackName ?? '' };
+  if (state.mode === 'unavailable') {
+    return { key: 'voice.unavailable.staffAbsent', name: state.readbackName ?? '' };
+  }
+  /*
+   * 氏名の復唱・言い直し・キーボードへの案内も、来訪者への問いかけ（または問いへの答え）なので
+   * 声で返す (ADR 0011 §3-b・§3-c、#1290)。初回の「お名前をお話しください」は、直前の通知の
+   * 読み上げが同じことを言っているので重ねない。
+   */
+  if (state.mode === 'readback' && state.readbackKind === 'visitorName') {
+    return { key: 'voice.readback.confirmVisitorName', name: state.readbackName ?? '' };
+  }
+  if (state.mode === 'listening' && state.listeningPrompt === 'visitorNameRetry') {
+    return { key: 'voice.visitorName.askAgain', name: '' };
+  }
+  if (state.mode === 'keyboardGuide') return { key: 'voice.visitorName.keyboard', name: '' };
+  return null;
+}
+
+/** 氏名の聞き取りの局面か（畳む対象）。 */
+export function isVisitorNameState(state: VoiceKioskState): boolean {
+  return (
+    state.mode === 'keyboardGuide' ||
+    (state.mode === 'readback' && state.readbackKind === 'visitorName') ||
+    (state.mode === 'listening' && state.listeningPrompt !== undefined)
+  );
 }

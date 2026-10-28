@@ -6,8 +6,19 @@
  */
 export type SpeakSettings = { ttsEnabled: boolean; rate: number; volume: number; language: string };
 
-/** 発話の開始/終了を受け取るコールバック（リップシンク #5 用。任意）。 */
-export type SpeakEvents = { onStart?: () => void; onEnd?: () => void };
+/**
+ * 発話の開始/終了を受け取るコールバック（リップシンク #5 用。任意）。
+ *
+ * `onError` を渡すと、失敗・中断・再生できなかった（TTS 無効・未操作・非対応）ことを `onEnd` と
+ * 区別して受け取れる (#1290。読み終えたときだけ氏名を聞くため)。渡さなければ従来どおり
+ * 失敗も `onEnd` に畳む（口が開きっぱなしにならないように）。
+ */
+export type SpeakEvents = { onStart?: () => void; onEnd?: () => void; onError?: () => void };
+
+function failed(events: SpeakEvents | undefined): void {
+  if (events?.onError) events.onError();
+  else events?.onEnd?.();
+}
 
 let primed = false;
 
@@ -17,10 +28,16 @@ export function primeSpeech(): void {
 }
 
 export function speak(text: string, settings: SpeakSettings, events?: SpeakEvents): void {
-  if (!settings.ttsEnabled || !primed || !text) return;
+  if (!settings.ttsEnabled || !primed || !text) {
+    events?.onError?.();
+    return;
+  }
   try {
     const synth = typeof window !== 'undefined' ? window.speechSynthesis : undefined;
-    if (!synth) return;
+    if (!synth) {
+      events?.onError?.();
+      return;
+    }
     synth.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = settings.rate;
@@ -30,11 +47,11 @@ export function speak(text: string, settings: SpeakSettings, events?: SpeakEvent
       // 発話中フラグの立ち上げ/下げ。エラー/中断時も必ず onEnd を呼び、口が開きっぱなしを防ぐ。
       utterance.onstart = () => events.onStart?.();
       utterance.onend = () => events.onEnd?.();
-      utterance.onerror = () => events.onEnd?.();
+      utterance.onerror = () => failed(events);
     }
     synth.speak(utterance);
   } catch {
     /* 音声再生不可でも受付フローは止めない */
-    events?.onEnd?.();
+    failed(events);
   }
 }

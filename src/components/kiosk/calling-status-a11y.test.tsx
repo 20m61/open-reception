@@ -66,6 +66,7 @@ function html(data: FlowData, stage: CallingStage = 'dialing'): string {
       feedback: { enabled: false, onSubmit: noop },
       sttAdapterFactory: undefined,
       callStages: [],
+      onVisitorTyping: () => {},
     }),
   );
 }
@@ -147,6 +148,7 @@ describe('呼び出し中の段階メッセージは支援技術に届く (#849)
         feedback: { enabled: false, onSubmit: noop },
         sttAdapterFactory: undefined,
         callStages: [],
+        onVisitorTyping: () => {},
       }),
     );
     expect(out).toContain('data-testid="calling"');

@@ -14,6 +14,7 @@ const EXPECTED_PHASE: Record<VoiceKioskMode, AvatarBehaviorPhase> = {
   ducked: 'listening',
   fallback: 'ambient',
   unavailable: 'ambient',
+  keyboardGuide: 'ambient',
 };
 
 describe('deriveAvatarBehavior', () => {

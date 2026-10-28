@@ -1,11 +1,15 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useImperativeHandle, useMemo, useState, type Ref } from 'react';
 import type { FlowField } from '@/domain/reception/custom-flow';
 import { DEFAULT_LOCALE, htmlLangFor, makeT, type Locale } from '@/lib/i18n';
+import { VISITOR_NAME_MAX_LENGTH } from '@/domain/reception/session';
 import {
-  areRequiredFieldsSatisfied,
+  VISITOR_NAME_FIELD_KEY,
+  applyVoiceName,
+  canSubmitFlowValues,
   initialFieldValues,
+  isNameFieldTooLong,
   unsatisfiedRequiredKeys,
 } from './field-values';
 import type { FlowFieldValues } from './types';
@@ -21,25 +25,60 @@ import type { FlowFieldValues } from './types';
  * 画面の固定文言は i18n カタログ経由 (#327)。項目ラベル・選択肢はテナントが管理画面で
  * 入力した値なので翻訳しない（入力された言語のまま出す）。
  */
+/** 音声で確定した氏名をフォームへ入れる口（ADR 0011 §5、#1290）。 */
+export type VisitorInfoFormHandle = {
+  /**
+   * `name` の欄へ入れ、必須の欄がすべて埋まったときだけ送信する。埋まっていなければ留まり、
+   * 残りの欄の入力を案内する。値はフォームの state にだけ置く（画面を出ればフォームごと消える）。
+   */
+  fillVoiceName(name: string): void;
+};
+
 export function VisitorInfoForm({
   fields,
   onSubmit,
   onBack,
+  onTyping,
+  handleRef,
   locale = DEFAULT_LOCALE,
 }: {
   fields: readonly FlowField[];
   onSubmit: (values: FlowFieldValues) => void;
   onBack?: () => void;
+  /** いずれかの欄へ入力した（音声の氏名の聞き取りを止める。ADR 0011 §3-c、#1290）。 */
+  onTyping?: () => void;
+  /** 音声で確定した氏名を入れる口（`VisitorInfoFormHandle`）。 */
+  handleRef?: Ref<VisitorInfoFormHandle>;
   locale?: Locale;
 }) {
   const tr = makeT(locale);
   const [values, setValues] = useState<FlowFieldValues>(() => initialFieldValues(fields));
+  // 音声で氏名を入れたが、ほかの必須の欄が残っている（案内を出す）。
+  const [remainingNotice, setRemainingNotice] = useState(false);
+
+  useImperativeHandle(
+    handleRef,
+    () => ({
+      fillVoiceName(name: string) {
+        const result = applyVoiceName(fields, values, name);
+        setValues(result.values);
+        if (result.complete) onSubmit(result.values);
+        else setRemainingNotice(true);
+      },
+    }),
+    [fields, values, onSubmit],
+  );
 
   const invalidKeys = useMemo(() => new Set(unsatisfiedRequiredKeys(fields, values)), [fields, values]);
-  const canSubmit = areRequiredFieldsSatisfied(fields, values);
+  // 氏名は音声と同じ上限（ADR 0011 §3-e）。HTML の maxLength は UTF-16 単位なので使わない。
+  const nameTooLong = isNameFieldTooLong(fields, values);
+  const canSubmit = canSubmitFlowValues(fields, values);
 
-  const setValue = (key: string, value: string | boolean) =>
+  const setValue = (key: string, value: string | boolean) => {
+    onTyping?.();
     setValues((prev) => ({ ...prev, [key]: value }));
+  };
+
 
   return (
     <form
@@ -61,12 +100,23 @@ export function VisitorInfoForm({
           <FieldControl
             field={field}
             value={values[field.key]}
-            invalid={invalidKeys.has(field.key)}
+            invalid={invalidKeys.has(field.key) || (field.key === VISITOR_NAME_FIELD_KEY && nameTooLong)}
             selectPlaceholder={tr('customFlow.selectPlaceholder')}
             onChange={(v) => setValue(field.key, v)}
           />
+          {field.key === VISITOR_NAME_FIELD_KEY && nameTooLong ? (
+            <span className="field__error" data-testid="visitor-name-too-long" role="alert">
+              {tr('reception.nameTooLong', { max: String(VISITOR_NAME_MAX_LENGTH) })}
+            </span>
+          ) : null}
         </label>
       ))}
+
+      {remainingNotice && !canSubmit ? (
+        <p data-testid="voice-name-fill-remaining" role="status" style={{ margin: 0 }}>
+          {tr('customFlow.voiceNameFillRemaining')}
+        </p>
+      ) : null}
 
       <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
         {onBack ? (

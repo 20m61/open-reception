@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { revealStaff } from './kiosk-fixtures';
 import { establishKioskSession, loginAsAdmin } from './helpers';
+import { openVoiceNameKiosk } from './voice-name-helpers';
 
 /**
  * admin↔kiosk のテナント統合 E2E (issue #171 inc2)。
@@ -242,4 +243,84 @@ test('カスタム受付フローの主 CTA も「押せない」を視覚語彙
   await expect(submit).toBeEnabled();
   const on = await submit.evaluate((el) => getComputedStyle(el).borderTopStyle);
   expect(on).not.toBe('dashed');
+});
+
+/**
+ * 音声で確定した氏名をカスタム受付フローへ入れる (ADR 0011 §5、#1290)。合成データだけを使う。
+ *
+ * 音声で埋めるのは `name` の欄だけで、**必須の欄がすべて埋まったときだけ**送る。残っていれば
+ * この画面に留まり、残りの欄の入力を案内する（必須の欄を音声が迂回しない）。
+ */
+test.describe('カスタム受付フローと音声の氏名 (#1290)', () => {
+  async function createFlow(
+    page: import('@playwright/test').Page,
+    fields: Array<{ key: string; label: string; type: string; required: boolean; options?: string[] }>,
+  ) {
+    const name = uniq('音声氏名フロー');
+    await loginAsAdmin(page);
+    const created = await page.request.post('/api/admin/reception-flows', {
+      data: {
+        tenantId: 'internal',
+        siteId: 'default-site',
+        purposeKey: uniq('e2e-voice-name'),
+        displayName: name,
+        order: 99,
+        steps: ['purpose', 'visitorInfo', 'confirm', 'call'],
+        fields,
+      },
+    });
+    expect(created.ok()).toBeTruthy();
+    createdFlowIds.push(((await created.json()) as { id: string }).id);
+    return name;
+  }
+
+  async function toCustomVisitorInfo(page: import('@playwright/test').Page, flowName: string) {
+    await establishKioskSession(page);
+    await openVoiceNameKiosk(page, { visitorName: '受付 太郎です' });
+    await page.getByTestId('start-reception').click();
+    await page.getByTestId('purpose-option').filter({ hasText: flowName }).click();
+    // 相手は音声の復唱を「はい」で確定する（#788 の経路）。
+    await expect(page.getByTestId('voice-readback')).toBeVisible({ timeout: 15_000 });
+    await page.getByTestId('voice-confirm-yes').click();
+    await expect(page.getByTestId('visitor-info-form')).toBeVisible({ timeout: 15_000 });
+  }
+
+  test('ほかの必須の欄が残っていれば送らず、氏名だけ入れて残りを案内する', async ({ page }) => {
+    const flowName = await createFlow(page, [
+      { key: 'name', label: 'お名前', type: 'text', required: true },
+      { key: 'host', label: '訪問先', type: 'select', required: true, options: ['会議室A', '会議室B'] },
+    ]);
+    await toCustomVisitorInfo(page, flowName);
+
+    await expect(page.getByTestId('voice-readback')).toBeVisible({ timeout: 15_000 });
+    await page.getByTestId('voice-confirm-yes').click();
+    await expect(page.locator('[data-field-key="name"]')).toHaveValue('受付 太郎');
+    await expect(page.getByTestId('voice-name-fill-remaining')).toBeVisible();
+    await expect(page.locator('[data-kiosk-state]')).toHaveAttribute('data-kiosk-state', 'inputVisitorInfo');
+    await page.screenshot({ path: 'screenshots/kiosk-voice-name/09-custom-flow-remaining.png' });
+
+    // 残りを画面で埋めれば、画面の操作で進める。
+    await page.locator('[data-field-key="host"]').selectOption('会議室A');
+    await expect(page.getByTestId('voice-name-fill-remaining')).toHaveCount(0);
+    await page.getByTestId('visitor-submit').click();
+    await expect(page.getByTestId('confirm-name')).toHaveText('受付 太郎');
+  });
+
+  test('必須が氏名だけなら、音声の「はい」で確認画面へ進む（発信はしない）', async ({ page }) => {
+    const flowName = await createFlow(page, [{ key: 'name', label: 'お名前', type: 'text', required: true }]);
+    await toCustomVisitorInfo(page, flowName);
+
+    await expect(page.getByTestId('voice-readback')).toBeVisible({ timeout: 15_000 });
+    await page.getByTestId('voice-confirm-yes').click();
+    await expect(page.getByTestId('confirm-name')).toHaveText('受付 太郎');
+    await expect(page.locator('[data-kiosk-state]')).toHaveAttribute('data-kiosk-state', 'confirming');
+  });
+
+  test('氏名の欄が無いフローでは、音声で氏名を尋ねない', async ({ page }) => {
+    const flowName = await createFlow(page, [{ key: 'company', label: '会社名', type: 'text', required: true }]);
+    await toCustomVisitorInfo(page, flowName);
+    await page.waitForTimeout(500);
+    await expect(page.getByTestId('voice-readback')).toHaveCount(0);
+    await expect(page.getByTestId('voice-caption')).toHaveCount(0);
+  });
 });

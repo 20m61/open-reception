@@ -708,6 +708,13 @@ a {
   color: var(--color-muted);
 }
 
+/* 入力欄の下の誤り（氏名の上限 #1290）。色だけに頼らず文言で伝える（role="alert"）。 */
+.field__error {
+  margin: var(--space-xs, 4px) 0 0;
+  font-size: var(--font-body);
+  color: var(--color-danger);
+}
+
 .input {
   min-height: var(--touch-target-min);
   padding: var(--space-md);

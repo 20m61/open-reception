@@ -18,6 +18,7 @@ import {
 } from 'react';
 import {
   createLocalVoiceSessionFactory,
+  localVoiceScriptFromSearch,
   shouldUseLocalVoiceOrchestrator,
 } from '@/lib/voice-session/local-mode';
 import type {
@@ -107,6 +108,7 @@ import {
 } from './custom-flow/PurposeSelector';
 import {
   VisitorInfoForm,
+  type VisitorInfoFormHandle,
 } from './custom-flow/VisitorInfoForm';
 import type {
   KioskFlow as KioskCustomFlow,
@@ -162,8 +164,19 @@ import {
 } from './voice-directory';
 import type {
   OnResolved,
+  OnVisitorNameConfirmed,
   VoiceSessionFactory,
 } from '@/lib/voice-session/kiosk-binding';
+import {
+  isVisitorNameWithinLimit,
+  normalizeVisitorNameInput,
+} from '@/domain/reception/session';
+import {
+  customFlowAcceptsVoiceName,
+  isVisitorNameVoiceEligible,
+  speakUntilEnd,
+} from './visitor-name-voice';
+import { resolvePrivacyNoticeSpeech } from './privacy-notice';
 import {
   debugScannerFromSearch,
 } from './qr-injection';
@@ -356,6 +369,10 @@ export function KioskFlow({
   const [localVoiceEnabled] = useState(() =>
     typeof window === 'undefined' ? false : shouldUseLocalVoiceOrchestrator(window.location.search),
   );
+  // ローカル orchestrator に合成で喋らせる内容（検証用。`?voiceVisitorName=` / `?voiceTarget=`、#1290）。
+  const [localVoiceScript] = useState(() =>
+    typeof window === 'undefined' ? {} : localVoiceScriptFromSearch(window.location.search),
+  );
   const [data, dispatch] = useReducer(reducer, INITIAL);
   // onResolved 実結線 (#364): 音声で確定した相手候補を、タッチ経路と同一の SELECT_TARGET へ写像して
   // dispatch する。相手でない候補（purpose/other/なし）は null で無視。dispatch は useReducer 由来で
@@ -365,6 +382,31 @@ export function KioskFlow({
   const handleVoiceResolved = useCallback<OnResolved>((candidate) => {
     const target = voiceCandidateToTarget(candidate);
     if (target) dispatch({ type: 'SELECT_TARGET', target });
+  }, []);
+  /*
+   * 音声で聞き取った氏名の確定 (ADR 0011 §1・§5、#1290)。結線は復唱への「はい」の直後にだけ呼ぶ。
+   * 起こすのは `SUBMIT_VISITOR_INFO` だけ（`CONFIRM` は起こさない。発信の直前の確認はタッチの 1 か所）。
+   *
+   * - 既定の経路: 必須は氏名だけなので、そのまま確認画面へ進む（任意の欄は空。直したければ戻る）。
+   * - カスタムフロー: `name` の欄へ入れ、必須の欄がすべて埋まったときだけ送る。残っていれば
+   *   この画面に留まり、残りの欄の入力を案内する。
+   *
+   * カスタムフローの判断は欄を持つフォーム（`VisitorInfoForm` の `fillVoiceName`）に任せる。
+   * フォームが値を持つので、画面を出て（アンマウントされ）たら氏名も一緒に消える（§6）。
+   * フォームの送信は `SUBMIT_VISITOR_INFO` だけを起こす（`CustomVisitorInfoView` の onSubmit）。
+   *
+   * dispatch と ref しか使わない安定参照にする（identity が変わると音声セッションが作り直される）。
+   */
+  const voiceNameFormRef = useRef<VisitorInfoFormHandle | null>(null);
+  const handleVoiceNameConfirmed = useCallback<OnVisitorNameConfirmed>((rawName) => {
+    const name = normalizeVisitorNameInput(rawName);
+    if (name === '' || !isVisitorNameWithinLimit(name)) return;
+    const form = voiceNameFormRef.current;
+    if (form !== null) {
+      form.fillVoiceName(name);
+      return;
+    }
+    dispatch({ type: 'SUBMIT_VISITOR_INFO', visitor: { name } });
   }, []);
   // 端末に適用する構成（ディレクトリ・音声・ブランド・アセット・モーション・フロー・サイネージ）は
   // `useKioskConfiguration` が所有する (#422 increment 2)。取得経路（実効構成の一括取得 / 個別 API）は
@@ -507,8 +549,9 @@ export function KioskFlow({
       kioskDirectoryToEntityDirectory(directory),
       // 不在の相手を名指しされたら理由を言う (#803)。選択肢としては渡していない。
       kioskDirectoryToUnavailableDirectory(directory),
+      localVoiceScript,
     );
-  }, [localVoiceEnabled, directory]);
+  }, [localVoiceEnabled, directory, localVoiceScript]);
   const effectiveVoiceSession = voiceSession ?? localVoiceSession;
   const [callingStageQueryOverride, setCallingStageQueryOverride] = useState<
     Partial<CallingStageThresholds>
@@ -907,6 +950,39 @@ export function KioskFlow({
   }, [data.state, data.target?.label, guidanceIdle, speakSettings, locale]);
 
   /*
+   * 氏名を尋ねる前の通知を読み上げ、**最後まで読み終えたか**を返す (ADR 0011 §2、#1290)。
+   * 告知と同じ `speak()`（端末の中の合成。動的な TTS キャッシュを通らない。§6）を使う。
+   */
+  const speakNotice = useCallback(
+    (text: string) => {
+      const language =
+        locale === DEFAULT_LOCALE ? speakSettings.language : LOCALE_LANGUAGE_CODE[locale];
+      return speakUntilEnd((phrase, events) => speak(phrase, { ...speakSettings, language }, events), text);
+    },
+    [locale, speakSettings],
+  );
+
+  /*
+   * 来訪者情報の欄へキーボードで入力し始めた (ADR 0011 §3-c)。音声の聞き取りと復唱を止める合図。
+   * 画面ごとに最初の 1 回だけ数える（打鍵のたびに受付画面全体を描き直さない）。
+   */
+  const [visitorTypingSignal, setVisitorTypingSignal] = useState(0);
+  const visitorTypedRef = useRef(false);
+  useEffect(() => {
+    visitorTypedRef.current = false;
+  }, [data.state]);
+  const handleVisitorTyping = useCallback(() => {
+    if (visitorTypedRef.current) return;
+    visitorTypedRef.current = true;
+    setVisitorTypingSignal((n) => n + 1);
+  }, []);
+
+  /** 言い直しが尽きた (§3-c)。氏名の入力欄へフォーカスを移す（iPad ではキーボードが開く）。 */
+  const focusVisitorNameInput = useCallback(() => {
+    document.querySelector<HTMLElement>('#visitor-name, [data-field-key="name"]')?.focus();
+  }, []);
+
+  /*
    * 音声レイヤの告知を実際に声へ出す (#803)。既存の受付ナレーションと**同じ `speak()`**
    * を使う —— 別経路を作ると、片方だけ音量・言語設定が効かない形になる。
    */
@@ -1148,6 +1224,25 @@ export function KioskFlow({
   // カスタムフローを使うか (issue #100)。無効/未取得は既定フローへフォールバック。
   const useCustomFlow = shouldUseCustomFlow(customFlows);
 
+  /*
+   * 音声での氏名の聞き取り (ADR 0011 §2・§3・§5、#1290)。`inputVisitorInfo` に居るときだけ非 null。
+   * 聞いてよいか（TTS・言語・氏名の欄・確認から戻ったか）の判定は `isVisitorNameVoiceEligible`。
+   * 通知の文面は画面の要約と同じテナントの上書きを使う（`resolvePrivacyNoticeSpeech`）。
+   */
+  const voiceNameFlow = useCustomFlow && selectedFlow ? selectedFlow : null;
+  const visitorNameVoice = useMemo(() => {
+    if (data.state !== 'inputVisitorInfo') return null;
+    return {
+      eligible: isVisitorNameVoiceEligible({
+        ttsEnabled: speakSettings.ttsEnabled,
+        locale,
+        returnedWithName: Boolean(data.visitor?.name),
+        hasNameField: voiceNameFlow === null ? true : customFlowAcceptsVoiceName(voiceNameFlow),
+      }),
+      noticeText: resolvePrivacyNoticeSpeech(locale, { overrideSummary: privacyNoticeOverride }),
+    };
+  }, [data.state, data.visitor?.name, speakSettings.ttsEnabled, locale, voiceNameFlow, privacyNoticeOverride]);
+
   // 現在の表示レイヤー (issue #362)。PresenceState / ReceptionState を複製せず、既存の判定材料
   // （アクセスゲート・QR受付トグル・受付状態機械）から写像するだけの純関数に委譲する。
   const kioskMode = resolveKioskMode({
@@ -1286,6 +1381,11 @@ export function KioskFlow({
           receptionState={data.state}
           onResolved={handleVoiceResolved}
           onAnnounce={speakVoiceAnnouncement}
+          onVisitorNameConfirmed={handleVoiceNameConfirmed}
+          visitorNameVoice={visitorNameVoice}
+          speakNotice={speakNotice}
+          typingSignal={visitorTypingSignal}
+          onVisitorNameKeyboard={focusVisitorNameInput}
         />
       ) : null}
       {inactivitySeconds !== null ? (
@@ -1376,6 +1476,8 @@ export function KioskFlow({
           onSubmit={(values) =>
             dispatch({ type: 'SUBMIT_VISITOR_INFO', visitor: flowValuesToVisitorInfo(selectedFlow, values) })
           }
+          onTyping={handleVisitorTyping}
+          formRef={voiceNameFormRef}
           locale={locale}
           privacyNoticeOverride={privacyNoticeOverride}
           presenceCameraEnabled={presenceEnabled}
@@ -1430,6 +1532,8 @@ export function KioskFlow({
               sttAdapterFactory,
               // 取次段階 (#363)。Vonage 非同期通話ビュー（KioskCallView）が段階表示する。
               callStages,
+              // 来訪者情報の欄へ打ち始めたら音声の氏名の聞き取りを止める (ADR 0011 §3-c、#1290)。
+              onVisitorTyping: handleVisitorTyping,
             })}
           </div>
           {/*
@@ -1905,12 +2009,18 @@ function CustomPurposeView({
 function CustomVisitorInfoView({
   flow,
   onSubmit,
+  onTyping,
+  formRef,
   locale,
   privacyNoticeOverride,
   presenceCameraEnabled,
 }: {
   flow: KioskCustomFlow;
   onSubmit: (values: FlowFieldValues) => void;
+  /** 欄へ入力した（音声の氏名の聞き取りを止める。ADR 0011 §3-c）。 */
+  onTyping: () => void;
+  /** 音声で確定した氏名を入れる口（ADR 0011 §5）。 */
+  formRef: React.Ref<VisitorInfoFormHandle>;
   locale: Locale;
   privacyNoticeOverride: string | undefined;
   presenceCameraEnabled: boolean;
@@ -1941,7 +2051,13 @@ function CustomVisitorInfoView({
         overrideSummary={privacyNoticeOverride}
         presenceCameraEnabled={presenceCameraEnabled}
       />
-      <VisitorInfoForm fields={flow.fields} onSubmit={onSubmit} locale={locale} />
+      <VisitorInfoForm
+        fields={flow.fields}
+        onSubmit={onSubmit}
+        onTyping={onTyping}
+        handleRef={formRef}
+        locale={locale}
+      />
     </div>
   );
 }

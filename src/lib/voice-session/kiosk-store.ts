@@ -17,6 +17,7 @@ import {
 } from '@/domain/voice-session/kiosk-view';
 import type { ReceptionState } from '@/domain/reception/state';
 import type { VoiceSessionController, VoiceSessionFactory, VoiceSessionHooks } from './kiosk-binding';
+import type { VisitorNameCaptureInput } from './visitor-name-router';
 
 export class VoiceKioskStore {
   private state: VoiceKioskState = initialVoiceKioskState();
@@ -63,6 +64,11 @@ export class VoiceKioskStore {
   /** 復唱確認「いいえ」（タッチ/音声 共通入口）。 */
   confirmNo = (): void => {
     this.controller.confirmNo();
+  };
+
+  /** 氏名の聞き取りへの入力（ADR 0011、#1290）。controller が未実装なら no-op。 */
+  visitorName = (input: VisitorNameCaptureInput): void => {
+    this.controller.visitorName?.(input);
   };
 
   /**
