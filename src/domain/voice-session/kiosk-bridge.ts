@@ -209,14 +209,37 @@ export function sharesSurname(a: NameForSurname, b: NameForSurname): boolean {
   const rb = reading(b);
   if (ra !== undefined && rb !== undefined) {
     // かなとラテン文字の読みは比べられない（「たなか」と「tanaka」）。比べられないものは同じ姓とみなす。
+    //
+    // 🔴 読みが揃えば読みを信じる。そのため、表示名にも読みにも区切りが無い 1 文字の姓で、読みの共通部分が
+    // 1 音しか無い組（「井太郎／いたろう」と「井花子／いはなこ」、同じ字で読みの違う「東」）は拾えない。
+    // 構造だけでは「佐藤／さとう」と「佐野／さの」（別の姓）と区別できず、拾うには読みの登録された
+    // ほぼ全員の自動確定を止めることになるため（`docs/adr/0011` 3-f の既知の拾えない型）。
     return isLatin(ra) !== isLatin(rb) || sharesSurnameIn(ra, rb);
   }
   // 読みが揃わず、表示名の文字の系統も違う（「田中次郎」と「タナカ ジロウ」）なら、比べられない。
   if (hasHan(a.displayName) !== hasHan(b.displayName)) return true;
-  const da = tokens(a.displayName);
-  const db = tokens(b.displayName);
-  if (da.length !== 1 || db.length !== 1) return false;
-  return da[0]?.[0] !== undefined && da[0][0] === db[0]?.[0];
+  if (tokens(a.displayName).length !== 1 || tokens(b.displayName).length !== 1) return false;
+  return sameFirstChar(a.displayName, b.displayName);
+}
+
+function sameFirstChar(a: string, b: string): boolean {
+  const fa = tokens(a)[0]?.[0];
+  return fa !== undefined && fa === tokens(b)[0]?.[0];
+}
+
+/**
+ * 姓に多い異体字を、標準の字へ寄せる（NFKC は寄せない）。来訪者の発話の STT は標準の字を出すので、
+ * 表記の違う同じ姓（「渡辺」と「渡邊」）を別の姓と判定すると、復唱せずに確定してしまう。
+ * 網羅ではない。読みが両方に登録されていれば、表に無い異体字も読みで拾う。
+ */
+const SURNAME_VARIANTS: Readonly<Record<string, string>> = {
+  邊: '辺', 邉: '辺', 髙: '高', 﨑: '崎', 嵜: '崎', 斎: '斉', 齋: '斉', 齊: '斉', 濱: '浜', 濵: '浜',
+  嶋: '島', 嶌: '島', 澤: '沢', 櫻: '桜', 廣: '広', 國: '国', 德: '徳', 瀨: '瀬', 槇: '槙', 籠: '篭',
+  冨: '富', 栁: '柳', 﨔: '欅', 舘: '館', 藪: '薮', 圓: '円', 實: '実', 眞: '真', 惠: '恵', 龍: '竜',
+};
+
+function foldVariants(name: string): string {
+  return Array.from(name, (c) => SURNAME_VARIANTS[c] ?? c).join('');
 }
 
 function hasHan(name: string): boolean {
@@ -234,7 +257,8 @@ function reading(name: NameForSurname): string | undefined {
 }
 
 function tokens(name: string): string[] {
-  return normalize(name)
+  // 括弧の注記（「田中（営業） 花子」）は姓に含めない。NFKC で全角の括弧も半角になる。
+  return foldVariants(normalize(name).replace(/\([^)]*\)/g, ' '))
     .split(/[\s\u3000,、・]+/)
     .filter((t) => t !== '');
 }
@@ -243,11 +267,10 @@ function sharesSurnameIn(a: string, b: string): boolean {
   const ta = tokens(a);
   const tb = tokens(b);
   if (ta.length === 0 || tb.length === 0) return false;
-  if (ta.length >= 2 && tb.length >= 2) {
-    if (ta[0] === tb[0]) return true;
-    const latin = (ts: string[]) => ts.every((t) => /^[a-z.'-]+$/.test(t));
-    return latin(ta) && latin(tb) && ta.some((t) => tb.includes(t));
-  }
+  // ラテン文字の名前は語順が決まらない（「John Smith」と「Smith」）。どれか 1 語が共通なら同じ姓とみなす。
+  const latin = (ts: string[]) => ts.every((t) => /^[a-z.'-]+$/.test(t));
+  if (latin(ta) && latin(tb) && ta.some((t) => tb.includes(t))) return true;
+  if (ta.length >= 2 && tb.length >= 2) return ta[0] === tb[0];
   const fa = ta.join('');
   const fb = tb.join('');
   if (ta.length >= 2) return fb.startsWith(ta[0] ?? '');
