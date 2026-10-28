@@ -173,8 +173,7 @@ function hasSurnamePeer(input: BridgeCommittedTurnInput, candidate: EntityCandid
   const staff = [...input.directory.staff, ...(input.unavailableDirectory?.staff ?? [])].filter((s) => s.enabled);
   // 🔴 読みを登録していない担当者が 1 人でもいれば、姓を推定しきれないので常に復唱する（owner の判断、
   // 2026-10-28）。読みの無い人とは、文字の系統の違い・同音異字・表に無い異体字を比べられないため。
-  // 空白・記号・注記だけの読み（「・」「（えいぎょう）」）も、読みが無いものとして扱う。
-  if (staff.some((s) => s.kana === undefined || tokens(s.kana).length === 0)) return true;
+  if (staff.some((s) => !hasReading(s.kana))) return true;
   const self = staff.find((s) => s.id === candidate.id) ?? { displayName: candidate.displayName };
   return staff.some((s) => s.id !== candidate.id && sharesSurname(self, s));
 }
@@ -246,9 +245,18 @@ function foldVariants(name: string): string {
   return Array.from(name, (c) => SURNAME_VARIANTS[c] ?? c).join('');
 }
 
+/**
+ * 読みが登録されているか。文字（かな・ラテン文字など）を 1 つも含まない読み（空白・「・」・「-」・長音符「ー」・
+ * 「（えいぎょう）」のような注記だけ）は、登録されていないものとして扱う（CSV の空欄の代わりの「-」など）。
+ * 長音符は Unicode の修飾文字（Lm）なので、文字の判定から外す。
+ */
+function hasReading(kana: string | undefined): boolean {
+  return kana !== undefined && tokens(kana).some((t) => /[\p{Lu}\p{Ll}\p{Lt}\p{Lo}]/u.test(t));
+}
+
 /** 読み。登録が無ければ、かな・ラテン文字だけの表示名を読みとして使う。 */
 function reading(name: NameForSurname): string | undefined {
-  if (name.kana !== undefined && normalize(name.kana) !== '') return name.kana;
+  if (hasReading(name.kana)) return name.kana;
   return /^[\p{Script=Hiragana}a-z\s\u3000ー,、・.'-]+$/u.test(plain(name.displayName)) ? name.displayName : undefined;
 }
 
