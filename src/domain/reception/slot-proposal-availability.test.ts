@@ -180,6 +180,20 @@ const rows: Row[] = [
   },
 ];
 
+describe('voice target: 不在の人をはっきり名指しされたとき', () => {
+  it('不在の人の方がはっきり一致するなら、在席の別人を修復の候補にも出さない（slot を作らない）', () => {
+    // 「田中」（不在・完全一致）を呼びたい来訪者に、前方一致しただけの在席の「田中山」を唯一の候補として見せない。
+    const target = resolveTarget(
+      [
+        { id: 'tanaka', displayName: '田中', kana: 'たなか', available: false },
+        { id: 'tanakayama', displayName: '田中山', kana: 'たなかやま' },
+      ],
+      '田中',
+    );
+    expect(target).toBeUndefined();
+  });
+});
+
 describe('voice target: 同じ姓の担当者がいれば自動確定しない (ADR 0011 §3-f / #1284)', () => {
   it.each(rows)('$name', (row) => {
     const target = resolveTarget(row.staff, row.query);

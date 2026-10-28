@@ -151,6 +151,51 @@ describe('resolveReceptionSlotProposal (#1081)', () => {
     ).toBe('resolved');
   });
 
+  it('entity の名寄せが弱い（あいまい一致だけ）、または別の姓の 2 人が僅差なら自動確定しない', () => {
+    const twoIchiro: EntityDirectory = {
+      staff: [
+        staff('staff-suzuki', '鈴木 一郎', 'すずき いちろう'),
+        staff('staff-takahashi', '高橋 一郎', 'たかはし いちろう'),
+      ],
+      departments,
+    };
+    const run = (value: string) =>
+      resolveReceptionSlotProposal(
+        { targetQuery: { value, confidence: 0.95 } },
+        { directory: twoIchiro, sttConfidence: 0.95 },
+      ).target;
+    // 読みの濁点違い（あいまい一致）だけ。
+    expect(run('すすき')).toEqual({
+      kind: 'ambiguous',
+      candidates: [{ type: 'staff', id: 'staff-suzuki', label: '鈴木 一郎', sublabel: '営業部' }],
+      evidence: { source: 'voice', certainty: 'ambiguous' },
+    });
+    // 名だけ。姓は違うので同姓の規則には当たらず、確信度の僅差だけが止める。
+    const byGivenName = run('一郎');
+    expect(byGivenName?.kind).toBe('ambiguous');
+    // 下界: 姓と名を言えば自動確定する。
+    expect(run('鈴木 一郎')?.kind).toBe('resolved');
+  });
+
+  it('自動確定するのは top1 の人（近い部署名が 2 位にいても取り違えない）', () => {
+    const withLab: EntityDirectory = {
+      staff: [staff('staff-suzuki', '鈴木 一郎', 'すずき いちろう')],
+      departments: [
+        ...departments,
+        { id: 'dept-lab', name: '鈴木一郎研究室', kana: 'すずきいちろうけんきゅうしつ', displayOrder: 1, enabled: true },
+      ],
+    };
+    const result = resolveReceptionSlotProposal(
+      { targetQuery: { value: '鈴木 一郎', confidence: 0.95 } },
+      { directory: withLab, sttConfidence: 0.95 },
+    );
+    expect(result.target).toEqual({
+      kind: 'resolved',
+      value: { type: 'staff', id: 'staff-suzuki', label: '鈴木 一郎', sublabel: '営業部' },
+      evidence: { source: 'voice', certainty: 'high' },
+    });
+  });
+
   it('同名に近い複数候補は実在entity候補のままambiguousにする（部署名で区別できる）', () => {
     const sameNameDirectory: EntityDirectory = {
       staff: [
