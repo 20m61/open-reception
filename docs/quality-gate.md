@@ -714,6 +714,43 @@ E2E は iPad 受付端末を主対象とするが、ブラウザは 2 系統で�
 | `ipad-landscape` / `ipad-portrait` | webkit（Safari 忠実度） | CI または `E2E_WEBKIT=1` 時のみ | 実 Safari 相当の検証 |
 | `platform-developer` | chromium（desktop 1280×900） | ✅ 常時（`PLAYWRIGHT_BASE_URL` 指定時を除く） | developer 専用の `/platform/*` 検証 |
 
+### VRT の撮影フォント（#1289）
+
+linux の chromium には、撮影に使うフォントの**許可リスト**（`tests/e2e/fonts/fonts.conf`）を
+`FONTCONFIG_FILE` で渡している（`playwright.config.ts` / `tests/config/vrt-font-pin.ts`）。
+darwin は CoreText なので何も変わらない。
+
+**なぜ要るか。** linux の baseline は `playwright install-deps` のフォント群と fontconfig 既定の
+DejaVu だけがある環境で撮られている。Cloud の環境にはそれ以外のフォントが入っていて、
+日本語の描画が変わり、**手を加えていない main でも VRT が 14 件落ちていた**（2026-10 の PR は
+全部「VRT 14 件だけ FAIL」として扱われていた）。コードの退行ではない。
+
+| 許可する（`<dir>`） | 外す（実測でどれも baseline と合わなくなる） |
+| --- | --- |
+| WenQuanYi Zen Hei・DejaVu・Liberation・FreeFont・Loma（tlwg）・Noto Color Emoji | IPA ゴシック・Noto Sans/Serif CJK・Unifont・システムの Inter（JetBrains Mono 等もディレクトリごと読まない） |
+
+2026-10-28 の Cloud の環境での実測（`pristine-state` の VRT 16 本、`--retries=0`）:
+
+| fontconfig | 結果 |
+| --- | --- |
+| system のまま | 14 failed |
+| WenQuanYi と Unifont だけを拒否 | 14 failed（差分の画素数も同じ。この 2 つは原因ではなかった） |
+| 許可リスト − DejaVu | 2 failed（管理画面の 2 枚。見出しに合成ボールドが掛からない） |
+| 許可リスト − DejaVu ＋ IPA ゴシック | 13 failed |
+| 許可リスト ＋ IPA ゴシック | 14 failed |
+| DejaVu と WenQuanYi だけ | 5 failed |
+| 許可リスト（conf.d を読まない） | 14 failed（合成ボールド・ヒンティングが変わる） |
+| **許可リスト** | **16 passed（3 回連続）** |
+
+- **baseline は撮り直していない。** 許可リストで既存の baseline と画素単位で一致する
+- 許可リストのフォントが入っていない linux では、`playwright.config.ts` が不足・混入している
+  ファミリーを `[vrt-font-pin]` の警告で名指しする（VRT は描画差で落ちる）。Debian/Ubuntu では
+  `npx playwright install-deps chromium` と `fonts-dejavu-core` で揃う
+- **許可リストに足す・外すのは、baseline を撮り直すのと同じ重さの変更**として扱う
+  （描画が変わる。差分の画像を見てから決める）
+- system のフォントで撮った描画と比べたいときは `FONTCONFIG_FILE=/etc/fonts/fonts.conf` を
+  明示する（明示した値が優先される）
+
 ### `platform-developer` が別サーバな理由（#423）
 
 platform エリアは developer ロール専用で、password セッションが developer になるのは

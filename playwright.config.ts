@@ -1,5 +1,7 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { defineConfig, devices } from '@playwright/test';
+import { missingPinnedFamilies, pinnedFontEnv, unexpectedFamilies } from './tests/config/vrt-font-pin';
 
 const PORT = Number(process.env.PORT ?? 3000);
 /**
@@ -74,11 +76,48 @@ const executablePath = resolveChromiumExecutablePath();
  */
 const FAKE_MEDIA_ARGS = ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'];
 
+/**
+ * linux では chromium に撮影フォントの許可リストを渡す (#1289)。
+ *
+ * 環境に入っているフォント次第で日本語の描画が変わり、baseline を撮った環境と違う Cloud の
+ * 環境では VRT が 14 件落ちていた。許可リストの中身と理由は `tests/config/vrt-font-pin.ts`。
+ * darwin では何も足さない（darwin の baseline は無関係のまま）。
+ *
+ * `env` は**置き換え**なので、既存の環境変数へ足す形にする（PATH 等を落とすと起動できない）。
+ */
+const pinnedFonts = pinnedFontEnv(process.platform, process.env);
+
+/**
+ * 許可リストのフォントが入っていない linux では、VRT は描画差で落ちる。コードの退行と
+ * 見分けられるよう、何が足りないかを 1 度だけ名指しする（config は worker ごとに読まれる）。
+ */
+if (pinnedFonts.FONTCONFIG_FILE && !process.env.OPEN_RECEPTION_FONT_PIN_CHECKED) {
+  process.env.OPEN_RECEPTION_FONT_PIN_CHECKED = '1';
+  try {
+    const listing = execFileSync('fc-list', [':', 'family'], {
+      encoding: 'utf8',
+      env: { ...process.env, ...pinnedFonts },
+    });
+    const missing = missingPinnedFamilies(listing);
+    const unexpected = unexpectedFamilies(listing);
+    if (missing.length > 0 || unexpected.length > 0) {
+      console.warn(
+        `[vrt-font-pin] 撮影フォントが baseline と一致しません（VRT は描画差で落ちます）。` +
+          ` 不足: ${missing.join(' / ') || 'なし'}、混入: ${unexpected.join(' / ') || 'なし'}` +
+          `（docs/quality-gate.md「VRT の撮影フォント」）`,
+      );
+    }
+  } catch {
+    console.warn('[vrt-font-pin] fc-list を実行できず、撮影フォントを確かめられませんでした。');
+  }
+}
+
 // executablePath の解決と**マージ**する（置き換えると Claude Code on the web の
 // プリインストール Chromium 解決が壊れる）。
 const chromiumLaunchOptions = {
   args: FAKE_MEDIA_ARGS,
   ...(executablePath ? { executablePath } : {}),
+  ...(pinnedFonts.FONTCONFIG_FILE ? { env: { ...process.env, ...pinnedFonts } } : {}),
 };
 
 // 既定スコープへカスタム受付フローを一時投入する spec (#248)、および共有シングルトン設定
