@@ -49,7 +49,7 @@
 
 ## ConversationTurnView
 
-今の実装（`ui-contract.ts`）の契約:
+今の実装（`ui-contract.ts`）の契約（抜粋。`handoffs` や answers の `presetPurpose` などは省いた。正本は型の定義）:
 
 ```ts
 type ConversationTurnView = {
@@ -130,7 +130,7 @@ type ConversationTurnView = {
 | E-07 発信中 | calling | companion | relaxed | none | calling | touch | – | – |
 | E-08 担当者との通話 | connected | minimal | happy | none | connected | touch | – | 受付を終了 (complete) |
 | E-09 担当者が向かっている | connected / fallback | minimal / companion | happy / neutral | none | connected / fallbackGuidance | touch | – | 受付を終了 (complete) |
-| E-10 未応答・フォールバック | timeout / failed → fallback | companion | concerned | fallbackCta（通信断の failed は none） | apologyTimeout / apologyFailed | touch | – | 別の方法でご連絡 (useFallback) |
+| E-10 未応答・フォールバック | timeout / failed → fallback | companion | concerned | fallbackCta（通信断・実発信の停止中・時間外の failed は none。代わりの連絡手段も出さない） | apologyTimeout / apologyFailed | touch | – | 別の方法でご連絡 (useFallback) |
 | Q-01 QR 読取 | （checkin: scanning） | companion | – | – | – | touch, qr | – | 読み取りのみ（発信しない） |
 | Q-02 QR 内容確認 | （checkin: confirming） | companion | thinking | confirmCta | reviewAndConfirm | touch | **要** | この内容で呼ぶ |
 
@@ -185,6 +185,7 @@ QR（ADR 0008。統合シェルは残 increment）:
 
 ## 個人情報の表示と保存（ADR 0011 §6・`docs/experience/README.md` の原則 6）
 
+- 音声の生データは保存しない。STT のために端末の外へ送る場合も、送った先で保存しない（ADR 0001・ADR 0011 §6）。
 - 公共の画面へ、フル氏名・電話番号・発話の全文を必要以上に残さない。氏名を画面に出すのは、
   入力欄・氏名の復唱・最後の確認（`ConfirmView`）だけ。
 - 途中の認識結果（interim）を、氏名の欄にも記録にも残さない。復唱に出すのは、確定した 1 つの候補だけ。
@@ -207,7 +208,8 @@ QR（ADR 0008。統合シェルは残 increment）:
 - **氏名の聞き取りの失敗**: 最初の質問＋言い直し 2 回の計 3 回が失敗したら、音声をやめ、キーボードの欄へ
   フォーカスを移して「画面から入力してください」と案内する。有人支援（#1074）が使えるときは、その導線も示す
   （ADR 0011 §3-c）。
-- **担当者の無応答・発信の失敗**: `timeout` / `failed` → `fallback`（代わりの連絡手段）。発信前に撃てないと分かったら
+- **担当者の無応答・発信の失敗**: `timeout` / `failed` → `fallback`（代わりの連絡手段。ただし通信断・実発信の停止中・
+  時間外では出さない。`shouldOfferAlternativeContact`）。発信前に撃てないと分かったら
   `confirming` → `failed`（#764）。どれも内部の理由を来訪者へ見せない。
 - 音声も有人支援も使えないときに、受付を行き止まりにしない（planner は `blocked` を返さず、キーボードでの入力を返す。
   ADR 0011 §4）。
