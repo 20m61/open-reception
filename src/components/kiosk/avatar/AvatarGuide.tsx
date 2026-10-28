@@ -4,6 +4,8 @@ import dynamic from 'next/dynamic';
 import { useEffect, useMemo, useState } from 'react';
 import type { ReceptionState } from '@/domain/reception/state';
 import { deriveAvatarState, gazeTargetFor } from '@/domain/reception/ui-contract';
+import { deriveAvatarBehavior } from '@/domain/avatar/behavior';
+import type { VoiceKioskMode } from '@/domain/voice-session/kiosk-view';
 import type { KioskLayout } from '../layout';
 import { resolveMotionUrl, type MotionKey } from '@/domain/motion/types';
 import { DEFAULT_LOCALE, htmlLangFor, type Locale } from '@/lib/i18n';
@@ -31,22 +33,24 @@ const VrmAvatarViewer = dynamic(
  * 責務:
  *  - #120 の `deriveAvatarState(screenState)` を購読し、状態に応じた表情/モーション・
  *    発話・字幕・軽い誘導を提示する（写像ロジックは avatar/guidance.ts の純関数）。
+ *  - #1095 の `VoiceKioskMode` は `deriveAvatarBehavior` へ渡し、受付上の AvatarState を変えずに
+ *    listening / speaking 等の描画ヒントだけを重ねる。
  *  - 音声が出ない/出せない場合も「字幕」で同内容を表示する（subtitle は常に表示）。
  *  - VRM ロード失敗時は VrmAvatarViewer が静止画/プレースホルダへ落ち、本コンポーネントは
  *    さらにテキスト案内（fallbackText）で内容を保証する。
  *  - チャットドロワー表示中も操作を遮らないよう、オーバーレイは pointer-events: none。
  *
- * 配線方針（KioskFlow へは本トラックでは触らない / #121 のスロット待ち）:
- *  - KioskFlow が保持する screenState をそのまま `screenState` に渡す。
- *  - locale は受付の言語設定（#103）から、TTS 設定は管理設定（#5/#28）から渡す。
- *  - VRM/静止画 URL・モーションマップは端末設定（#27/#31）から渡す。
- *
- * 本コンポーネントは状態を所有しない（screenState の導出のみ）。スタイルはインラインで
- * 完結させ globals.css は触らない（#121 のスコープ）。
+ * 本コンポーネントは受付/音声状態を所有しない。screenState / voiceMode の純粋導出結果だけを
+ * 描画へ渡す。スタイルはインラインで完結させ globals.css は触らない。
  */
 export type AvatarGuideProps = {
   /** 受付フローの画面状態。ここから avatarState を導出する（state は持たない）。 */
   screenState: ReceptionState;
+  /**
+   * 音声対話 UI の局面 (#1095)。未指定は `inactive` = 従来挙動。AvatarGuide は voice store を
+   * 直接購読せず、呼び出し元から渡された observation だけを描画ヒントへ純粋変換する。
+   */
+  voiceMode?: VoiceKioskMode;
   /** 表示言語（#103）。未指定は既定 locale。 */
   locale?: Locale;
   /** VRM モデル URL（無ければ静止画/プレースホルダ）。実アセット検証は #65。 */
@@ -76,6 +80,7 @@ export type AvatarGuideProps = {
 
 export function AvatarGuide({
   screenState,
+  voiceMode = 'inactive',
   locale = DEFAULT_LOCALE,
   vrmUrl,
   fallbackImageUrl,
@@ -87,6 +92,7 @@ export function AvatarGuide({
   className,
 }: AvatarGuideProps) {
   const avatarState = deriveAvatarState(screenState);
+  const behavior = deriveAvatarBehavior({ avatarState, voiceMode });
   const guidance: AvatarGuidance = useMemo(
     () => avatarGuidanceFor(avatarState, locale, guidanceOverride),
     [avatarState, locale, guidanceOverride],
@@ -97,7 +103,8 @@ export function AvatarGuide({
   // 表示手段の決定（#196）: viewer（遅延チャンク）/ 静止画 / プレースホルダ。
   const visual = resolveAvatarVisual(vrmUrl, fallbackImageUrl);
 
-  // 発話中フラグ（簡易リップシンク #5）。発話の開始/終了で口パクの ON/OFF を切替える。
+  // AvatarGuide 自身の TTS 発話中フラグ（簡易リップシンク #5）。voiceSession の speaking は
+  // `behavior.speaking` として別経路から届き、下で OR 合成する。どちらも受付状態は変えない。
   const [speaking, setSpeaking] = useState(false);
 
   // TTS が有効なら発話する。失敗/無効でも字幕で同内容を保証するためフローは止めない。
@@ -112,6 +119,7 @@ export function AvatarGuide({
   }, [guidance.speech, ttsSettings]);
 
   const voiceless = !ttsSettings || !ttsSettings.ttsEnabled;
+  const effectiveSpeaking = speaking || behavior.speaking;
 
   return (
     <div
@@ -119,6 +127,9 @@ export function AvatarGuide({
       data-testid="avatar-guide"
       data-avatar-state={avatarState}
       data-screen-state={screenState}
+      data-avatar-voice-mode={voiceMode}
+      data-avatar-behavior-phase={behavior.phase}
+      data-avatar-listen-focus={behavior.listenFocus ? 'true' : 'false'}
       data-cue={guidance.cue}
       data-expression={guidance.expression}
       style={containerStyle}
@@ -133,7 +144,7 @@ export function AvatarGuide({
             fallbackImageUrl={fallbackImageUrl}
             motionUrl={motionUrl}
             expression={guidance.expression}
-            speaking={speaking}
+            speaking={effectiveSpeaking}
             avatarState={avatarState}
             // 視線誘導は契約から導出する (#422 inc5-c 増分 3)。screenState キーの
             // `gazeTargetFor` が唯一の権威で、ここは向きの解決へ渡すだけ。

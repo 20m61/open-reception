@@ -153,6 +153,7 @@ import {
 import {
   VoiceSessionLayer,
 } from './VoiceSessionLayer';
+import type { VoiceKioskMode } from '@/domain/voice-session/kiosk-view';
 import {
   voiceCandidateToTarget,
 } from './voice-target-binding';
@@ -397,6 +398,9 @@ export function KioskFlow({
   const guidanceIdle = guidanceIdleOverride ?? DEFAULT_IDLE_GUIDANCE;
   // 受付の表示言語 (#103)。来訪者が待機画面の LanguageSwitcher で切替える（セッション内で保持）。
   const [locale, setLocale] = useState<Locale>(DEFAULT_LOCALE);
+  // 音声 UI の局面をアバターの描画ヒントへ渡す観測値 (#1095)。VoiceSessionLayer が mode だけを通知し、
+  // 外れたときは inactive へ戻す。受付状態機械には触れない（ADR 0007）。
+  const [voiceMode, setVoiceMode] = useState<VoiceKioskMode>('inactive');
   // 無操作リセット直前のカウントダウン警告（#125 UX, "don't surprise-expire"）。null=非表示。
   const [inactivitySeconds, setInactivitySeconds] = useState<number | null>(null);
   // 「続ける」ボタンから無操作タイマーを延長するための ref（実体は inactivity effect 内で設定）。
@@ -1286,6 +1290,7 @@ export function KioskFlow({
           receptionState={data.state}
           onResolved={handleVoiceResolved}
           onAnnounce={speakVoiceAnnouncement}
+          onModeChange={setVoiceMode}
         />
       ) : null}
       {inactivitySeconds !== null ? (
@@ -1448,6 +1453,7 @@ export function KioskFlow({
             >
               <AvatarGuide
                 screenState={data.state}
+                voiceMode={voiceMode}
                 locale={locale}
                 vrmUrl={vrmUrl}
                 fallbackImageUrl={avatarFallbackUrl}

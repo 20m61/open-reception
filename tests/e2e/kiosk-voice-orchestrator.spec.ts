@@ -233,3 +233,29 @@ test('担当者を絞り込んでも・スクロールしても復唱ボタン�
   expect(drift, `逃げ道バーとの間隔が想定外: ${drift}`).toBeLessThanOrEqual(64);
   expect(drift).toBeGreaterThanOrEqual(0);
 });
+
+/**
+ * 音声の局面がアバターまで届くこと (#1095)。
+ *
+ * `VoiceSessionLayer` → KioskFlow → companion の `AvatarGuide` への配線を、描画された属性で縛る。
+ * 配線が外れると companion は常に `inactive` のままになる（unit では観測できない —— effect が
+ * 動く実ブラウザでしか通知は流れない）。
+ */
+test('?voiceOrchestrator=1 で、音声の局面が companion のアバターに届く', async ({ page }) => {
+  // companion は横向きでは相手選択でも出る（縦向きは一部の局面だけ。`showAvatarCompanion`）。
+  await page.setViewportSize({ width: 1180, height: 820 });
+  await page.goto('/kiosk?voiceOrchestrator=1');
+  await page.getByTestId('start-reception').click();
+  await page.getByTestId('purpose-meeting').click();
+  await expect(page.getByTestId('voice-readback')).toBeVisible();
+
+  const layer = page.getByTestId('voice-layer');
+  const companion = page.locator('.kiosk-avatar-companion [data-testid="avatar-guide"]');
+  await expect(companion).toBeVisible();
+
+  const layerMode = await layer.getAttribute('data-voice-mode');
+  expect(layerMode, '音声レイヤの局面が取れない').toBeTruthy();
+  expect(layerMode).not.toBe('inactive');
+  // 🔴 アバター側が音声レイヤと同じ局面を表示していること（配線が外れると inactive のまま）。
+  await expect(companion).toHaveAttribute('data-avatar-voice-mode', layerMode!);
+});
