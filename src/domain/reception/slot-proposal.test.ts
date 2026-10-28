@@ -335,7 +335,18 @@ describe('音声から purpose / company を作らない (ADR 0011 §1・§5)', 
   it('不変条件: 出力は planner の正規化で何も落とされない（planner が捨てる slot を作らない）', () => {
     const proposals: ReceptionSlotProposal[] = [];
     for (const extractor of [0.1, PROPOSAL_FLOOR, 0.99]) {
-      for (const name of ['山田', ' ', '山'.repeat(VISITOR_NAME_MAX_LENGTH + 1)]) {
+      // 見えない文字だけの氏名（ゼロ幅空白・結合子・語結合子・ソフトハイフン・モンゴル母音区切り）も含める。
+      for (const name of [
+        '山田',
+        ' ',
+        '\u200B',
+        '\u200B\u200C',
+        '\u2060',
+        '\u00AD',
+        '\u3000\u200B',
+        '\u180E',
+        '山'.repeat(VISITOR_NAME_MAX_LENGTH + 1),
+      ]) {
         for (const query of ['鈴木 一郎', '佐藤', '営業部', '無関係']) {
           proposals.push({
             visitorName: { value: name, confidence: extractor },

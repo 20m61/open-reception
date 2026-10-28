@@ -1,5 +1,6 @@
 import { isVisitorNameWithinLimit } from './session';
 import {
+  normalizeConversationDraft,
   type ConversationDraft,
   type ConversationSlot,
   type ConversationTarget,
@@ -130,7 +131,10 @@ function resolveVisitorNameProposal(
   if (value === '' || !isVisitorNameWithinLimit(value)) return undefined;
   if (confidenceOrZero(sttConfidence) < thresholds.minSttConfidence) return undefined;
   if (!isProposalHigh(proposal, policy)) return undefined;
-  return resolvedVoice(value);
+  // planner（#1088）が使える値と判定しない氏名（見えない文字だけ等）は、候補として返さない。返すと merge で
+  // 「言及なし」と読まれ、呼び出し側は言い直しの失敗に気づけない（前の氏名を消せない）。判定は planner と共有する。
+  const slot = resolvedVoice(value);
+  return normalizeConversationDraft({ visitorName: slot }).visitorName === undefined ? undefined : slot;
 }
 
 /**
