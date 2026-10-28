@@ -27,8 +27,12 @@ const SEPARATE_HINT = '姓と名を空白で区切る（例: さとう たろう
 
 export type KanaFieldState = {
   label: string;
+  /** 欄の下に出す案内。`encouraged` で問題があるときは、その警告に置き換わる。 */
   hint: string;
+  /** `required` での問題（送信できない）。赤・`aria-invalid` で出す。 */
   error: string | undefined;
+  /** `encouraged` での問題（送信はできる）。エラーの見た目にしない（#1287 m4）。 */
+  warning: string | undefined;
   required: boolean;
   /** この入力のままでは送信しない（`required` で `ok` 以外）。 */
   blocksSubmit: boolean;
@@ -38,14 +42,45 @@ export type KanaFieldState = {
 export function kanaFieldState(kana: string, policy: StaffKanaPolicy = STAFF_KANA_POLICY): KanaFieldState {
   const status = assessStaffKana(kana);
   const required = policy === 'required';
+  // 空欄は文にしない（入力前から赤くしない）。required では送信だけ止める。
+  const issue = status === 'missing' ? undefined : (kanaIssueMessage(status) ?? undefined);
+  // encouraged では送信できるので、問題はエラーではなく警告として案内の位置に出す（#1287 m4）。
+  const warning = required ? undefined : issue;
   return {
     label: required ? 'よみがな' : 'よみがな（推奨）',
-    hint: required ? SEPARATE_HINT : `${SEPARATE_HINT}。無いと音声での自動確定が止まります`,
-    // 空欄はエラー文にしない（入力前から赤くしない）。required では送信だけ止める。
-    error: status === 'missing' ? undefined : (kanaIssueMessage(status) ?? undefined),
+    hint: warning ?? (required ? SEPARATE_HINT : `${SEPARATE_HINT}。無いと音声での自動確定が止まります`),
+    error: required ? issue : undefined,
+    warning,
     required,
     blocksSubmit: rejectsStaffKana(status, policy),
   };
+}
+
+/**
+ * 「よみがなを直す」の欄に添える案内。`required` の問題はエラー（危険色）、`encouraged` の問題は
+ * 警告（注意色・`role="status"`）として出す（#1287 m4）。問題が無ければ何も描画しない。
+ */
+export function KanaIssueText({ state, id }: { state: KanaFieldState; id?: string }) {
+  if (state.error !== undefined) {
+    return (
+      <span id={id} data-testid="staff-kana-edit-error" style={{ fontSize: font.caption, color: color.danger }}>
+        {state.error}
+      </span>
+    );
+  }
+  if (state.warning !== undefined) {
+    return (
+      <span
+        id={id}
+        role="status"
+        data-testid="staff-kana-edit-warning"
+        style={{ fontSize: font.caption, color: color.warning }}
+      >
+        {state.warning}
+      </span>
+    );
+  }
+  return null;
 }
 
 /** 一覧の行に付ける印。正しい読みなら何も描画しない。 */
@@ -122,6 +157,7 @@ export function StaffKanaEditor({
   const [busy, setBusy] = useState(false);
   const state = kanaFieldState(value, policy);
   const inputId = `staff-${staffId}-kana-edit`;
+  const issueId = `${inputId}-issue`;
 
   if (!open) {
     return (
@@ -156,6 +192,7 @@ export function StaffKanaEditor({
         data-testid="staff-kana-edit-input"
         aria-label="よみがな"
         aria-invalid={state.error !== undefined}
+        aria-describedby={state.error !== undefined || state.warning !== undefined ? issueId : undefined}
         value={value}
         onChange={(e) => setValue(e.target.value)}
         placeholder="さとう たろう"
@@ -172,11 +209,7 @@ export function StaffKanaEditor({
       <Button data-testid="staff-kana-edit-cancel" onClick={() => setOpen(false)}>
         やめる
       </Button>
-      {state.error ? (
-        <span data-testid="staff-kana-edit-error" style={{ fontSize: font.caption, color: color.danger }}>
-          {state.error}
-        </span>
-      ) : null}
+      <KanaIssueText state={state} id={issueId} />
     </Form>
   );
 }

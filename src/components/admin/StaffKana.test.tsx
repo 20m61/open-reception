@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { StaffKanaPolicy } from '@/domain/staff/kana';
-import { StaffKanaFlag, StaffKanaNotice, kanaFieldState } from './StaffKana';
+import { Field } from '@/components/admin/ui';
+import { KanaIssueText, StaffKanaFlag, StaffKanaNotice, kanaFieldState } from './StaffKana';
 
 /**
  * 管理画面での読み（よみがな）の案内 (#1287)。案 A（required）と案 B（encouraged）の両方を縛る。
@@ -15,6 +16,7 @@ describe('kanaFieldState (#1287)', () => {
       const state = kanaFieldState(kana, policy);
       expect(state.blocksSubmit).toBe(false);
       expect(state.error).toBeUndefined();
+      expect(state.warning).toBeUndefined();
     });
 
     it(`${policy}: 区切りの例を案内に出す`, () => {
@@ -37,7 +39,22 @@ describe('kanaFieldState (#1287)', () => {
     expect(kanaFieldState('', 'encouraged')).toMatchObject({ required: false, blocksSubmit: false });
     expect(kanaFieldState('', 'encouraged').hint).toContain('自動');
     expect(kanaFieldState('さとうたろう', 'encouraged')).toMatchObject({ blocksSubmit: false });
-    expect(kanaFieldState('さとうたろう', 'encouraged').error).toContain('姓と名');
+  });
+
+  it('encouraged: 問題はエラーではなく警告として返し、案内の位置に出す (m4)', () => {
+    for (const kana of ['さとうたろう', '佐藤 太郎']) {
+      const state = kanaFieldState(kana, 'encouraged');
+      expect(state.error).toBeUndefined();
+      expect(state.warning).toBeDefined();
+      expect(state.hint).toBe(state.warning);
+    }
+    expect(kanaFieldState('さとうたろう', 'encouraged').warning).toContain('姓と名');
+  });
+
+  it('required: 問題はエラーとして返し、警告にはしない (m4)', () => {
+    const state = kanaFieldState('さとうたろう', 'required');
+    expect(state.error).toContain('姓と名');
+    expect(state.warning).toBeUndefined();
   });
 
   it('ラベルで方針が分かる', () => {
@@ -84,5 +101,58 @@ describe('StaffKanaNotice (#1287)', () => {
     expect(
       renderToStaticMarkup(<StaffKanaNotice staff={[{ kana: 'すずき はなこ', enabled: true }, { kana: undefined, enabled: false }]} />),
     ).toBe('');
+  });
+});
+
+/** 追加フォームの入力欄として描いたとき（`StaffManager` と同じ渡し方）。 */
+function renderKanaField(kana: string, policy: StaffKanaPolicy): string {
+  const state = kanaFieldState(kana, policy);
+  return renderToStaticMarkup(
+    <Field label={state.label} htmlFor="k" hint={state.hint} error={state.error} required={state.required}>
+      <input id="k" value={kana} readOnly />
+    </Field>,
+  );
+}
+
+describe('読みの欄の見た目は方針で変わる (#1287 m4)', () => {
+  it('encouraged: 正しくない読みでも aria-invalid を付けず、エラー表示にしない', () => {
+    const html = renderKanaField('さとうたろう', 'encouraged');
+    expect(html).not.toContain('aria-invalid');
+    expect(html).not.toContain('ui-field-error');
+    expect(html).toContain('姓と名');
+  });
+
+  it('required: 正しくない読みはエラー表示にする', () => {
+    const html = renderKanaField('さとうたろう', 'required');
+    expect(html).toContain('aria-invalid="true"');
+    expect(html).toContain('ui-field-error');
+  });
+
+  // 下界: 正しい読みはどちらの方針でも、エラーも警告も出さない。
+  for (const policy of POLICIES) {
+    it(`${policy}: 正しい読みはエラーも警告も出さない`, () => {
+      const html = renderKanaField('さとう たろう', policy);
+      expect(html).not.toContain('aria-invalid');
+      expect(html).not.toContain('ui-field-error');
+      expect(renderToStaticMarkup(<KanaIssueText state={kanaFieldState('さとう たろう', policy)} />)).toBe('');
+    });
+  }
+});
+
+describe('KanaIssueText（「よみがなを直す」の欄の案内） (#1287 m4)', () => {
+  it('encouraged: 警告として出す（危険色・alert にしない）', () => {
+    const html = renderToStaticMarkup(<KanaIssueText state={kanaFieldState('さとうたろう', 'encouraged')} />);
+    expect(html).toContain('data-testid="staff-kana-edit-warning"');
+    expect(html).toContain('role="status"');
+    expect(html).toContain('var(--color-warning)');
+    expect(html).not.toContain('var(--color-danger)');
+    expect(html).not.toContain('staff-kana-edit-error');
+  });
+
+  it('required: エラーとして出す', () => {
+    const html = renderToStaticMarkup(<KanaIssueText state={kanaFieldState('さとうたろう', 'required')} />);
+    expect(html).toContain('data-testid="staff-kana-edit-error"');
+    expect(html).toContain('var(--color-danger)');
+    expect(html).not.toContain('staff-kana-edit-warning');
   });
 });

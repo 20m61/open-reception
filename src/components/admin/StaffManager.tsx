@@ -13,7 +13,8 @@ import { Button, DataTable, Field, Form, Pager, SaveFeedback, useSaveFeedback, t
 import { color, font, space } from '@/components/admin/ui/tokens';
 import { enablementState } from './state-vocabulary';
 import { StaffKanaEditor, StaffKanaFlag, StaffKanaNotice, kanaFieldState } from './StaffKana';
-import { assessStaffKana, kanaIssueMessage } from '@/domain/staff/kana';
+import { assessStaffKana } from '@/domain/staff/kana';
+import { canSubmitStaff, rejectionReason, savedWithKanaWarning, withReason } from './staff-form';
 
 /**
  * 担当者管理 (issue #26; 検索/フィルタ #330 item2)。
@@ -73,6 +74,13 @@ export function StaffManager() {
   const [editingId, setEditingId] = useState<string | null>(null);
   /** 読みの入力欄の表示と送信可否（方針 `STAFF_KANA_POLICY` に従う。#1287）。 */
   const kanaField = kanaFieldState(kana);
+  const canSubmit = canSubmitStaff({
+    busy,
+    displayName,
+    departmentId,
+    departmentsLoaded: departments !== null,
+    kanaField,
+  });
 
   const { get, setMany } = useQueryParams();
   const { sort, setSort } = useTableSort();
@@ -162,7 +170,7 @@ export function StaffManager() {
   }, [load]);
 
   const add = useCallback(async () => {
-    if (displayName.trim() === '' || departmentId === '' || busy || kanaField.blocksSubmit) return;
+    if (!canSubmit) return;
     setBusy(true);
     clear();
     try {
@@ -176,22 +184,22 @@ export function StaffManager() {
         body: JSON.stringify({ displayName, kana: kana || undefined, departmentId }),
       }).catch(() => null);
       if (!res?.ok) {
-        failure('担当者を追加できませんでした。');
+        // サーバが拒否した理由（読みの拒否など）があれば出す（#1287 m2）。
+        failure(withReason('担当者を追加できませんでした。', await rejectionReason(res)));
         return;
       }
       setDisplayName('');
       setKana('');
       await load();
       // 案 B（encouraged）では読みが正しくなくても保存できる。そのことを保存の直後にも告げる。
-      const kanaWarning = kanaIssueMessage(assessStaffKana(kana || undefined));
-      success(kanaWarning === null ? '担当者を追加しました。' : `担当者を追加しました。${kanaWarning}`);
+      success(savedWithKanaWarning('担当者を追加しました。', kana || undefined));
     } finally {
       setBusy(false);
     }
-  }, [displayName, kana, departmentId, busy, kanaField.blocksSubmit, load, clear, success, failure]);
+  }, [canSubmit, displayName, kana, departmentId, load, clear, success, failure]);
 
   const patch = useCallback(
-    async (s: Staff, body: Record<string, unknown>) => {
+    async (s: Staff, body: Record<string, unknown>, savedMessage = '変更を保存しました。') => {
       clear();
       const res = await fetch(`/api/admin/staff/${s.id}`, {
         method: 'PATCH',
@@ -201,11 +209,11 @@ export function StaffManager() {
       if (!res?.ok) {
         // 失敗したら `load()` しない。取り直すと行が元へ戻り、**何も起きなかったのか
         // 失敗したのかが区別できない**（viewer が在席を切り替えたつもりで切り替わっていない）。
-        failure('変更を保存できませんでした。');
+        failure(withReason('変更を保存できませんでした。', await rejectionReason(res)));
         return false;
       }
       await load();
-      success('変更を保存しました。');
+      success(savedMessage);
       return true;
     },
     [load, clear, success, failure],
@@ -269,7 +277,7 @@ export function StaffManager() {
             <StaffKanaFlag kana={s.kana} />
             {assessStaffKana(s.kana) === 'ok' ? null : (
               <div style={{ marginTop: 4 }}>
-                <StaffKanaEditor staffId={s.id} kana={s.kana} onSave={(next) => patch(s, { kana: next })} />
+                <StaffKanaEditor staffId={s.id} kana={s.kana} onSave={(next) => patch(s, { kana: next }, savedWithKanaWarning('変更を保存しました。', next))} />
               </div>
             )}
           </>
@@ -426,7 +434,7 @@ export function StaffManager() {
           variant="primary"
           type="submit"
           data-testid="staff-add"
-          disabled={busy || displayName.trim() === '' || departments === null || kanaField.blocksSubmit}
+          disabled={!canSubmit}
         >
           追加
         </Button>
