@@ -243,16 +243,22 @@ function foldVariants(name: string): string {
 /** 読み。登録が無ければ、かな・ラテン文字だけの表示名を読みとして使う。 */
 function reading(name: NameForSurname): string | undefined {
   if (name.kana !== undefined && normalize(name.kana) !== '') return name.kana;
-  return /^[\p{Script=Hiragana}a-z\s\u3000ー,、・.'-]+$/u.test(normalize(name.displayName)) ? name.displayName : undefined;
+  return /^[\p{Script=Hiragana}a-z\s\u3000ー,、・.'-]+$/u.test(plain(name.displayName)) ? name.displayName : undefined;
+}
+
+/**
+ * 正規化した名前から、括弧の注記（「田中（営業） 花子」「【営業】田中 花子」）と異体字セレクタを除く。
+ * NFKC で全角の丸括弧・角括弧は半角になる。
+ */
+function plain(name: string): string {
+  return normalize(name)
+    .replace(/[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/gu, '')
+    .replace(/[(\[【〔「][^)\]】〕」]*[)\]】〕」]/g, ' ')
+    .trim();
 }
 
 function tokens(name: string): string[] {
-  // 括弧の注記（「田中（営業） 花子」「【営業】田中 花子」）は姓に含めない。NFKC で全角の丸括弧・角括弧は
-  // 半角になる。異体字セレクタ（IVS）は、字の比較の前に取り除く。
-  const plain = normalize(name)
-    .replace(/[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/gu, '')
-    .replace(/[(\[【〔「][^)\]】〕」]*[)\]】〕」]/g, ' ');
-  return foldVariants(plain)
+  return foldVariants(plain(name))
     .split(/[\s\u3000,、・]+/)
     .filter((t) => t !== '');
 }
