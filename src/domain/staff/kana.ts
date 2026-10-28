@@ -31,6 +31,11 @@ export const STAFF_KANA_POLICY: StaffKanaPolicy = 'encouraged';
 const WHITESPACE = /\s+/u;
 /** ひらがな（ゔ・ゕ・ゖ を含む）・長音・踊り字・濁点/半濁点のみ。 */
 const KANA_TOKEN = /^[ぁ-ゖゝゞー゛゜]+$/u;
+/**
+ * かなの文字（ぁ〜ゖ）を 1 つ以上含むか。長音符・踊り字・濁点だけの語は読みにならない
+ * （音声の判定 `kiosk-bridge.ts` の `hasReading` と揃える。そちらは文字を含まない読みを「読みなし」とみなす）。
+ */
+const HAS_KANA_LETTER = /[ぁ-ゖ]/u;
 
 /** 全角カタカナ → ひらがな（`search.ts` と同じ 0x60 シフト）。 */
 function katakanaToHiragana(value: string): string {
@@ -43,7 +48,8 @@ export function assessStaffKana(kana: string | undefined): StaffKanaStatus {
   const normalized = katakanaToHiragana(kana.normalize('NFKC').trim());
   if (normalized === '') return 'missing';
   const tokens = normalized.split(WHITESPACE);
-  if (!tokens.every((t) => KANA_TOKEN.test(t))) return 'invalid';
+  if (tokens.every((t) => KANA_TOKEN.test(t) && !HAS_KANA_LETTER.test(t))) return 'missing';
+  if (!tokens.every((t) => KANA_TOKEN.test(t) && HAS_KANA_LETTER.test(t))) return 'invalid';
   return tokens.length >= 2 ? 'ok' : 'unseparated';
 }
 
