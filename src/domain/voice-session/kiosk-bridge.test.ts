@@ -347,11 +347,11 @@ describe('bridgeCommittedTurn: 同じ姓の別人がいれば必ず復唱する 
     { name: '林花子', surname: '林' },
     { name: '森太郎', surname: '森' },
     { name: 'タナカ', surname: '田中' },
-    { name: '田中次郎', surname: '田中' },
-    { name: 'Taro Suzuki', surname: '鈴木' },
-    { name: 'Hanako Suzuki', surname: '鈴木' },
+    // 文字の系統が違う組（漢字の「鈴木」とラテン文字の「Suzuki」）は拾えない型（`docs/adr/0011` 3-f）なので、
+    // この表でも別の姓として扱う。ラテン文字どうしは同じ姓として拾う。
+    { name: 'Taro Suzuki', surname: 'Suzuki' },
+    { name: 'Hanako Suzuki', surname: 'Suzuki' },
     { name: '佐々木', surname: '佐々木' },
-    { name: 'Tanaka Taro', surname: '田中' },
     { name: '渡辺 一郎', surname: '渡辺' },
     { name: '渡邊 花子', surname: '渡辺' },
     { name: '髙橋 次郎', surname: '高橋' },
@@ -436,6 +436,17 @@ describe('bridgeCommittedTurn: 同じ姓の別人がいれば必ず復唱する 
     expect(unit(0.1)).toEqual({ type: 'heardUnavailable', displayName: '佐藤' });
   });
 
+  it('下界: ラテン文字・かなの名前の人が 1 人いても、ほかの担当者の自動確定は止めない', () => {
+    const latin = turn('鈴木一郎', [
+      staff('s', '鈴木一郎', 'すずきいちろう'),
+      staff('h', '佐藤 花子', 'さとう はなこ'),
+      staff('j', 'John Smith'),
+    ]);
+    expect(latin.event.type).toBe('heardAccepted');
+    const kana = turn('鈴木一郎', [staff('s', '鈴木一郎'), staff('h', '佐藤花子'), staff('g', 'グエン ヴァン アン')]);
+    expect(kana.event.type).toBe('heardAccepted');
+  });
+
   it('無効になった担当者（enabled: false）は、同じ姓の比較の相手に入れない', () => {
     const disabled = { ...staff('x', '田中 太郎', 'たなか たろう'), enabled: false };
     expect(turn('田中花子', [staff('h', '田中花子', 'たなかはなこ'), disabled]).event.type).toBe('heardAccepted');
@@ -501,12 +512,26 @@ describe('sharesSurname', () => {
     // 括弧の注記は姓に含めない。
     [n('田中（営業） 花子'), n('田中 太郎'), true],
     [n('田中(営業) 花子'), n('鈴木 太郎'), false],
-    // 比べられない組（読みが揃わず文字の系統が違う、かなとラテン文字の読み）は同じ姓とみなす。
-    [n('田中次郎'), n('タナカ ジロウ', 'たなか じろう'), true],
-    [n('田中 花子', 'たなか はなこ'), n('Tanaka Taro'), true],
-    // 下界: 比べられる組は、姓が違えば同じ姓としない。
+    // 姓が違えば同じ姓としない（読みの無い側があっても、比べられる組は比べる）。
     [n('鈴木太郎'), n('田中 花子', 'たなか はなこ'), false],
-    [n('鈴木 太郎'), n('Tanaka Taro'), true],
+    // 文字の系統が違う組は、同じ姓とみなさない（拾えない型。`docs/adr/0011` 3-f）。
+    // 同じ姓とみなすと、ラテン文字・かなの名前の人が 1 人いるだけで全員の自動確定が止まる。
+    [n('鈴木 太郎'), n('Tanaka Taro'), false],
+    [n('鈴木 太郎', 'すずき たろう'), n('John Smith'), false],
+    // 異体字セレクタ（IVS）は取り除いてから比べる。
+    [n('渡邉\u{E0102} 花子'), n('渡辺 太郎'), true],
+    [n('辻\u{E0100} 花子'), n('辻 太郎'), true],
+    [n('𠮷田 花子'), n('吉田 太郎'), true],
+    [n('曾根 花子'), n('曽根 太郎'), true],
+    [n('峯岸 花子'), n('峰岸 太郎'), true],
+    [n('北條 花子'), n('北条 太郎'), true],
+    // 丸括弧以外の注記も姓に含めない。
+    [n('【営業】田中 花子'), n('田中 太郎'), true],
+    [n('田中［営業］ 花子'), n('田中 太郎'), true],
+    [n('田中〔営業〕 花子'), n('田中 太郎'), true],
+    // アクセント記号のついたラテン文字。
+    [n('García'), n('José García'), true],
+    [n('Müller'), n('Anna Müller'), true],
     [n('タナカ'), n('たなか はなこ'), true],
     [n('Tanaka Hanako'), n('tanaka Taro'), true],
     [n('ＴＡＮＡＫＡ'), n('TANAKA Taro'), true],

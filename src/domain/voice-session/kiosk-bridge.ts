@@ -199,25 +199,21 @@ export type NameForSurname = { readonly displayName: string; readonly kana?: str
  * 🔴 **読みが両方に揃わず、どちらの表示名も区切られていなければ、姓の長さが分からない。** そのときは
  * 先頭 1 文字の一致で同じ姓とみなす（「林太郎」と「林花子」。読みは管理画面で任意）。「佐藤」と「佐野」
  * も同じ姓とみなすが、増えるのは復唱だけで、誤接続は増えない（`docs/adr/0011` 3-f）。
- * 同じ理由で、比べられない組（読みが揃わず表示名の文字の系統が違う「田中次郎」と「タナカ ジロウ」、
- * かなの読みとラテン文字の読み）も同じ姓とみなす。
+ *
+ * 文字の系統が違って比べられない組（読みの無い「田中次郎」と「タナカ ジロウ」、かなの読みとラテン文字の
+ * 読み）は、同じ姓とみなさない。みなすと、ラテン文字・かなの名前の人が 1 人いるだけで、辞書の全員の
+ * 自動確定が止まる（拾えない型。`docs/adr/0011` 3-f）。
  */
 export function sharesSurname(a: NameForSurname, b: NameForSurname): boolean {
-  if (tokens(a.displayName).length === 0 || tokens(b.displayName).length === 0) return false;
   if (sharesSurnameIn(a.displayName, b.displayName)) return true;
   const ra = reading(a);
   const rb = reading(b);
   if (ra !== undefined && rb !== undefined) {
-    // かなとラテン文字の読みは比べられない（「たなか」と「tanaka」）。比べられないものは同じ姓とみなす。
-    //
     // 🔴 読みが揃えば読みを信じる。そのため、表示名にも読みにも区切りが無い 1 文字の姓で、読みの共通部分が
-    // 1 音しか無い組（「井太郎／いたろう」と「井花子／いはなこ」、同じ字で読みの違う「東」）は拾えない。
-    // 構造だけでは「佐藤／さとう」と「佐野／さの」（別の姓）と区別できず、拾うには読みの登録された
-    // ほぼ全員の自動確定を止めることになるため（`docs/adr/0011` 3-f の既知の拾えない型）。
-    return isLatin(ra) !== isLatin(rb) || sharesSurnameIn(ra, rb);
+    // 1 音しか無い組（「井太郎／いたろう」と「井花子／いはなこ」、同じ字で読みの違う「東」）は拾えない
+    // （`docs/adr/0011` 3-f の拾えない型。拾うかどうかは owner の判断待ち）。
+    return sharesSurnameIn(ra, rb);
   }
-  // 読みが揃わず、表示名の文字の系統も違う（「田中次郎」と「タナカ ジロウ」）なら、比べられない。
-  if (hasHan(a.displayName) !== hasHan(b.displayName)) return true;
   if (tokens(a.displayName).length !== 1 || tokens(b.displayName).length !== 1) return false;
   return sameFirstChar(a.displayName, b.displayName);
 }
@@ -236,18 +232,12 @@ const SURNAME_VARIANTS: Readonly<Record<string, string>> = {
   邊: '辺', 邉: '辺', 髙: '高', 﨑: '崎', 嵜: '崎', 斎: '斉', 齋: '斉', 齊: '斉', 濱: '浜', 濵: '浜',
   嶋: '島', 嶌: '島', 澤: '沢', 櫻: '桜', 廣: '広', 國: '国', 德: '徳', 瀨: '瀬', 槇: '槙', 籠: '篭',
   冨: '富', 栁: '柳', 﨔: '欅', 舘: '館', 藪: '薮', 圓: '円', 實: '実', 眞: '真', 惠: '恵', 龍: '竜',
+  '𠮷': '吉', 曾: '曽', 峯: '峰', 淵: '渕', 檜: '桧', 條: '条', 關: '関', 榮: '栄', 槗: '橋', 桒: '桑',
+  藏: '蔵',
 };
 
 function foldVariants(name: string): string {
   return Array.from(name, (c) => SURNAME_VARIANTS[c] ?? c).join('');
-}
-
-function hasHan(name: string): boolean {
-  return /\p{Script=Han}/u.test(name);
-}
-
-function isLatin(name: string): boolean {
-  return /[a-z]/.test(normalize(name)) && !/\p{Script=Hiragana}/u.test(normalize(name));
 }
 
 /** 読み。登録が無ければ、かな・ラテン文字だけの表示名を読みとして使う。 */
@@ -257,8 +247,12 @@ function reading(name: NameForSurname): string | undefined {
 }
 
 function tokens(name: string): string[] {
-  // 括弧の注記（「田中（営業） 花子」）は姓に含めない。NFKC で全角の括弧も半角になる。
-  return foldVariants(normalize(name).replace(/\([^)]*\)/g, ' '))
+  // 括弧の注記（「田中（営業） 花子」「【営業】田中 花子」）は姓に含めない。NFKC で全角の丸括弧・角括弧は
+  // 半角になる。異体字セレクタ（IVS）は、字の比較の前に取り除く。
+  const plain = normalize(name)
+    .replace(/[\uFE00-\uFE0F\u{E0100}-\u{E01EF}]/gu, '')
+    .replace(/[(\[【〔「][^)\]】〕」]*[)\]】〕」]/g, ' ');
+  return foldVariants(plain)
     .split(/[\s\u3000,、・]+/)
     .filter((t) => t !== '');
 }
@@ -268,7 +262,7 @@ function sharesSurnameIn(a: string, b: string): boolean {
   const tb = tokens(b);
   if (ta.length === 0 || tb.length === 0) return false;
   // ラテン文字の名前は語順が決まらない（「John Smith」と「Smith」）。どれか 1 語が共通なら同じ姓とみなす。
-  const latin = (ts: string[]) => ts.every((t) => /^[a-z.'-]+$/.test(t));
+  const latin = (ts: string[]) => ts.every((t) => /^[\p{Script=Latin}.'-]+$/u.test(t));
   if (latin(ta) && latin(tb) && ta.some((t) => tb.includes(t))) return true;
   if (ta.length >= 2 && tb.length >= 2) return ta[0] === tb[0];
   const fa = ta.join('');
