@@ -85,7 +85,7 @@ type ConversationTurnView = {
 | --- | --- | --- | --- |
 | idle | touch, qr | 変えない | |
 | selectingPurpose | touch | 変えない | 目的は音声から扱わない（ADR 0011 §1） |
-| selectingTarget | touch, voice, text | 変えない | `onResolved` → `SELECT_TARGET`（同じ姓なら復唱。§3-f） |
+| selectingTarget | touch, voice, text | 変えない | `onResolved` → `SELECT_TARGET`（同じ姓の担当者が 2 人以上いる、または読みの無い担当者がいる名簿なら復唱。部署は対象外。§3-f） |
 | inputVisitorInfo | touch, text | touch, **voice**, text | 通知の読み上げ後に氏名を聞き、復唱で確定（`onVisitorNameConfirmed`）。キーボードは残す |
 | confirming | touch | 変えない | 発信の確定はタッチのみ |
 | calling 以降 | touch | 変えない | |
@@ -110,7 +110,7 @@ type ConversationTurnView = {
 
 - 「承知しました」だけを独立したターンにしない
 - 取得済みの情報を毎回全部復唱しない。ただし**音声で聞き取った氏名は必ず復唱する**（ADR 0011 §3-b）。
-  同じ姓の担当者がいる名簿では、音声で選んだ相手も復唱する（§3-f）
+  同じ姓の担当者が 2 人以上いる名簿、または読みの無い担当者がいる名簿では、音声で選んだ相手（担当者）も復唱する（部署は対象外。§3-f）
 - 最後の確認（`confirming`）では、相手と氏名を明示する
 
 ## 画面一覧（E-00〜E-10 / Q-01〜Q-02）と会話ターン写像
@@ -217,7 +217,7 @@ QR（ADR 0008。統合シェルは残 increment）:
 ## やってはいけないこと
 
 - 1 つの欄 = 1 つの画面 / 1 つの状態 = 1 つのページ、を機械的に当てはめる
-- 相手の STT の結果を毎回 `はい/いいえ` で確かめる（同じ姓の担当者がいるときを除く）
+- 相手の STT の結果を毎回 `はい/いいえ` で確かめる（同じ姓の担当者が 2 人以上いる、または読みの無い担当者がいる名簿で、相手が担当者のときを除く）
 - `inputVisitorInfo` と通知を飛ばして、氏名を声で取る
 - 音声から `SELECT_PURPOSE` / `CONFIRM` を起こす
 - 状態の順の都合で、取得済みの情報を捨てる / 聞き直す
