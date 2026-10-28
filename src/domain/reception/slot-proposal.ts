@@ -1,4 +1,4 @@
-import { isReceptionPurposeId, type ReceptionPurposeId } from './session';
+import { isVisitorNameWithinLimit } from './session';
 import {
   type ConversationDraft,
   type ConversationSlot,
@@ -6,18 +6,21 @@ import {
   type RequiredConversationSlot,
 } from './conversation-draft';
 import {
-  decideEntityConfirmation,
+  DEFAULT_ENTITY_RESOLUTION_THRESHOLDS,
   resolveEntities,
   type EntityCandidate,
   type EntityDirectory,
   type EntityResolutionThresholds,
 } from '@/domain/voice-stt/entity-resolver';
+import { bridgeCommittedTurn } from '@/domain/voice-session/kiosk-bridge';
 
 /**
  * 自然発話 extractor の出力境界 (#1081)。
  *
  * extractor / LLM はあくまで「候補を提案する」だけで、ReceptionState を進めない。
  * target は staff id を直接返さず query だけを返し、必ず既存 directory resolver を通す。
+ *
+ * 目的（purpose）と会社名（company）は音声から扱わない（ADR 0011 §1・§5）ので、提案の型にも持たない。
  */
 export type ProposedValue<T> = {
   value: T;
@@ -26,12 +29,9 @@ export type ProposedValue<T> = {
 };
 
 export type ReceptionSlotProposal = {
-  purpose?: ProposedValue<ReceptionPurposeId>;
   /** 担当者/部署の自然言語表現。実体IDは extractor に生成させない。 */
   targetQuery?: ProposedValue<string>;
   visitorName?: ProposedValue<string>;
-  /** optional。通常journeyでは要求しない。自然発話に含まれたときだけ提案してよい。 */
-  company?: ProposedValue<string>;
 };
 
 export type ReceptionUtteranceExtractionRequest = {
@@ -55,22 +55,25 @@ export const DEFAULT_SLOT_PROPOSAL_RESOLUTION_POLICY: SlotProposalResolutionPoli
 
 export type ResolveSlotProposalOptions = {
   directory: EntityDirectory;
-  /** 発話全体の final STT confidence。target entity解決の既存確認判定へ渡す。 */
+  /** 発話全体の final STT confidence。target の確認判定と、氏名の下限（ADR 0011 §3-a）に使う。 */
   sttConfidence: number;
   policy?: SlotProposalResolutionPolicy;
   entityThresholds?: EntityResolutionThresholds;
 };
 
-function normalizedConfidence(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return Math.max(0, Math.min(1, value));
+/**
+ * 確信度を [0, 1] の値として読む。範囲外・非有限は 0（安全側）とみなす。
+ * 切り詰め（5 → 1）にすると、壊れた入力が最高の確信度として通ってしまう（#1090 MINOR-4）。
+ */
+function confidenceOrZero(value: number): number {
+  return Number.isFinite(value) && value >= 0 && value <= 1 ? value : 0;
 }
 
 function isProposalHigh(
   value: ProposedValue<unknown>,
   policy: SlotProposalResolutionPolicy,
 ): boolean {
-  return normalizedConfidence(value.confidence) >= policy.minProposalConfidence;
+  return confidenceOrZero(value.confidence) >= policy.minProposalConfidence;
 }
 
 function resolvedVoice<T>(value: T): ConversationSlot<T> {
@@ -89,78 +92,99 @@ function ambiguousVoice<T>(candidates: readonly T[]): ConversationSlot<T> {
   };
 }
 
-function candidateToTarget(candidate: EntityCandidate): ConversationTarget | null {
-  if (candidate.kind !== 'staff' && candidate.kind !== 'department') return null;
+/** 同じ姓・同じ表示名の担当者を画面で見分けられるよう、部署名を sublabel に付ける（#1090 MINOR-3）。 */
+function candidateToTarget(
+  candidate: EntityCandidate,
+  directory: EntityDirectory,
+): ConversationTarget | null {
+  if (candidate.kind === 'department') {
+    return { type: 'department', id: candidate.id, label: candidate.displayName };
+  }
+  if (candidate.kind !== 'staff') return null;
+  const departmentId = directory.staff.find((s) => s.id === candidate.id)?.departmentId;
+  const department = directory.departments.find((d) => d.id === departmentId);
   return {
-    type: candidate.kind,
+    type: 'staff',
     id: candidate.id,
     label: candidate.displayName,
+    ...(department ? { sublabel: department.name } : {}),
   };
 }
 
-function resolvePurposeProposal(
-  proposal: ProposedValue<ReceptionPurposeId> | undefined,
-  policy: SlotProposalResolutionPolicy,
-): ConversationDraft['purpose'] {
-  if (!proposal || !isReceptionPurposeId(proposal.value)) return undefined;
-  return isProposalHigh(proposal, policy)
-    ? resolvedVoice(proposal.value)
-    : ambiguousVoice([proposal.value]);
-}
-
-function resolveTextProposal(
+/**
+ * 氏名の提案（ADR 0011 §3-a・§3-e）。
+ *
+ * - STT の確信度が `minSttConfidence` 以上、**かつ** extractor の確信度が `minProposalConfidence`
+ *   以上のときだけ候補にする。下回れば slot を作らない（`ambiguous` にもしない）。呼び出し側は聞き直す。
+ * - 長さの上限（`VISITOR_NAME_MAX_LENGTH`）を超えたら候補にしない。
+ * - 候補にしても `high` 止まり。確定（`confirmed`）は復唱への肯定だけが行う（§3-b、planner の `readback`）。
+ */
+function resolveVisitorNameProposal(
   proposal: ProposedValue<string> | undefined,
+  sttConfidence: number,
   policy: SlotProposalResolutionPolicy,
-): ConversationSlot<string> | undefined {
+  thresholds: EntityResolutionThresholds,
+): ConversationDraft['visitorName'] {
   if (!proposal) return undefined;
   const value = proposal.value.trim();
-  if (value === '') return undefined;
-  return isProposalHigh(proposal, policy)
-    ? resolvedVoice(value)
-    : ambiguousVoice([value]);
+  if (value === '' || !isVisitorNameWithinLimit(value)) return undefined;
+  if (confidenceOrZero(sttConfidence) < thresholds.minSttConfidence) return undefined;
+  if (!isProposalHigh(proposal, policy)) return undefined;
+  return resolvedVoice(value);
 }
 
+/**
+ * 相手の提案。自動確定の判定は kiosk の音声経路と同じ `bridgeCommittedTurn` に任せる（#1284 / ADR 0011 §3-f）。
+ *
+ * 🔴 不在の担当者を辞書から先に外してから照合しない（#1090 MAJOR-1）。外すと、不在の人が
+ * 「近い候補」「同じ姓の別人」の比較相手から消え、同じ姓の在席者が単独の高信頼候補として
+ * 自動確定する（別人を呼ぶ誤接続）。在席者は選択肢、不在者は比較相手として bridge へ渡す。
+ * 同じ姓の別人（在席・不在とも）、読みの無い担当者がいる名簿、低い STT・entity の確信度は、
+ * どれも bridge が自動確定させない。そこへ extractor の確信度の下限を重ねる。
+ */
 function resolveTargetProposal(
   proposal: ProposedValue<string> | undefined,
-  options: ResolveSlotProposalOptions,
+  directory: EntityDirectory,
+  sttConfidence: number,
   policy: SlotProposalResolutionPolicy,
+  thresholds: EntityResolutionThresholds,
 ): ConversationDraft['target'] {
   if (!proposal) return undefined;
   const query = proposal.value.trim();
   if (query === '') return undefined;
 
-  /*
-   * `resolveEntities` は enabled を見るが staff.available は見ない。
-   * 自然発話の high-confidence path で不在担当者をそのまま final confirmation へ運ばないため、
-   * この境界では staff target を在席者に限定する。明示的な「不在です → 部署/受付へ」のrepairは
-   * #1082 / #1074 の別契約で扱う。
-   */
-  const callableDirectory: EntityDirectory = {
-    ...options.directory,
-    staff: options.directory.staff.filter((staff) => staff.available),
+  const callable: EntityDirectory = {
+    staff: directory.staff.filter((staff) => staff.available),
+    departments: directory.departments,
   };
-  const resolution = resolveEntities(callableDirectory, query);
-  if (!resolution.top1) return undefined;
+  const unavailable: EntityDirectory = {
+    staff: directory.staff.filter((staff) => !staff.available),
+    departments: [],
+  };
+  const bridged = bridgeCommittedTurn({
+    text: query,
+    directory: callable,
+    unavailableDirectory: unavailable,
+    sttConfidence: confidenceOrZero(sttConfidence),
+    thresholds,
+    t: 0,
+  });
 
-  const targets = resolution.top3
-    .map(candidateToTarget)
-    .filter((value): value is ConversationTarget => value !== null);
-  if (targets.length === 0) return undefined;
+  // 一致なし、または不在の人を名指しされた（在席の別人は選ばない）。
+  // 不在の名指しを区別して返す型は ConversationDraft に無いので、ここでは slot を作らない。
+  if (bridged.resolved === null) return undefined;
 
-  const entityConfirmation = decideEntityConfirmation(
-    normalizedConfidence(options.sttConfidence),
-    resolution.top3,
-    options.entityThresholds,
-    0,
-  );
-
-  // extractor自身が曖昧、STTが低信頼、entity名寄せが曖昧のどれか1つでも残るなら
-  // 自動resolvedにせず、実在entity候補を来訪者のrepair対象へ渡す。
-  if (!isProposalHigh(proposal, policy) || entityConfirmation !== null) {
-    return ambiguousVoice(targets);
+  const top1 = candidateToTarget(bridged.resolved, directory);
+  if (top1 === null) return undefined;
+  if (bridged.event.type === 'heardAccepted' && isProposalHigh(proposal, policy)) {
+    return resolvedVoice(top1);
   }
 
-  return resolvedVoice(targets[0]!);
+  // 自動確定しない。在席の候補だけ（bridge の top1 を含む）を、来訪者が選ぶ修復の対象にする。
+  const candidates = resolveEntities(callable, query)
+    .top3.map((candidate) => candidateToTarget(candidate, directory))
+    .filter((value): value is ConversationTarget => value !== null);
+  return ambiguousVoice(candidates);
 }
 
 /**
@@ -168,26 +192,35 @@ function resolveTargetProposal(
  *
  * 安全境界:
  * - state transition / dispatch / CONFIRM を行わない
+ * - purpose / company を作らない（ADR 0011 §1・§5。型の外から来ても読まない）
  * - target id は extractor の出力ではなく、必ず実 directory resolver 由来
- * - unavailable staff を high-confidence resolved target にしない
- * - low-confidence は resolved にせず ambiguous として planner に修復させる
+ * - target の自動確定は kiosk の音声経路と同じ判定（同じ姓・読みの無い名簿・不在の比較相手）に従う
+ * - 氏名は STT と extractor の両方の下限、長さの上限を満たすときだけ `high` で出す（確定は復唱）
  * - 空文字は捨てる
  * - transcript や氏名をログへ送る副作用を持たない
  */
 export function resolveReceptionSlotProposal(
   proposal: ReceptionSlotProposal,
   options: ResolveSlotProposalOptions,
-): Partial<ConversationDraft> {
+): Pick<ConversationDraft, 'target' | 'visitorName'> {
   const policy = options.policy ?? DEFAULT_SLOT_PROPOSAL_RESOLUTION_POLICY;
-  const purpose = resolvePurposeProposal(proposal.purpose, policy);
-  const target = resolveTargetProposal(proposal.targetQuery, options, policy);
-  const visitorName = resolveTextProposal(proposal.visitorName, policy);
-  const company = resolveTextProposal(proposal.company, policy);
+  const thresholds = options.entityThresholds ?? DEFAULT_ENTITY_RESOLUTION_THRESHOLDS;
+  const target = resolveTargetProposal(
+    proposal.targetQuery,
+    options.directory,
+    options.sttConfidence,
+    policy,
+    thresholds,
+  );
+  const visitorName = resolveVisitorNameProposal(
+    proposal.visitorName,
+    options.sttConfidence,
+    policy,
+    thresholds,
+  );
 
   return {
-    ...(purpose ? { purpose } : {}),
     ...(target ? { target } : {}),
     ...(visitorName ? { visitorName } : {}),
-    ...(company ? { company } : {}),
   };
 }
