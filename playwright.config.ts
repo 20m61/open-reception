@@ -92,7 +92,7 @@ const pinnedFonts = pinnedFontEnv(process.platform, process.env);
  * 見分けられるよう、何が足りない・混ざっているかを実行全体で 1 度だけ名指しする。
  */
 const fontPinWarning = checkPinnedFontsOnce(process.platform, process.env, (env) =>
-  execFileSync('fc-list', [':', 'family'], { encoding: 'utf8', env }),
+  execFileSync('fc-list', [':', 'family'], { encoding: 'utf8', env: env as NodeJS.ProcessEnv }),
 );
 if (fontPinWarning !== null) console.warn(fontPinWarning);
 
