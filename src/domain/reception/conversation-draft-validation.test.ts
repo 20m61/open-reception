@@ -28,6 +28,10 @@ const blank: ConversationTarget = { type: 'staff', id: ' ', label: '鈴木' };
 const noLabel: ConversationTarget = { type: 'staff', id: 'staff-x', label: '' };
 
 describe('氏名の長さの上限 (ADR 0011 §3-e)', () => {
+  it('上限は提案値 50（owner の確認待ち。値を変えるならこのテストも意図して変える）', () => {
+    expect(VISITOR_NAME_MAX_LENGTH).toBe(50);
+  });
+
   it('上限ちょうどは有効、1 文字超えると無効（境界のすぐ内側と外側）', () => {
     expect(isVisitorNameWithinLimit('あ'.repeat(VISITOR_NAME_MAX_LENGTH))).toBe(true);
     expect(isVisitorNameWithinLimit('あ'.repeat(VISITOR_NAME_MAX_LENGTH + 1))).toBe(false);

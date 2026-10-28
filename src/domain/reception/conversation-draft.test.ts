@@ -202,6 +202,7 @@ describe('nextConversationFocus (#1077 / #1079 / ADR 0011)', () => {
 
       const allAcquired = REQUIRED.every((key) => acquired(draft, key));
       expect(focus.kind === 'finalConfirmation').toBe(allAcquired);
+      expect(isDraftReadyForFinalConfirmation(draft)).toBe(allAcquired);
       if (focus.kind === 'finalConfirmation') {
         finals += 1;
         continue;
@@ -421,6 +422,18 @@ describe('draft の破棄 (ADR 0011 §6)', () => {
       } else {
         expect(kept).toEqual({});
       }
+    }
+  });
+
+  it('受付途中でも、音声から埋めない値（目的・会社名）や無効な値は保持しない', () => {
+    const draft: ConversationDraft = {
+      ...completeDraft(),
+      purpose: high('meeting'),
+      company: high('株式会社サンプル'),
+      target: confirmed(blankTarget),
+    };
+    for (const state of PRE_CALL) {
+      expect(conversationDraftForState(draft, state)).toEqual({ visitorName: confirmed('張', 'voice') });
     }
   });
 
