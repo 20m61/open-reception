@@ -406,13 +406,28 @@ describe('multi-slot merge / repair (#1077)', () => {
     ).toEqual(confirmed(sato));
   });
 
-  it('曖昧な値は、既に分かっている高信頼の値を曖昧へ戻さない。高信頼の言い直しは曖昧を解消する（前回 MINOR-3）', () => {
-    expect(mergeConversationDraft({ target: high(suzuki) }, { target: ambiguous(suzuki, sato) }).target).toEqual(
-      high(suzuki),
-    );
+  it('高信頼の言い直しは曖昧を解消し、曖昧と判定された言い直しも前の高信頼の値を残さない（前回 MINOR-3 / #1090 の再レビュー）', () => {
     expect(mergeConversationDraft({ target: ambiguous(suzuki, sato) }, { target: high(sato) }).target).toEqual(
       high(sato),
     );
+    // 「いや、佐藤さんです」が同じ姓の規則で曖昧（復唱が要る）と判定されても、前の鈴木を残さない。
+    expect(mergeConversationDraft({ target: high(suzuki) }, { target: ambiguous(sato, suzuki) }).target).toEqual(
+      ambiguous(sato, suzuki),
+    );
+    // 確定した値は、曖昧な発話では崩さない。
+    for (const kept of [confirmed(suzuki), confirmed(suzuki, 'voice')]) {
+      expect(mergeConversationDraft({ target: kept }, { target: ambiguous(sato, suzuki) }).target).toEqual(kept);
+    }
+  });
+
+  it('言い直しで候補を出せなかった（不在の人を名指しした）ときは replace で前の値を消す（#1090 の再レビュー）', () => {
+    const before: ConversationDraft = { purpose: confirmed('meeting'), target: high(suzuki) };
+    // merge は slot の無い incoming を「言及なし」と読むので前の値が残る。これは契約どおり。
+    expect(mergeConversationDraft(before, {}).target).toEqual(high(suzuki));
+    // 言い直しを聞き取ったのに候補が無いときは、呼び出し側が replace で消す。
+    const after = replaceConversationSlot(before, 'target', undefined);
+    expect(after).toEqual({ purpose: confirmed('meeting') });
+    expect(nextConversationFocus(after, 'selectingTarget')).toEqual({ kind: 'collect', slot: 'target' });
   });
 
   it('復唱で確定した氏名をキーボードで直したら直した値が残り、その後の音声は上書きしない（ADR 0011 §3-c / 前回 MAJOR-1）', () => {
@@ -437,7 +452,8 @@ describe('multi-slot merge / repair (#1077)', () => {
    * - 画面での明示（タッチ・キーボード・QR・予約）で確定した値は、後から来れば必ず残る。
    * - 音声の値は、画面で明示して確定した値を上書きしない。
    * - 出所の種類（音声か画面か）と確信度が同じなら、後から来た値が残る。
-   * - 高信頼は確定を、曖昧は解決済みを上書きしない。解決済みは曖昧を解消する。
+   * - 未確定（高信頼・曖昧）の値は、後から来たどの値にも置き換わる（古い聞き取りを残さない）。
+   * - 高信頼・曖昧は確定を上書きしない。
    * - 結果は常に current か incoming のどちらか。
    */
   it('総当たり: 後から来た明示の値は必ず残り、弱い値は強い値を上書きしない（前回 MAJOR-1）', () => {
@@ -468,9 +484,8 @@ describe('multi-slot merge / repair (#1077)', () => {
         ) {
           expect(merged).toEqual(i);
         }
-        if (isConfirmed(c) && isHigh(i)) expect(merged).toEqual(c);
-        if (c.kind === 'resolved' && i.kind === 'ambiguous') expect(merged).toEqual(c);
-        if (c.kind === 'ambiguous' && i.kind === 'resolved') expect(merged).toEqual(i);
+        if (!isConfirmed(c)) expect(merged).toEqual(i);
+        if (isConfirmed(c) && (isHigh(i) || i.kind === 'ambiguous')) expect(merged).toEqual(c);
       }
     }
     // 空虚でないこと（置き換わる組も、保たれる組も実在する）。

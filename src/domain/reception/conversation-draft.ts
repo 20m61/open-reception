@@ -300,14 +300,13 @@ export function nextConversationFocus(
 }
 
 /**
- * 値の強さ。画面での明示（タッチ・キーボード・QR・予約）で確定 > 音声の復唱で確定 > 高信頼 > 曖昧。
- * 音声で確定した値を画面の明示より下に置くのは、キーボードで直した値を音声が上書きしないため
- * （ADR 0011 §3-c）。
+ * 確定の強さ。画面での明示（タッチ・キーボード・QR・予約）で確定 2 > 音声の復唱で確定 1 > 未確定 0
+ * （高信頼・曖昧）。音声で確定した値を画面の明示より下に置くのは、キーボードで直した値を音声が
+ * 上書きしないため（ADR 0011 §3-c）。
  */
-function evidenceRank(slot: ConversationSlot<unknown>): number {
-  if (slot.kind === 'ambiguous') return 0;
-  if (slot.evidence.certainty === 'high') return 1;
-  return slot.evidence.source === 'voice' ? 2 : 3;
+function confirmationRank(slot: ConversationSlot<unknown>): number {
+  if (slot.kind === 'ambiguous' || slot.evidence.certainty !== 'confirmed') return 0;
+  return slot.evidence.source === 'voice' ? 1 : 2;
 }
 
 /**
@@ -315,10 +314,15 @@ function evidenceRank(slot: ConversationSlot<unknown>): number {
  *
  * 両側を正規化してから比べるので、無効な値は順位を持たない（後から来た有効な値を阻まない）。
  * 不変条件（どちらも同じ比較の両側）:
- * - 後から来た値は、既存の値より弱くなければ必ず残る（同じ強さなら新しいほう）。タッチで選び直した
- *   相手、キーボードで直した氏名、「いいえ」の後に言い直した氏名は、前の値に負けない。
- * - 後から来た値が既存の値より弱ければ、既存の値を保つ。発話のついでに拾った値が、
- *   来訪者が画面で確定した値を上書きしない。
+ * - 未確定（高信頼・曖昧）の値は、後から来たどの値にも置き換わる。言い直しが曖昧と判定されても
+ *   （同じ姓の担当者がいて復唱が要るとき。ADR 0011 §3-f）、前の聞き取りを残さない。
+ * - 確定した値は、同じ強さ以上の確定にだけ置き換わる（同じなら新しいほう）。タッチで選び直した
+ *   相手やキーボードで直した氏名は残り、発話のついでに拾った値や音声の値は、来訪者が画面で
+ *   確定した値を上書きしない。
+ *
+ * incoming に slot が無いことは「その slot について何も言っていない」と読む。言い直しを
+ * 聞き取ったが候補を出せなかった（不在の人を名指しした・確信度が下限未満）ときに前の値を
+ * 消すのは、呼び出し側が `replaceConversationSlot(draft, key, undefined)` で行う。
  */
 function mergeSlot<T>(
   current: ConversationSlot<T> | undefined,
@@ -326,7 +330,7 @@ function mergeSlot<T>(
 ): ConversationSlot<T> | undefined {
   if (incoming === undefined) return current;
   if (current === undefined) return incoming;
-  return evidenceRank(incoming) >= evidenceRank(current) ? incoming : current;
+  return confirmationRank(incoming) >= confirmationRank(current) ? incoming : current;
 }
 
 export function mergeConversationDraft(
@@ -344,8 +348,10 @@ export function mergeConversationDraft(
 }
 
 /**
- * 明示訂正用。指定slot以外はそのまま保持する（Repair, don't restart）。
- * 無効な値での訂正は slot を消す（再び尋ねる対象へ戻す）。
+ * 明示訂正用。指定slot以外はそのまま保持する（Repair, don't restart）。順位を比べずに置き換える。
+ * 無効な値での訂正や `undefined` は slot を消す（再び尋ねる対象へ戻す）。
+ * 復唱に「いいえ」と答えたとき、言い直しを聞き取ったが候補を出せなかったとき（不在の人の名指し・
+ * 確信度が下限未満）は、merge ではなくこれで消す（merge は slot の無い incoming を「言及なし」と読む）。
  */
 export function replaceConversationSlot<K extends keyof ConversationDraft>(
   draft: ConversationDraft,
