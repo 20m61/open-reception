@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
-  conversationDraftForState,
+  conversationDraftAfterTransition,
   isDraftReadyForFinalConfirmation,
   materializationPlanForDraft,
   mergeConversationDraft,
@@ -17,7 +17,7 @@ import {
   type RequiredConversationSlot,
 } from './conversation-draft';
 import { VISITOR_NAME_MAX_LENGTH, type ReceptionPurposeId } from './session';
-import { RECEPTION_STATES, transition, type ReceptionState } from './state';
+import { RECEPTION_EVENTS, RECEPTION_STATES, transition, type ReceptionState } from './state';
 
 const confirmed = <T>(value: T, source: ConversationSlotSource = 'touch'): ConversationSlot<T> => ({
   kind: 'resolved',
@@ -36,6 +36,18 @@ const ambiguous = <T>(...candidates: T[]): ConversationSlot<T> => ({
   candidates,
   evidence: { source: 'voice', certainty: 'ambiguous' },
 });
+
+const ambiguousFrom = <T>(source: ConversationSlotSource, ...candidates: T[]): ConversationSlot<T> => ({
+  kind: 'ambiguous',
+  candidates,
+  evidence: { source, certainty: 'ambiguous' },
+});
+
+/** 表示されない文字だけの値（前回 MINOR-1）。ゼロ幅スペース・語結合子・BOM・ソフトハイフン。 */
+const INVISIBLE_CHARS = ['\u200B', '\u2060', '\uFEFF', '\u00AD'];
+const invisible = INVISIBLE_CHARS.join('');
+/** NFD（濁点を分けた形）の「が」。NFC では 1 文字（前回 MINOR-2）。 */
+const nfdGa = '\u304B\u3099';
 
 const suzuki: ConversationTarget = { type: 'staff', id: 'staff-suzuki', label: '鈴木 一郎', sublabel: '営業部' };
 const sato: ConversationTarget = { type: 'staff', id: 'staff-sato', label: '佐藤 花子', sublabel: '営業部' };
@@ -64,6 +76,8 @@ const PURPOSES: Universe<ReceptionPurposeId> = [
   high('meeting'),
   confirmed('meeting', 'voice'),
   ambiguous<ReceptionPurposeId>('meeting', 'delivery'),
+  // 音声以外の曖昧（落とされずに残る）。曖昧なまま取得済みとはみなさない（前回 MINOR-3）。
+  ambiguousFrom<ReceptionPurposeId>('reservation', 'meeting', 'delivery'),
   // 無効値（型の外から来た値）。
   confirmed('bogus' as ReceptionPurposeId),
   ambiguous('bogus' as ReceptionPurposeId),
@@ -78,6 +92,7 @@ const TARGETS: Universe<ConversationTarget> = [
   ambiguous(suzuki, sato),
   ambiguous(suzuki, blankTarget),
   ambiguous(blankTarget),
+  confirmed({ type: 'staff', id: 'staff-x', label: invisible }),
 ];
 
 const longName = 'あ'.repeat(VISITOR_NAME_MAX_LENGTH + 1);
@@ -92,6 +107,11 @@ const NAMES: Universe<string> = [
   high(longName),
   ambiguous('張', '李'),
   ambiguous(' '),
+  confirmed(invisible),
+  high(` ${invisible} `),
+  // NFD で数えると上限を超えるが、NFC では上限ちょうど（有効）。
+  confirmed(nfdGa.repeat(VISITOR_NAME_MAX_LENGTH)),
+  confirmed(nfdGa.repeat(VISITOR_NAME_MAX_LENGTH + 1)),
 ];
 
 const COMPANIES: Universe<string> = [
@@ -99,7 +119,12 @@ const COMPANIES: Universe<string> = [
   confirmed('株式会社サンプル'),
   high('株式会社サンプル'),
   confirmed('  '),
+  confirmed(invisible),
 ];
+
+/** 独立したオラクル: 空白とフィクスチャの見えない文字を除いて 1 文字でも残るか。 */
+const visible = (text: string): boolean =>
+  Array.from(text).some((ch) => ch.trim() !== '' && !INVISIBLE_CHARS.includes(ch));
 
 function* allDrafts(): Generator<ConversationDraft> {
   for (const purpose of PURPOSES)
@@ -128,108 +153,200 @@ function acquired(draft: ConversationDraft, key: RequiredConversationSlot): bool
     }
     case 'target': {
       const s = draft.target;
-      return s?.kind === 'resolved' && s.value.id.trim() !== '' && s.value.label.trim() !== '';
+      return s?.kind === 'resolved' && visible(s.value.id) && visible(s.value.label);
     }
     case 'visitorName': {
       const s = draft.visitorName;
       if (s?.kind !== 'resolved' || s.evidence.certainty !== 'confirmed') return false;
-      const name = s.value.trim();
-      return name !== '' && Array.from(name).length <= VISITOR_NAME_MAX_LENGTH;
+      const name = s.value.trim().normalize('NFC');
+      return visible(name) && Array.from(name).length <= VISITOR_NAME_MAX_LENGTH;
     }
   }
 }
 
 const REQUIRED: readonly RequiredConversationSlot[] = ['purpose', 'target', 'visitorName'];
 
+/** 件数の多い総当たりでは 1 件ずつ expect せず、違反を集めて最後に 1 度だけ比べる（速さのため）。 */
+function violationLog() {
+  const list: string[] = [];
+  const check = (ok: boolean, what: string, ctx: unknown) => {
+    if (!ok && list.length < 5) list.push(`${what}: ${JSON.stringify(ctx)}`);
+  };
+  return { list, check };
+}
+
+const PRE_CALL: readonly ReceptionState[] = [
+  'selectingPurpose',
+  'selectingTarget',
+  'inputVisitorInfo',
+  'confirming',
+];
+
+/** focusOrder の宇宙。既定・並べ替え・狭めたもの・空・重複（前回 MAJOR-2）。 */
+const ORDERS: ReadonlyArray<readonly RequiredConversationSlot[] | undefined> = [
+  undefined,
+  ['purpose', 'target', 'visitorName'],
+  ['visitorName', 'purpose', 'target'],
+  ['target'],
+  ['visitorName'],
+  [],
+  ['purpose', 'purpose'],
+];
+
 describe('nextConversationFocus (#1077 / #1079 / ADR 0011)', () => {
   it('「担当者を呼ぶ」の既定は、何も無ければ target を最初の会話焦点にする', () => {
-    expect(nextConversationFocus({})).toEqual({ kind: 'collect', slot: 'target' });
+    expect(nextConversationFocus({}, 'selectingPurpose')).toEqual({ kind: 'collect', slot: 'target' });
   });
 
-  it('target が既に取れていれば同じ質問をせず visitorName へ進む', () => {
-    expect(nextConversationFocus({ target: high(suzuki) })).toEqual({
+  it('inputVisitorInfo では、target が既に取れていれば同じ質問をせず visitorName へ進む', () => {
+    expect(
+      nextConversationFocus({ purpose: confirmed('meeting'), target: high(suzuki) }, 'inputVisitorInfo'),
+    ).toEqual({ kind: 'collect', slot: 'visitorName' });
+  });
+
+  it('目的の選択画面では、相手が取れていても氏名を尋ねない（通知より前に尋ねない。ADR 0011 §2 / 前回 MAJOR-2）', () => {
+    expect(nextConversationFocus({ target: high(suzuki) }, 'selectingPurpose')).toEqual({
       kind: 'collect',
-      slot: 'visitorName',
+      slot: 'purpose',
     });
+    // 残る不足が氏名だけなら、尋ねることは無い（画面の操作で inputVisitorInfo へ進むのを待つ）。
+    expect(
+      nextConversationFocus({ purpose: confirmed('meeting'), target: high(suzuki), visitorName: high('張') }, 'selectingTarget'),
+    ).toEqual({ kind: 'awaitScreen' });
   });
 
   it('target が曖昧なら、別の不足 slot を増やす前に候補選択で repair する', () => {
-    expect(nextConversationFocus({ target: ambiguous(suzuki, sato) })).toEqual({
+    expect(nextConversationFocus({ target: ambiguous(suzuki, sato) }, 'selectingTarget')).toEqual({
       kind: 'disambiguate',
       slot: 'target',
       candidateCount: 2,
     });
   });
 
+  it('有効な候補が 1 件だけでも自動では確定せず、その 1 件を見せて確かめる（ADR 0011 §3-f / 前回 MINOR-4）', () => {
+    const draft: ConversationDraft = { target: ambiguous(suzuki, blankTarget) };
+    expect(normalizeConversationDraft(draft).target).toEqual(ambiguous(suzuki));
+    expect(nextConversationFocus(draft, 'selectingTarget')).toEqual({
+      kind: 'disambiguate',
+      slot: 'target',
+      candidateCount: 1,
+    });
+    expect(materializationPlanForDraft('selectingTarget', draft)).toEqual({
+      actions: [],
+      endState: 'selectingTarget',
+    });
+  });
+
   it('音声で高信頼に聞き取った氏名でも、自動では確定せず復唱へ進む (ADR 0011 §3-b)', () => {
     expect(
-      nextConversationFocus({ purpose: confirmed('meeting'), target: high(suzuki), visitorName: high('張') }),
+      nextConversationFocus(
+        { purpose: confirmed('meeting'), target: high(suzuki), visitorName: high('張') },
+        'inputVisitorInfo',
+      ),
     ).toEqual({ kind: 'readback', slot: 'visitorName' });
   });
 
   it('required slot が全部取得済みなら final confirmation だけを次にする', () => {
-    expect(nextConversationFocus(completeDraft())).toEqual({ kind: 'finalConfirmation' });
+    expect(nextConversationFocus(completeDraft(), 'inputVisitorInfo')).toEqual({ kind: 'finalConfirmation' });
   });
 
   it('音声で取った目的は使わず、目的は画面で選んでもらう (ADR 0011 §1)', () => {
     expect(
-      nextConversationFocus({ purpose: high('meeting'), target: high(suzuki), visitorName: confirmed('張') }),
+      nextConversationFocus(
+        { purpose: high('meeting'), target: high(suzuki), visitorName: confirmed('張') },
+        'selectingPurpose',
+      ),
     ).toEqual({ kind: 'collect', slot: 'purpose' });
   });
 
   it('entry intent に応じて focus 順を差し替えられる', () => {
-    expect(nextConversationFocus({}, { focusOrder: ['purpose', 'target', 'visitorName'] })).toEqual({
-      kind: 'collect',
-      slot: 'purpose',
-    });
+    expect(
+      nextConversationFocus({}, 'selectingPurpose', { focusOrder: ['purpose', 'target', 'visitorName'] }),
+    ).toEqual({ kind: 'collect', slot: 'purpose' });
+  });
+
+  it('focusOrder を狭めても、欠けた slot を残したまま最終確認へ進まない（前回 MAJOR-2）', () => {
+    for (const focusOrder of [['target'], [], ['target', 'target']] as const) {
+      expect(
+        nextConversationFocus({ target: confirmed(suzuki), visitorName: confirmed('張') }, 'inputVisitorInfo', {
+          focusOrder,
+        }),
+      ).toEqual({ kind: 'collect', slot: 'purpose' });
+    }
+  });
+
+  it('受付途中の 4 状態以外では何も尋ねない', () => {
+    for (const state of RECEPTION_STATES) {
+      if (PRE_CALL.includes(state)) continue;
+      expect(nextConversationFocus(completeDraft(), state)).toEqual({ kind: 'awaitScreen' });
+      expect(nextConversationFocus({}, state)).toEqual({ kind: 'awaitScreen' });
+    }
   });
 
   /*
-   * 不変条件（総当たり）。
-   * - 下界: 氏名が未取得なら、他に何が欠けていても visitorName は必ず collect / readback /
-   *   disambiguate のどれか（＝キーボードで埋められる）として到達可能であり、行き止まりにならない。
-   * - 取得済みの slot を再び尋ねない。
-   * - 全部取得済み ⟺ finalConfirmation。
+   * 不変条件（全 state × 全 draft × 全 focusOrder の総当たり）。
+   * - 氏名を尋ねるのは inputVisitorInfo に居るときだけ（ADR 0011 §2）。
+   * - 最終確認 ⟺ 受付途中の状態で、必須 slot が全部取得済み（focusOrder に依らない）。
+   * - 取得済みの slot を再び尋ねない。尋ねるのは未取得のどれか。
+   * - 下界: 受付途中で未取得があり、尋ねられる slot（氏名は inputVisitorInfo のときだけ）が
+   *   未取得なら、何も尋ねない（awaitScreen）にはならない。
    */
-  it('総当たり: どの draft でも行き止まりにならず、取得済みを再質問せず、揃ったときだけ最終確認へ', () => {
-    const allowedKinds = new Set(['collect', 'disambiguate', 'readback', 'finalConfirmation']);
+  it('総当たり: 氏名は inputVisitorInfo でだけ尋ね、揃ったときだけ最終確認へ、取得済みを再質問しない', () => {
     let finals = 0;
     let checked = 0;
+    let awaited = 0;
+    const kinds = new Set<string>();
+    const { list: violations, check } = violationLog();
     for (const draft of allDrafts()) {
-      const focus = nextConversationFocus(draft);
-      checked += 1;
-      expect(allowedKinds.has(focus.kind)).toBe(true);
-
-      const allAcquired = REQUIRED.every((key) => acquired(draft, key));
-      expect(focus.kind === 'finalConfirmation').toBe(allAcquired);
-      expect(isDraftReadyForFinalConfirmation(draft)).toBe(allAcquired);
-      if (focus.kind === 'finalConfirmation') {
-        finals += 1;
-        continue;
-      }
-      // 取得済みの slot を再質問しない。
-      expect(acquired(draft, focus.slot)).toBe(false);
-      // 下界: 未取得の slot が 1 つでもあれば、焦点はその未取得のどれかを指す。
-      expect(REQUIRED.filter((key) => !acquired(draft, key))).toContain(focus.slot);
-      // readback は「高信頼の氏名」だけ。
-      if (focus.kind === 'readback') {
-        expect(focus.slot).toBe('visitorName');
-        expect(draft.visitorName?.kind).toBe('resolved');
+      const missing = REQUIRED.filter((key) => !acquired(draft, key));
+      check(isDraftReadyForFinalConfirmation(draft) === (missing.length === 0), 'ready', draft);
+      for (const state of RECEPTION_STATES) {
+        const preCall = PRE_CALL.includes(state);
+        const askable = missing.filter((key) => key !== 'visitorName' || state === 'inputVisitorInfo');
+        // 受付途中以外は既定の順だけで足りる（順に依らず awaitScreen）。
+        for (const focusOrder of preCall ? ORDERS : [undefined]) {
+          const focus = nextConversationFocus(draft, state, focusOrder ? { focusOrder } : {});
+          const ctx = { state, focusOrder, draft, focus };
+          checked += 1;
+          kinds.add(focus.kind);
+          check((focus.kind === 'finalConfirmation') === (preCall && missing.length === 0), 'final', ctx);
+          if (focus.kind === 'finalConfirmation') {
+            finals += 1;
+          } else if (focus.kind === 'awaitScreen') {
+            awaited += 1;
+            check(!(preCall && askable.length > 0), 'await-lower-bound', ctx);
+          } else {
+            check(state === 'inputVisitorInfo' || focus.slot !== 'visitorName', 'name-only-on-input', ctx);
+            check(askable.includes(focus.slot), 'askable', ctx);
+            if (focus.kind === 'readback') {
+              check(focus.slot === 'visitorName' && draft.visitorName?.kind === 'resolved', 'readback', ctx);
+            }
+          }
+        }
       }
     }
-    // 空虚に満たしていないこと（最終確認へ到達する draft も実在する）。
-    expect(checked).toBe(PURPOSES.length * TARGETS.length * NAMES.length * COMPANIES.length);
+    expect(violations).toEqual([]);
+    // 空虚に満たしていないこと。
+    expect(checked).toBe(
+      (PRE_CALL.length * ORDERS.length + RECEPTION_STATES.length - PRE_CALL.length) *
+        PURPOSES.length *
+        TARGETS.length *
+        NAMES.length *
+        COMPANIES.length,
+    );
     expect(finals).toBeGreaterThan(0);
+    expect(awaited).toBeGreaterThan(0);
+    expect([...kinds].sort()).toEqual(['awaitScreen', 'collect', 'disambiguate', 'finalConfirmation', 'readback']);
   });
 
-  it('総当たり: 音声も有人支援も無い前提でも、氏名だけが欠けていれば必ずキーボード入力 (collect) を返す (ADR 0011 §4)', () => {
+  it('総当たり: 音声も有人支援も無い前提でも、inputVisitorInfo で氏名だけが欠けていれば必ずキーボード入力 (collect) を返す (ADR 0011 §4)', () => {
     for (const name of NAMES) {
       const draft: ConversationDraft = {
         purpose: confirmed('meeting'),
         target: confirmed(suzuki),
         ...(name ? { visitorName: name } : {}),
       };
-      const focus = nextConversationFocus(draft);
+      const focus = nextConversationFocus(draft, 'inputVisitorInfo');
       if (acquired(draft, 'visitorName')) {
         expect(focus).toEqual({ kind: 'finalConfirmation' });
       } else if (draft.visitorName?.kind === 'resolved' && focus.kind === 'readback') {
@@ -241,14 +358,16 @@ describe('nextConversationFocus (#1077 / #1079 / ADR 0011)', () => {
   });
 
   it('candidateCount は来訪者に見せる候補の数と一致する (前回 MINOR-2)', () => {
-    for (const draft of allDrafts()) {
-      const focus = nextConversationFocus(draft);
-      if (focus.kind !== 'disambiguate') continue;
-      const slot = normalizeConversationDraft(draft)[focus.slot];
-      expect(slot?.kind).toBe('ambiguous');
-      if (slot?.kind !== 'ambiguous') continue;
-      expect(slot.candidates.length).toBe(focus.candidateCount);
-      expect(focus.candidateCount).toBeGreaterThan(0);
+    for (const state of PRE_CALL) {
+      for (const draft of allDrafts()) {
+        const focus = nextConversationFocus(draft, state);
+        if (focus.kind !== 'disambiguate') continue;
+        const slot = normalizeConversationDraft(draft)[focus.slot];
+        expect(slot?.kind).toBe('ambiguous');
+        if (slot?.kind !== 'ambiguous') continue;
+        expect(slot.candidates.length).toBe(focus.candidateCount);
+        expect(focus.candidateCount).toBeGreaterThan(0);
+      }
     }
   });
 });
@@ -275,16 +394,88 @@ describe('multi-slot merge / repair (#1077)', () => {
     ).toEqual(confirmed(sato));
   });
 
-  it('high は confirmed で上書きでき、同順位なら既存値を保つ', () => {
+  it('high は confirmed で上書きでき、同じ強さなら後から来た値が勝つ（前回 MAJOR-1）', () => {
     expect(mergeConversationDraft({ target: high(suzuki) }, { target: confirmed(sato) }).target).toEqual(
       confirmed(sato),
     );
-    expect(mergeConversationDraft({ target: high(suzuki) }, { target: high(sato) }).target).toEqual(
-      high(suzuki),
-    );
+    // 「いいえ」の後に言い直した値は、前の高信頼の値に負けない。
+    expect(mergeConversationDraft({ target: high(suzuki) }, { target: high(sato) }).target).toEqual(high(sato));
+    // タッチで選び直した相手は、前にタッチで選んだ相手に負けない。
     expect(
       mergeConversationDraft({ target: confirmed(suzuki) }, { target: confirmed(sato) }).target,
-    ).toEqual(confirmed(suzuki));
+    ).toEqual(confirmed(sato));
+  });
+
+  it('曖昧な値は、既に分かっている高信頼の値を曖昧へ戻さない。高信頼の言い直しは曖昧を解消する（前回 MINOR-3）', () => {
+    expect(mergeConversationDraft({ target: high(suzuki) }, { target: ambiguous(suzuki, sato) }).target).toEqual(
+      high(suzuki),
+    );
+    expect(mergeConversationDraft({ target: ambiguous(suzuki, sato) }, { target: high(sato) }).target).toEqual(
+      high(sato),
+    );
+  });
+
+  it('復唱で確定した氏名をキーボードで直したら直した値が残り、その後の音声は上書きしない（ADR 0011 §3-c / 前回 MAJOR-1）', () => {
+    const voiced = mergeConversationDraft({}, { visitorName: confirmed('Taro', 'voice') });
+    const typed = mergeConversationDraft(voiced, { visitorName: confirmed('Taro Yamada', 'touch') });
+    expect(typed.visitorName).toEqual(confirmed('Taro Yamada', 'touch'));
+    for (const late of [confirmed('Taro', 'voice'), high('Taro')]) {
+      expect(mergeConversationDraft(typed, { visitorName: late }).visitorName).toEqual(
+        confirmed('Taro Yamada', 'touch'),
+      );
+    }
+  });
+
+  it('「いいえ」の後に言い直した氏名は、前の高信頼の氏名に負けない（前回 MAJOR-1）', () => {
+    const first = mergeConversationDraft({}, { visitorName: high('Taro') });
+    const reasked = mergeConversationDraft(first, { visitorName: high('Jiro') });
+    expect(reasked.visitorName).toEqual(high('Jiro'));
+  });
+
+  /*
+   * 不変条件（有効な値どうしの全組合せ）。実装の順位関数を使わず、仕様の文から直接書く。
+   * - 画面での明示（タッチ・キーボード・QR・予約）で確定した値は、後から来れば必ず残る。
+   * - 音声の値は、画面で明示して確定した値を上書きしない。
+   * - 出所の種類（音声か画面か）と確信度が同じなら、後から来た値が残る。
+   * - 高信頼は確定を、曖昧は解決済みを上書きしない。解決済みは曖昧を解消する。
+   * - 結果は常に current か incoming のどちらか。
+   */
+  it('総当たり: 後から来た明示の値は必ず残り、弱い値は強い値を上書きしない（前回 MAJOR-1）', () => {
+    const SOURCES: readonly ConversationSlotSource[] = ['touch', 'voice', 'qr', 'reservation'];
+    const slots: ConversationSlot<ConversationTarget>[] = [];
+    for (const source of SOURCES) {
+      for (const value of [suzuki, sato]) {
+        slots.push(confirmed(value, source), high(value, source));
+      }
+      slots.push(ambiguousFrom(source, suzuki, sato));
+    }
+    const screenConfirmed = (x: ConversationSlot<unknown>) =>
+      x.kind === 'resolved' && x.evidence.certainty === 'confirmed' && x.evidence.source !== 'voice';
+    const isConfirmed = (x: ConversationSlot<unknown>) => x.kind === 'resolved' && x.evidence.certainty === 'confirmed';
+    const isHigh = (x: ConversationSlot<unknown>) => x.kind === 'resolved' && x.evidence.certainty === 'high';
+    let replaced = 0;
+    for (const c of slots) {
+      for (const i of slots) {
+        const merged = mergeConversationDraft({ target: c }, { target: i }).target;
+        expect([c, i]).toContainEqual(merged);
+        if (JSON.stringify(merged) === JSON.stringify(i)) replaced += 1;
+
+        if (screenConfirmed(i)) expect(merged).toEqual(i);
+        if (screenConfirmed(c) && i.evidence.source === 'voice') expect(merged).toEqual(c);
+        if (
+          c.evidence.certainty === i.evidence.certainty &&
+          (c.evidence.source === 'voice') === (i.evidence.source === 'voice')
+        ) {
+          expect(merged).toEqual(i);
+        }
+        if (isConfirmed(c) && isHigh(i)) expect(merged).toEqual(c);
+        if (c.kind === 'resolved' && i.kind === 'ambiguous') expect(merged).toEqual(c);
+        if (c.kind === 'ambiguous' && i.kind === 'resolved') expect(merged).toEqual(i);
+      }
+    }
+    // 空虚でないこと（置き換わる組も、保たれる組も実在する）。
+    expect(replaced).toBeGreaterThan(0);
+    expect(replaced).toBeLessThan(slots.length * slots.length);
   });
 
   it('明示訂正は target だけを置き換え、purpose / name を失わない', () => {
@@ -301,7 +492,7 @@ describe('multi-slot merge / repair (#1077)', () => {
     expect(after.visitorName).toBeUndefined();
     expect(after.target).toEqual(before.target);
     expect(after.purpose).toEqual(before.purpose);
-    expect(nextConversationFocus(after)).toEqual({ kind: 'collect', slot: 'visitorName' });
+    expect(nextConversationFocus(after, 'inputVisitorInfo')).toEqual({ kind: 'collect', slot: 'visitorName' });
   });
 
   it('無効な値での訂正は slot を消す（無効値を draft に残さない）', () => {
@@ -362,67 +553,77 @@ describe('materializationPlanForDraft (#1079 / ADR 0011 §1・§2)', () => {
   it('総当たり: 許可された経路だけを通り、inputVisitorInfo を飛ばさず、取得済みなら必ずそこまで進む', () => {
     let advanced = 0;
     let prefilled = 0;
+    const { list: violations, check } = violationLog();
     for (const initial of RECEPTION_STATES) {
       for (const draft of allDrafts()) {
         const plan = materializationPlanForDraft(initial, draft);
+        const ctx = { initial, draft, plan };
 
-        let state: ReceptionState = initial;
+        let state: ReceptionState | null = initial;
         for (const action of plan.actions) {
-          expect(action.type).toBe('SELECT_TARGET');
-          expect(action.target.id.trim()).not.toBe('');
-          expect(action.target.label.trim()).not.toBe('');
-          const next = transition(state, action.type);
-          expect(next).not.toBeNull();
-          state = next!;
+          check(action.type === 'SELECT_TARGET', 'action-type', ctx);
+          check(visible(action.target.id) && visible(action.target.label), 'valid-target', ctx);
+          state = state === null ? null : transition(state, action.type);
+          check(state !== null, 'allowed-transition', ctx);
         }
-        expect(plan.endState).toBe(state);
-        if (plan.actions.length > 0) expect(plan.endState).toBe('inputVisitorInfo');
+        check(plan.endState === state, 'endState-replay', ctx);
+        check(plan.actions.length === 0 || plan.endState === 'inputVisitorInfo', 'stop-at-input', ctx);
 
         const expectPrefill = plan.endState === 'inputVisitorInfo' && acquired(draft, 'visitorName');
-        expect(plan.visitorNamePrefill !== undefined).toBe(expectPrefill);
+        check((plan.visitorNamePrefill !== undefined) === expectPrefill, 'prefill-when', ctx);
         if (expectPrefill) {
           prefilled += 1;
-          expect(plan.visitorNamePrefill).toBe(
-            draft.visitorName?.kind === 'resolved' ? draft.visitorName.value.trim() : '<none>',
+          check(
+            draft.visitorName?.kind === 'resolved' && plan.visitorNamePrefill === draft.visitorName.value.trim(),
+            'prefill-value',
+            ctx,
           );
         }
 
         if (initial === 'selectingTarget' && acquired(draft, 'target')) {
           advanced += 1;
-          expect(plan.endState).toBe('inputVisitorInfo');
-          expect(plan.actions).toEqual([
-            { type: 'SELECT_TARGET', target: draft.target?.kind === 'resolved' ? draft.target.value : null },
-          ]);
+          check(
+            plan.endState === 'inputVisitorInfo' &&
+              plan.actions.length === 1 &&
+              draft.target?.kind === 'resolved' &&
+              plan.actions[0]?.target === draft.target.value,
+            'advance-lower-bound',
+            ctx,
+          );
         } else if (initial !== 'inputVisitorInfo') {
-          expect(plan.actions).toEqual([]);
+          check(plan.actions.length === 0, 'no-action', ctx);
         }
       }
     }
+    expect(violations).toEqual([]);
     expect(advanced).toBeGreaterThan(0);
     expect(prefilled).toBeGreaterThan(0);
   });
 });
 
-describe('draft の破棄 (ADR 0011 §6)', () => {
-  const PRE_CALL: readonly ReceptionState[] = [
-    'selectingPurpose',
-    'selectingTarget',
-    'inputVisitorInfo',
-    'confirming',
-  ];
+describe('状態の遷移と draft (ADR 0011 §3-c・§6 / 前回 MAJOR-1)', () => {
+  const BACK_EDGES = RECEPTION_STATES.flatMap((from) => {
+    const to = transition(from, 'BACK');
+    return to === null ? [] : [{ from, to }];
+  });
 
-  it('総当たり: 受付途中の 4 状態以外（RESET・無操作リセット後の idle、キャンセル、完了、発信以降）では必ず空にする', () => {
-    const draft = completeDraft();
-    for (const state of RECEPTION_STATES) {
-      const kept = conversationDraftForState(draft, state);
-      if (PRE_CALL.includes(state)) {
-        // 下界: 受付途中では取得済みの情報を捨てない。
-        expect(kept).toEqual(normalizeConversationDraft(draft));
-        expect(isDraftReadyForFinalConfirmation(kept)).toBe(true);
-      } else {
-        expect(kept).toEqual({});
+  it('総当たり: 受付途中の 4 状態以外（RESET・無操作リセット後の idle、キャンセル、完了、発信以降）へ移ったら必ず空にする', () => {
+    let kept = 0;
+    for (const from of RECEPTION_STATES) {
+      for (const event of RECEPTION_EVENTS) {
+        const to = transition(from, event) ?? from;
+        const after = conversationDraftAfterTransition(completeDraft(), from, event);
+        if (!PRE_CALL.includes(to)) {
+          expect(after).toEqual({});
+        } else if (event !== 'BACK') {
+          // 下界: 受付途中の前進（と遷移しないイベント）では、取得済みの情報を捨てない。
+          kept += 1;
+          expect(after).toEqual(normalizeConversationDraft(completeDraft()));
+          expect(isDraftReadyForFinalConfirmation(after)).toBe(true);
+        }
       }
     }
+    expect(kept).toBeGreaterThan(0);
   });
 
   it('受付途中でも、音声から埋めない値（目的・会社名）や無効な値は保持しない', () => {
@@ -432,26 +633,95 @@ describe('draft の破棄 (ADR 0011 §6)', () => {
       company: high('株式会社サンプル'),
       target: confirmed(blankTarget),
     };
-    for (const state of PRE_CALL) {
-      expect(conversationDraftForState(draft, state)).toEqual({ visitorName: confirmed('張', 'voice') });
+    for (const from of PRE_CALL) {
+      // COMPLETE は受付途中のどの状態でも遷移しない（状態は変わらない）。
+      expect(transition(from, 'COMPLETE')).toBeNull();
+      expect(conversationDraftAfterTransition(draft, from, 'COMPLETE')).toEqual({
+        visitorName: confirmed('張', 'voice'),
+      });
     }
   });
 
-  it('RESET / CANCEL / COMPLETE で到達する状態はすべて破棄側にある', () => {
-    for (const from of RECEPTION_STATES) {
-      for (const event of ['RESET', 'CANCEL', 'COMPLETE', 'CONFIRM'] as const) {
-        const to = transition(from, event);
-        if (to === null) continue;
-        expect(conversationDraftForState(completeDraft(), to)).toEqual({});
+  it('戻った画面とその先の slot を捨て、手前の画面の slot は残す', () => {
+    const full: ConversationDraft = { ...completeDraft(), company: confirmed('株式会社サンプル') };
+    expect(conversationDraftAfterTransition(full, 'confirming', 'BACK')).toEqual({
+      purpose: full.purpose,
+      target: full.target,
+    });
+    expect(conversationDraftAfterTransition(full, 'inputVisitorInfo', 'BACK')).toEqual({ purpose: full.purpose });
+    expect(conversationDraftAfterTransition(full, 'selectingTarget', 'BACK')).toEqual({});
+  });
+
+  /*
+   * 不変条件（BACK の全辺 × 全 draft）。
+   * - 戻った直後の計画は、前へ進める action も prefill も含まない（来訪者を押し戻さない）。
+   * - 下界: 戻った画面より手前の画面で埋める slot は、正規化した値のまま残る。
+   */
+  it('総当たり: 戻った直後の計画には前へ進める action も prefill も無い', () => {
+    let checked = 0;
+    const { list: violations, check } = violationLog();
+    for (const { from, to } of BACK_EDGES) {
+      for (const draft of allDrafts()) {
+        const after = conversationDraftAfterTransition(draft, from, 'BACK');
+        const plan = materializationPlanForDraft(to, after);
+        const ctx = { from, draft, after, plan };
+        checked += 1;
+        check(plan.actions.length === 0, 'no-forward-action', ctx);
+        check(plan.endState === to, 'endState', ctx);
+        check(plan.visitorNamePrefill === undefined, 'no-prefill', ctx);
+
+        const normalized = normalizeConversationDraft(draft);
+        const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+        if (to === 'inputVisitorInfo') {
+          check(same(after.purpose, normalized.purpose) && same(after.target, normalized.target), 'keep-earlier', ctx);
+        }
+        if (to === 'selectingTarget') check(same(after.purpose, normalized.purpose), 'keep-earlier', ctx);
       }
     }
+    expect(violations).toEqual([]);
+    expect(BACK_EDGES.map((e) => e.to).sort()).toEqual(['inputVisitorInfo', 'selectingPurpose', 'selectingTarget']);
+    expect(checked).toBeGreaterThan(0);
+  });
+
+  it('タッチで A を選んで戻ったら、A へ押し戻さず、選び直した B で進む（前回 MAJOR-1 の実測 1・2）', () => {
+    let state: ReceptionState = 'selectingTarget';
+    let draft: ConversationDraft = mergeConversationDraft(
+      { purpose: confirmed('meeting'), visitorName: confirmed('張', 'voice') },
+      { target: confirmed(suzuki) },
+    );
+    draft = conversationDraftAfterTransition(draft, state, 'SELECT_TARGET');
+    state = 'inputVisitorInfo';
+    draft = conversationDraftAfterTransition(draft, state, 'BACK');
+    state = 'selectingTarget';
+    expect(materializationPlanForDraft(state, draft)).toEqual({ actions: [], endState: 'selectingTarget' });
+
+    draft = mergeConversationDraft(draft, { target: confirmed(sato) });
+    expect(materializationPlanForDraft(state, draft).actions).toEqual([{ type: 'SELECT_TARGET', target: sato }]);
+  });
+
+  it('確認画面から戻っても、キーボードで直した氏名を音声の氏名で上書きしない（前回 MAJOR-1 の実測 3）', () => {
+    let draft: ConversationDraft = {
+      purpose: confirmed('meeting'),
+      target: confirmed(suzuki),
+      visitorName: confirmed('Taro', 'voice'),
+    };
+    // キーボードで直して送信する。
+    draft = mergeConversationDraft(draft, { visitorName: confirmed('Taro Yamada', 'touch') });
+    draft = conversationDraftAfterTransition(draft, 'inputVisitorInfo', 'SUBMIT_VISITOR_INFO');
+    expect(draft.visitorName).toEqual(confirmed('Taro Yamada', 'touch'));
+    // 確認画面から戻る。
+    draft = conversationDraftAfterTransition(draft, 'confirming', 'BACK');
+    expect(materializationPlanForDraft('inputVisitorInfo', draft)).toEqual({
+      actions: [],
+      endState: 'inputVisitorInfo',
+    });
   });
 });
 
 describe('PII を外へ出さない (ADR 0011 §6)', () => {
   it('総当たり: 会話の焦点には氏名・会社名の値が乗らない', () => {
     for (const draft of allDrafts()) {
-      const focus: ConversationFocus = nextConversationFocus(draft);
+      const focus: ConversationFocus = nextConversationFocus(draft, 'inputVisitorInfo');
       const serialized = JSON.stringify(focus);
       for (const text of ['張', '李', '王', '株式会社サンプル', 'あ']) {
         expect(serialized).not.toContain(text);

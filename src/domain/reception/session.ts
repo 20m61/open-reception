@@ -18,13 +18,15 @@ export type VisitorInfo = {
 
 /**
  * 来訪者の氏名の長さの上限（ADR 0011 §3-e）。音声とキーボードの両方に同じ値を課す正本。
- * 前後の空白を除いた Unicode のコードポイント数で数える。
+ * 前後の空白を除き、NFC に正規化した Unicode のコードポイント数で数える（濁点を分けた NFD の
+ * 「が」を 2 文字と数えない。UTF-16 の単位で数える HTML の `maxLength` とは一致しないので、
+ * キーボード側もこの関数で判定する）。
  * 値は #1088 の提案値で、owner の確認を経る。
  */
 export const VISITOR_NAME_MAX_LENGTH = 50;
 
 export function isVisitorNameWithinLimit(name: string): boolean {
-  return Array.from(name.trim()).length <= VISITOR_NAME_MAX_LENGTH;
+  return Array.from(name.trim().normalize('NFC')).length <= VISITOR_NAME_MAX_LENGTH;
 }
 
 export type CallOutcome = 'connected' | 'timeout' | 'failed' | 'cancelled';
