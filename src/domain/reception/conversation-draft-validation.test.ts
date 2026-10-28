@@ -26,6 +26,11 @@ const suzuki: ConversationTarget = { type: 'staff', id: 'staff-suzuki', label: '
 const sato: ConversationTarget = { type: 'department', id: 'dept-sales', label: '営業部' };
 const blank: ConversationTarget = { type: 'staff', id: ' ', label: '鈴木' };
 const noLabel: ConversationTarget = { type: 'staff', id: 'staff-x', label: '' };
+/** 表示されない文字だけ（ゼロ幅スペース・語結合子・BOM）。前回 MINOR-1。 */
+const invisible = '\u200B\u2060\uFEFF';
+const invisibleLabel: ConversationTarget = { type: 'staff', id: 'staff-y', label: ` ${invisible} ` };
+/** NFD（濁点を分けた形）の「が」。前回 MINOR-2。 */
+const nfdGa = '\u304B\u3099';
 
 describe('氏名の長さの上限 (ADR 0011 §3-e)', () => {
   it('上限は提案値 50（owner の確認待ち。値を変えるならこのテストも意図して変える）', () => {
@@ -42,6 +47,12 @@ describe('氏名の長さの上限 (ADR 0011 §3-e)', () => {
     expect(isVisitorNameWithinLimit('𠮷'.repeat(VISITOR_NAME_MAX_LENGTH))).toBe(true);
   });
 
+  it('NFC に正規化してから数える（NFD の濁点つきの字を 2 文字と数えない。前回 MINOR-2）', () => {
+    expect(nfdGa.length).toBe(2);
+    expect(isVisitorNameWithinLimit(nfdGa.repeat(VISITOR_NAME_MAX_LENGTH))).toBe(true);
+    expect(isVisitorNameWithinLimit(nfdGa.repeat(VISITOR_NAME_MAX_LENGTH + 1))).toBe(false);
+  });
+
   it('上限を超えた氏名は、高信頼でも復唱済みでも取得済みとみなさず聞き直す', () => {
     const tooLong = 'あ'.repeat(VISITOR_NAME_MAX_LENGTH + 1);
     for (const certainty of ['confirmed', 'high'] as const) {
@@ -50,7 +61,7 @@ describe('氏名の長さの上限 (ADR 0011 §3-e)', () => {
         target: resolved(suzuki, 'confirmed'),
         visitorName: resolved(tooLong, certainty, 'voice'),
       };
-      expect(nextConversationFocus(draft)).toEqual({ kind: 'collect', slot: 'visitorName' });
+      expect(nextConversationFocus(draft, 'inputVisitorInfo')).toEqual({ kind: 'collect', slot: 'visitorName' });
     }
   });
 });
@@ -111,10 +122,12 @@ describe('無効な値は後から来た有効な値を阻まない（owner 要�
       // 氏名の候補選択は出さない（復唱に出すのは 1 つだけ。ADR 0011 §6）。曖昧な氏名は聞き直す。
       { slot: ambiguous('張', '李'), valid: false },
       { slot: ambiguous(' '), valid: false },
+      { slot: resolved(invisible, 'confirmed'), valid: false },
+      { slot: resolved(`張${invisible}`, 'confirmed'), valid: true },
       { slot: resolved('Taro', 'high', 'voice'), valid: true },
       { slot: resolved('張', 'confirmed', 'voice'), valid: true },
     ]);
-    expect(n).toBe(64);
+    expect(n).toBe(100);
   });
 
   it('target: 空 ID・空ラベル・空候補だけの曖昧は、後の有効な target に置き換わる', () => {
@@ -123,6 +136,8 @@ describe('無効な値は後から来た有効な値を阻まない（owner 要�
       { slot: resolved(blank, 'confirmed'), valid: false },
       { slot: resolved(noLabel, 'high', 'voice'), valid: false },
       { slot: ambiguous(blank, noLabel), valid: false },
+      { slot: resolved(invisibleLabel, 'confirmed'), valid: false },
+      { slot: ambiguous(invisibleLabel), valid: false },
       { slot: ambiguous(suzuki, blank), valid: true },
       { slot: resolved(sato, 'high', 'voice'), valid: true },
       { slot: resolved(suzuki, 'confirmed'), valid: true },
@@ -145,6 +160,7 @@ describe('無効な値は後から来た有効な値を阻まない（owner 要�
     checkMergeInvariant('company', [
       { slot: undefined, valid: false },
       { slot: resolved('  ', 'confirmed'), valid: false },
+      { slot: resolved(invisible, 'confirmed'), valid: false },
       { slot: resolved('株式会社サンプル', 'high', 'voice'), valid: false },
       { slot: resolved('株式会社サンプル', 'confirmed', 'reservation'), valid: true },
       { slot: resolved('Example Inc.', 'confirmed'), valid: true },
@@ -157,9 +173,9 @@ describe('無効な値は後から来た有効な値を阻まない（owner 要�
       target: resolved(suzuki, 'confirmed'),
       visitorName: resolved('張', 'confirmed', 'voice'),
     };
-    expect(nextConversationFocus(draft)).toEqual({ kind: 'collect', slot: 'purpose' });
+    expect(nextConversationFocus(draft, 'inputVisitorInfo')).toEqual({ kind: 'collect', slot: 'purpose' });
     draft = mergeConversationDraft(draft, { purpose: resolved<ReceptionPurposeId>('meeting', 'confirmed') });
-    expect(nextConversationFocus(draft)).toEqual({ kind: 'finalConfirmation' });
+    expect(nextConversationFocus(draft, 'inputVisitorInfo')).toEqual({ kind: 'finalConfirmation' });
   });
 
   it('曖昧な候補は有効なものだけを残す（来訪者に見せる候補と数が一致する）', () => {
