@@ -86,7 +86,7 @@ function checkMergeInvariant<K extends 'purpose' | 'target' | 'visitorName' | 'c
     for (const i of cases) {
       const current = (c.slot ? { [key]: c.slot } : {}) as ConversationDraft;
       const incoming = (i.slot ? { [key]: i.slot } : {}) as ConversationDraft;
-      const merged = mergeConversationDraft(current, incoming)[key];
+      const merged = mergeConversationDraft(current, incoming, 'selectingPurpose')[key];
       checked += 1;
 
       // 結果は正規化済み（再正規化しても変わらない）。
@@ -173,9 +173,13 @@ describe('無効な値は後から来た有効な値を阻まない（owner 要�
       target: resolved(suzuki, 'confirmed'),
       visitorName: resolved('張', 'confirmed', 'voice'),
     };
-    expect(nextConversationFocus(draft, 'inputVisitorInfo')).toEqual({ kind: 'collect', slot: 'purpose' });
-    draft = mergeConversationDraft(draft, { purpose: resolved<ReceptionPurposeId>('meeting', 'confirmed') });
-    expect(nextConversationFocus(draft, 'inputVisitorInfo')).toEqual({ kind: 'finalConfirmation' });
+    expect(nextConversationFocus(draft, 'selectingPurpose')).toEqual({ kind: 'collect', slot: 'purpose' });
+    draft = mergeConversationDraft(
+      draft,
+      { purpose: resolved<ReceptionPurposeId>('meeting', 'confirmed') },
+      'selectingPurpose',
+    );
+    expect(nextConversationFocus(draft, 'selectingPurpose')).toEqual({ kind: 'finalConfirmation' });
   });
 
   it('曖昧な候補は有効なものだけを残す（来訪者に見せる候補と数が一致する）', () => {

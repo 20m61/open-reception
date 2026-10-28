@@ -26,6 +26,16 @@ import { transition, type ReceptionEvent, type ReceptionState } from './state';
  * - 氏名を尋ねるのは `inputVisitorInfo` に居るときだけ（§2）。
  * - 後から来た明示の値が勝つ。音声の値は、画面で明示した値を上書きしない（§3-c）。
  * - 「戻る」で戻った画面とその先の slot は捨てる。戻った直後に前へ押し戻さない（§3-c・§3-d）。
+ *
+ * 画面を通り過ぎた slot（不変条件。#1088 の 3 周目）:
+ * - 状態 S に居るなら、S より手前の画面で埋める slot は状態機械が既に受け取っている
+ *   （`SELECT_PURPOSE` / `SELECT_TARGET` / `SUBMIT_VISITOR_INFO` を経ないと S へ来られない）。
+ *   この事実は state だけから分かるので、planner は draft にその値が写っているかを見ない。
+ * - S では、手前の画面の slot を尋ねない（`disambiguate` / `collect` / `readback` にしない）。
+ * - S での merge は、手前の画面の slot を変えない（足しも消しもしない）。そこを開け直すのは、
+ *   戻った画面とその先を捨てる `BACK` だけ。
+ * - 手前の画面の slot の正本は session（呼び出す相手・送信した氏名）。draft に残る値は画面で
+ *   確定した値の写しとは限らないので、最終確認で読み上げる内容は session から読む。
  */
 
 export type ConversationSlotSource = 'touch' | 'voice' | 'qr' | 'reservation';
@@ -200,6 +210,24 @@ const DRAFT_RETAINED_STATES: ReadonlySet<ReceptionState> = new Set(RETAINED_STAT
 
 const DRAFT_KEYS = ['purpose', 'target', 'visitorName', 'company'] as const satisfies readonly (keyof ConversationDraft)[];
 
+/** 各 slot を来訪者が画面で埋める状態。受付途中の状態の並び（`RETAINED_STATE_ORDER`）の上の位置で比べる。 */
+const SLOT_SCREEN: Record<keyof ConversationDraft, ReceptionState> = {
+  purpose: 'selectingPurpose',
+  target: 'selectingTarget',
+  visitorName: 'inputVisitorInfo',
+  company: 'inputVisitorInfo',
+};
+
+/**
+ * 状態 `state` に居るとき、`key` を埋める画面をもう通り過ぎたか（状態機械が値を受け取り済みか）。
+ * 受付途中の 4 状態以外では、どの slot も通り過ぎていない扱いにする（idle で聞き取った値は
+ * `START` 後の draft へ持ち越すため）。`BACK` で捨てる範囲もこの述語の否定で決まる。
+ */
+function isPastScreen(key: keyof ConversationDraft, state: ReceptionState): boolean {
+  const here = RETAINED_STATE_ORDER.indexOf(state);
+  return here >= 0 && RETAINED_STATE_ORDER.indexOf(SLOT_SCREEN[key]) < here;
+}
+
 function withoutUndefined(draft: ConversationDraft): ConversationDraft {
   const next: ConversationDraft = {};
   for (const key of DRAFT_KEYS) {
@@ -241,8 +269,12 @@ function isAcquired(draft: ConversationDraft, key: RequiredConversationSlot): bo
 }
 
 /**
- * final confirmation へ進む最低条件。
+ * draft だけで見た、final confirmation へ進む最低条件。
  * company / note は通常受付成立の条件に含めない。
+ *
+ * state を知らないので、画面で確定した値（`SELECT_TARGET` の相手・`SUBMIT_VISITOR_INFO` の氏名）を
+ * draft へ写さない呼び出し側では偽になる。画面の進み具合を含めた判定は
+ * `nextConversationFocus(draft, state)` が `finalConfirmation` を返すかで見る。
  */
 export function isDraftReadyForFinalConfirmation(draft: ConversationDraft): boolean {
   const normalized = normalizeConversationDraft(draft);
@@ -265,6 +297,8 @@ function completeFocusOrder(order: readonly RequiredConversationSlot[]): readonl
  * 5. required slot が全て取得済みなら final confirmation（focusOrder に依らない）。
  * 6. 「入力できない」は返さない。音声・有人支援が無くてもキーボード／タッチで `collect` する。
  * 7. 氏名は `inputVisitorInfo` に居るときだけ尋ねる（ADR 0011 §2。通知より前に尋ねない）。
+ * 8. 通り過ぎた画面の slot は尋ねず、取得済みとみなす（`isPastScreen`）。`confirming` では
+ *    draft の中身に依らず `finalConfirmation`。手前の画面の値を draft へ写すかどうかに依らない。
  */
 export function nextConversationFocus(
   draft: ConversationDraft,
@@ -273,10 +307,11 @@ export function nextConversationFocus(
 ): ConversationFocus {
   if (!DRAFT_RETAINED_STATES.has(state)) return { kind: 'awaitScreen' };
   const normalized = normalizeConversationDraft(draft);
-  if (isDraftReadyForFinalConfirmation(normalized)) return { kind: 'finalConfirmation' };
+  const open = REQUIRED_SLOTS.filter((key) => !isPastScreen(key, state));
+  if (open.every((key) => isAcquired(normalized, key))) return { kind: 'finalConfirmation' };
 
   const order = completeFocusOrder(options.focusOrder ?? DEFAULT_CONVERSATION_FOCUS_ORDER).filter(
-    (key) => key !== 'visitorName' || state === 'inputVisitorInfo',
+    (key) => open.includes(key) && (key !== 'visitorName' || state === 'inputVisitorInfo'),
   );
 
   // まず、既に候補まで分かった曖昧さだけを修復する。
@@ -320,9 +355,11 @@ function confirmationRank(slot: ConversationSlot<unknown>): number {
  *   相手やキーボードで直した氏名は残り、発話のついでに拾った値や音声の値は、来訪者が画面で
  *   確定した値を上書きしない。
  *
- * incoming に slot が無いことは「その slot について何も言っていない」と読む。言い直しを
- * 聞き取ったが候補を出せなかった（不在の人を名指しした・確信度が下限未満）ときに前の値を
- * 消すのは、呼び出し側が `replaceConversationSlot(draft, key, undefined)` で行う。
+ * incoming に slot が無いことは「その slot について何も言っていない」と読む。正規化で落ちる値
+ * （曖昧な氏名・上限を超えた氏名・見える文字の無い値・音声の目的や会社名）も同じく「言及なし」に
+ * なり、前の値が残る。言い直しを聞き取ったが使える値にならなかった（不在の人を名指しした・
+ * 確信度が下限未満・氏名が曖昧／長すぎ／空）ときに前の値を消すのは、呼び出し側が
+ * `replaceConversationSlot(draft, key, undefined)` で行う。行わないと、前の氏名がまた復唱される。
  */
 function mergeSlot<T>(
   current: ConversationSlot<T> | undefined,
@@ -333,25 +370,36 @@ function mergeSlot<T>(
   return confirmationRank(incoming) >= confirmationRank(current) ? incoming : current;
 }
 
+/**
+ * `state` は今居る受付の状態。通り過ぎた画面の slot（`isPastScreen`）は、incoming に何があっても
+ * current の正規化のまま返す（足しも消しもしない）。例: `inputVisitorInfo` で氏名を言うついでに
+ * 「鈴木さんに会いに来た」と言い、相手が曖昧（佐藤・鈴木）と出ても、状態機械が受け取った相手を
+ * draft の上で差し替えない（#1088 の 3 周目 MAJOR-A）。そこを直すのは `BACK` で戻ってから。
+ */
 export function mergeConversationDraft(
   current: ConversationDraft,
   incoming: Partial<ConversationDraft>,
+  state: ReceptionState,
 ): ConversationDraft {
   const a = normalizeConversationDraft(current);
   const b = normalizeConversationDraft(incoming);
+  const past = (key: keyof ConversationDraft) => isPastScreen(key, state);
   return withoutUndefined({
-    purpose: mergeSlot(a.purpose, b.purpose),
-    target: mergeSlot(a.target, b.target),
-    visitorName: mergeSlot(a.visitorName, b.visitorName),
-    company: mergeSlot(a.company, b.company),
+    purpose: past('purpose') ? a.purpose : mergeSlot(a.purpose, b.purpose),
+    target: past('target') ? a.target : mergeSlot(a.target, b.target),
+    visitorName: past('visitorName') ? a.visitorName : mergeSlot(a.visitorName, b.visitorName),
+    company: past('company') ? a.company : mergeSlot(a.company, b.company),
   });
 }
 
 /**
  * 明示訂正用。指定slot以外はそのまま保持する（Repair, don't restart）。順位を比べずに置き換える。
  * 無効な値での訂正や `undefined` は slot を消す（再び尋ねる対象へ戻す）。
- * 復唱に「いいえ」と答えたとき、言い直しを聞き取ったが候補を出せなかったとき（不在の人の名指し・
- * 確信度が下限未満）は、merge ではなくこれで消す（merge は slot の無い incoming を「言及なし」と読む）。
+ * 復唱に「いいえ」と答えたとき、言い直しを聞き取ったが使える値にならなかったとき（不在の人の名指し・
+ * 確信度が下限未満・曖昧／長すぎ／見える文字の無い氏名）は、merge ではなくこれで消す（merge は
+ * slot の無い incoming も、正規化で落ちる incoming も「言及なし」と読み、前の値を残す）。
+ * state を見ないので、通り過ぎた画面の slot も消せる。画面の状態と食い違わないよう、そこは
+ * `BACK` で戻ってから直す。
  */
 export function replaceConversationSlot<K extends keyof ConversationDraft>(
   draft: ConversationDraft,
@@ -408,14 +456,6 @@ export function materializationPlanForDraft(
   return { actions, endState: state };
 }
 
-/** 各 slot を来訪者が画面で埋める状態。受付途中の状態の並び（`RETAINED_STATE_ORDER`）の上の位置で比べる。 */
-const SLOT_SCREEN: Record<keyof ConversationDraft, ReceptionState> = {
-  purpose: 'selectingPurpose',
-  target: 'selectingTarget',
-  visitorName: 'inputVisitorInfo',
-  company: 'inputVisitorInfo',
-};
-
 /**
  * 受付の状態を変えるイベントごとに通す。
  *
@@ -439,12 +479,9 @@ export function conversationDraftAfterTransition(
   const normalized = normalizeConversationDraft(draft);
   if (to === null || event !== 'BACK') return normalized;
 
-  const returnedTo = RETAINED_STATE_ORDER.indexOf(to);
   const kept: ConversationDraft = {};
   for (const key of DRAFT_KEYS) {
-    if (RETAINED_STATE_ORDER.indexOf(SLOT_SCREEN[key]) < returnedTo) {
-      (kept as Record<string, unknown>)[key] = normalized[key];
-    }
+    if (isPastScreen(key, to)) (kept as Record<string, unknown>)[key] = normalized[key];
   }
   return withoutUndefined(kept);
 }
