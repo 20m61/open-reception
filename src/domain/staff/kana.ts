@@ -31,11 +31,15 @@ export const STAFF_KANA_POLICY: StaffKanaPolicy = 'encouraged';
 const WHITESPACE = /\s+/u;
 /** ひらがな（ゔ・ゕ・ゖ を含む）・長音・踊り字・濁点/半濁点のみ。 */
 const KANA_TOKEN = /^[ぁ-ゖゝゞー゛゜]+$/u;
-/**
- * かなの文字（ぁ〜ゖ）を 1 つ以上含むか。長音符・踊り字・濁点だけの語は読みにならない
- * （音声の判定 `kiosk-bridge.ts` の `hasReading` と揃える。そちらは文字を含まない読みを「読みなし」とみなす）。
- */
+/** かなの文字（ぁ〜ゖ）を 1 つ以上含むか。長音符・踊り字・濁点だけの語は読みの語にならない。 */
 const HAS_KANA_LETTER = /[ぁ-ゖ]/u;
+/**
+ * 文字（かな・ラテン文字・漢字など。長音符などの修飾文字は除く）を 1 つでも含むか。
+ * 音声の判定（`kiosk-bridge.ts` の `hasReading`）は、文字を含まない読みを「読みなし」とみなして
+ * 自動確定を止めるので、管理画面でも「未登録」として数える（「形式違い」にすると、未登録 0 人なのに
+ * 自動確定が止まって見える）。
+ */
+const HAS_LETTER = /[\p{Lu}\p{Ll}\p{Lt}\p{Lo}]/u;
 
 /** 全角カタカナ → ひらがな（`search.ts` と同じ 0x60 シフト）。 */
 function katakanaToHiragana(value: string): string {
@@ -46,9 +50,8 @@ function katakanaToHiragana(value: string): string {
 export function assessStaffKana(kana: string | undefined): StaffKanaStatus {
   if (kana === undefined) return 'missing';
   const normalized = katakanaToHiragana(kana.normalize('NFKC').trim());
-  if (normalized === '') return 'missing';
+  if (!HAS_LETTER.test(normalized)) return 'missing';
   const tokens = normalized.split(WHITESPACE);
-  if (tokens.every((t) => KANA_TOKEN.test(t) && !HAS_KANA_LETTER.test(t))) return 'missing';
   if (!tokens.every((t) => KANA_TOKEN.test(t) && HAS_KANA_LETTER.test(t))) return 'invalid';
   return tokens.length >= 2 ? 'ok' : 'unseparated';
 }

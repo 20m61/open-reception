@@ -19,13 +19,12 @@ describe('assessStaffKana (#1287)', () => {
     expect(assessStaffKana(input)).toBe(expected);
   });
 
-  // 音声の判定（#1285 の hasReading）と同じく、かなの文字を含まない語（長音符・踊り字・濁点だけ）は読みにならない。
-  it.each(['ー', 'ー ー', 'ゝゞ', 'ーー　ゝ'])('かなの文字を含まない %j は missing', (input) => {
+  // 音声の判定（#1285 の hasReading）と同じく、文字を含まない読み（長音符・踊り字・濁点・記号・数字だけ）は未登録。
+  it.each(['ー', 'ー ー', 'ゝゞ', 'ーー　ゝ', '・', '-', '- -', '？', '0', '＊', '゛゜'])('かなの文字を含まない %j は missing', (input) => {
     expect(assessStaffKana(input)).toBe('missing');
   });
 
-  // 「゛゜」は NFKC で結合文字へ変わるので、かなの語として扱わない（invalid）。
-  it.each(['さとう ー', 'ー たろう', '゛゜'])('かなの文字を含まない語がある %j は invalid', (input) => {
+  it.each(['さとう ー', 'ー たろう'])('かなの文字を含まない語がある %j は invalid', (input) => {
     expect(assessStaffKana(input)).toBe('invalid');
   });
 
