@@ -115,5 +115,8 @@ describe('StaffManager の配線 (#1287)', () => {
     expect(source).toMatch(
       /onSave=\{\(next\) => patch\(s, \{ kana: next \}, savedWithKanaWarning\('変更を保存しました。', next\)\)\}/,
     );
+    // patch は渡された文で成功を告げる（固定の文へ戻すと、上で渡した警告が捨てられる）。
+    expect(source).toMatch(/savedMessage = '変更を保存しました。'\) => \{/);
+    expect(source).toMatch(/success\(savedMessage\);/);
   });
 });

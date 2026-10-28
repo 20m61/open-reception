@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { StaffKanaPolicy } from '@/domain/staff/kana';
 import { Field } from '@/components/admin/ui';
-import { KanaIssueText, StaffKanaFlag, StaffKanaNotice, kanaFieldState } from './StaffKana';
+import { KanaIssueText, StaffKanaEditor, StaffKanaFlag, StaffKanaNotice, kanaFieldState } from './StaffKana';
 
 /**
  * 管理画面での読み（よみがな）の案内 (#1287)。案 A（required）と案 B（encouraged）の両方を縛る。
@@ -155,4 +155,38 @@ describe('KanaIssueText（「よみがなを直す」の欄の案内） (#1287 m
     expect(html).toContain('var(--color-danger)');
     expect(html).not.toContain('staff-kana-edit-warning');
   });
+});
+
+describe('StaffKanaEditor を開いたとき (#1287 m4)', () => {
+  const render = (kana: string, policy: StaffKanaPolicy) =>
+    renderToStaticMarkup(
+      <StaffKanaEditor staffId="s1" kana={kana} policy={policy} defaultOpen onSave={async () => true} />,
+    );
+
+  it('encouraged: 正しくない読みは警告として出し、aria-invalid にしない', () => {
+    const html = render('さとうたろう', 'encouraged');
+    expect(html).toContain('data-testid="staff-kana-edit-warning"');
+    expect(html).not.toContain('aria-invalid="true"');
+    expect(html).toContain('aria-describedby="staff-s1-kana-edit-issue"');
+    expect(html).toContain('id="staff-s1-kana-edit-issue"');
+  });
+
+  it('required: 正しくない読みはエラーとして出し、aria-invalid にする', () => {
+    const html = render('さとうたろう', 'required');
+    expect(html).toContain('data-testid="staff-kana-edit-error"');
+    expect(html).toContain('aria-invalid="true"');
+    expect(html).toContain('id="staff-s1-kana-edit-issue"');
+  });
+
+  // 下界: 正しい読みはどちらの方針でも、エラーも警告も出さない。
+  for (const policy of POLICIES) {
+    it(`${policy}: 正しい読みはエラーも警告も出さない`, () => {
+      const html = render('さとう たろう', policy);
+      expect(html).toContain('data-testid="staff-kana-edit-input"');
+      expect(html).not.toContain('aria-invalid="true"');
+      expect(html).not.toContain('aria-describedby');
+      expect(html).not.toContain('staff-kana-edit-warning');
+      expect(html).not.toContain('staff-kana-edit-error');
+    });
+  }
 });

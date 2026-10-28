@@ -145,14 +145,17 @@ export function StaffKanaEditor({
   staffId,
   kana,
   policy = STAFF_KANA_POLICY,
+  defaultOpen = false,
   onSave,
 }: {
   staffId: string;
   kana: string | undefined;
   policy?: StaffKanaPolicy;
+  /** 開いた状態で描く（静的描画のテストで欄の見た目を縛るため）。 */
+  defaultOpen?: boolean;
   onSave: (kana: string) => Promise<boolean>;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const [value, setValue] = useState(kana ?? '');
   const [busy, setBusy] = useState(false);
   const state = kanaFieldState(value, policy);
