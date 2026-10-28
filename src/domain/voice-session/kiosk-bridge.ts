@@ -181,32 +181,73 @@ export type NameForSurname = { readonly displayName: string; readonly kana?: str
 /**
  * 2 人の担当者が同じ姓とみなせるか。
  *
- * 担当者の辞書は姓と名を別の欄で持たないので、表示名と読み（kana）から推定する。どちらか一方で
- * 同じ姓とみなせれば真。比較の前に、検索と同じ正規化（NFKC・小文字・カタカナ→ひらがな）をかける。
+ * 担当者の辞書は姓と名を別の欄で持たないので、表示名と読み（kana）から推定する。比較の前に、検索と
+ * 同じ正規化（NFKC・小文字・カタカナ→ひらがな）をかける。空白（全角を含む）・読点・カンマ・中黒を
+ * 区切りとして扱う。
  *
  * 1 つの表記（表示名どうし、または読みどうし）の中では、次の順で判定する。
- *  - 両方が空白（全角を含む）で区切られていれば、先頭の語どうしを比べる（「田中 花子」と「田中島 太郎」は別の姓）
- *  - 片方だけが区切られていれば、その先頭の語を姓とし、もう片方（空白を除く）がそれで始まるかを見る。
+ *  - 両方が区切られていれば、先頭の語どうしを比べる（「田中 花子」と「田中島 太郎」は別の姓）。
+ *    両方がラテン文字なら、語順が違いうるので、どれか 1 語が共通なら同じ姓とみなす
+ *  - 片方だけが区切られていれば、その先頭の語を姓とし、もう片方（区切りを除く）がそれで始まるかを見る。
  *    **1 文字の姓も許す**（「林 太郎」と「林花子」）
  *  - どちらも区切られていなければ、片方がもう片方で始まる（姓だけの表示名。「森」と「森花子」）か、
- *    先頭 2 文字以上が一致するとき（「田中花子」と「田中太郎」）に同じ姓とみなす
+ *    先頭 2 文字以上が一致するときに同じ姓とみなす
  *
- * 表示名だけでは決められない 1 文字の姓（「林太郎」と「林花子」）は、読み（「はやしたろう」と
- * 「はやしはなこ」）で拾う。読みも区切りも無い 1 文字の姓は拾えない（`docs/adr/0011` 3-f）。
- * 推定は復唱が増える側に倒れることがある（「佐藤」と「里見」は読みが「さと」で始まる）が、
- * それは自動確定を減らすだけで、誤接続は増やさない。
+ * 表示名で決まらなければ、読みで同じ判定をする。読みが登録されていない側は、表示名がかな・ラテン文字
+ * だけならそれを読みとして使う（「タナカ」と「田中 花子／たなか はなこ」）。
+ *
+ * 🔴 **読みが両方に揃わず、どちらの表示名も区切られていなければ、姓の長さが分からない。** そのときは
+ * 先頭 1 文字の一致で同じ姓とみなす（「林太郎」と「林花子」。読みは管理画面で任意）。「佐藤」と「佐野」
+ * も同じ姓とみなすが、増えるのは復唱だけで、誤接続は増えない（`docs/adr/0011` 3-f）。
+ * 同じ理由で、比べられない組（読みが揃わず表示名の文字の系統が違う「田中次郎」と「タナカ ジロウ」、
+ * かなの読みとラテン文字の読み）も同じ姓とみなす。
  */
 export function sharesSurname(a: NameForSurname, b: NameForSurname): boolean {
+  if (tokens(a.displayName).length === 0 || tokens(b.displayName).length === 0) return false;
   if (sharesSurnameIn(a.displayName, b.displayName)) return true;
-  return a.kana !== undefined && b.kana !== undefined && sharesSurnameIn(a.kana, b.kana);
+  const ra = reading(a);
+  const rb = reading(b);
+  if (ra !== undefined && rb !== undefined) {
+    // かなとラテン文字の読みは比べられない（「たなか」と「tanaka」）。比べられないものは同じ姓とみなす。
+    return isLatin(ra) !== isLatin(rb) || sharesSurnameIn(ra, rb);
+  }
+  // 読みが揃わず、表示名の文字の系統も違う（「田中次郎」と「タナカ ジロウ」）なら、比べられない。
+  if (hasHan(a.displayName) !== hasHan(b.displayName)) return true;
+  const da = tokens(a.displayName);
+  const db = tokens(b.displayName);
+  if (da.length !== 1 || db.length !== 1) return false;
+  return da[0]?.[0] !== undefined && da[0][0] === db[0]?.[0];
+}
+
+function hasHan(name: string): boolean {
+  return /\p{Script=Han}/u.test(name);
+}
+
+function isLatin(name: string): boolean {
+  return /[a-z]/.test(normalize(name)) && !/\p{Script=Hiragana}/u.test(normalize(name));
+}
+
+/** 読み。登録が無ければ、かな・ラテン文字だけの表示名を読みとして使う。 */
+function reading(name: NameForSurname): string | undefined {
+  if (name.kana !== undefined && normalize(name.kana) !== '') return name.kana;
+  return /^[\p{Script=Hiragana}a-z\s\u3000ー,、・.'-]+$/u.test(normalize(name.displayName)) ? name.displayName : undefined;
+}
+
+function tokens(name: string): string[] {
+  return normalize(name)
+    .split(/[\s\u3000,、・]+/)
+    .filter((t) => t !== '');
 }
 
 function sharesSurnameIn(a: string, b: string): boolean {
-  const tokens = (name: string) => normalize(name).split(/[\s\u3000]+/).filter((t) => t !== '');
   const ta = tokens(a);
   const tb = tokens(b);
   if (ta.length === 0 || tb.length === 0) return false;
-  if (ta.length >= 2 && tb.length >= 2) return ta[0] === tb[0];
+  if (ta.length >= 2 && tb.length >= 2) {
+    if (ta[0] === tb[0]) return true;
+    const latin = (ts: string[]) => ts.every((t) => /^[a-z.'-]+$/.test(t));
+    return latin(ta) && latin(tb) && ta.some((t) => tb.includes(t));
+  }
   const fa = ta.join('');
   const fb = tb.join('');
   if (ta.length >= 2) return fb.startsWith(ta[0] ?? '');

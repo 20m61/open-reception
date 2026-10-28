@@ -4,11 +4,11 @@ import { resolveEntities } from '@/domain/voice-stt/entity-resolver';
 import type { Staff } from '@/domain/staff/types';
 import type { Department } from '@/domain/department/types';
 
-function staff(id: string, displayName: string, kana: string): Staff {
+function staff(id: string, displayName: string, kana?: string): Staff {
   return {
     id,
     displayName,
-    kana,
+    ...(kana === undefined ? {} : { kana }),
     aliases: [],
     departmentId: 'd1',
     enabled: true,
@@ -88,7 +88,7 @@ describe('bridgeCommittedTurn (#364 発話確定 → #370 Entity 解決への橋
  * 在席の同姓の人が単独の高信頼候補として自動採用されていた（誤接続）。
  */
 describe('bridgeCommittedTurn: 不在者と近い在席者を自動確定しない (#1284)', () => {
-  const away = (id: string, displayName: string, kana: string): Staff => ({
+  const away = (id: string, displayName: string, kana?: string): Staff => ({
     ...staff(id, displayName, kana),
     available: false,
   });
@@ -267,7 +267,7 @@ describe('bridgeCommittedTurn: 不在者と近い在席者を自動確定しな�
  * （owner の判断、2026-10-28 / #1284）。表示名が姓だけの人がいる場合も同じ。
  */
 describe('bridgeCommittedTurn: 同じ姓の別人がいれば必ず復唱する (#1284)', () => {
-  const away = (id: string, displayName: string, kana: string): Staff => ({
+  const away = (id: string, displayName: string, kana?: string): Staff => ({
     ...staff(id, displayName, kana),
     available: false,
   });
@@ -328,7 +328,7 @@ describe('bridgeCommittedTurn: 同じ姓の別人がいれば必ず復唱する 
    * 不変条件は、実装の述語（sharesSurname）ではなく**テスト側で持つ姓の正解表**で判定する。
    * 実装の述語で判定すると、述語の見落とし（1 文字の姓など）がそのまま素通りする。
    */
-  const PEOPLE: Array<{ name: string; kana: string; surname: string }> = [
+  const PEOPLE: Array<{ name: string; kana?: string; surname: string }> = [
     { name: '田中太郎', kana: 'たなかたろう', surname: '田中' },
     { name: '田中 花子', kana: 'たなか はなこ', surname: '田中' },
     { name: '田中', kana: 'たなか', surname: '田中' },
@@ -343,6 +343,15 @@ describe('bridgeCommittedTurn: 同じ姓の別人がいれば必ず復唱する 
     { name: '佐藤', kana: 'さとう', surname: '佐藤' },
     { name: '佐野', kana: 'さの', surname: '佐野' },
     { name: '鈴木 一郎', kana: 'すずき いちろう', surname: '鈴木' },
+    // 読みは任意（管理画面）。読みの無い担当者でも、同じ姓を見落とさない。
+    { name: '林花子', surname: '林' },
+    { name: '森太郎', surname: '森' },
+    { name: 'タナカ', surname: '田中' },
+    { name: '田中次郎', surname: '田中' },
+    { name: 'Taro Suzuki', surname: '鈴木' },
+    { name: 'Hanako Suzuki', surname: '鈴木' },
+    { name: '佐々木', surname: '佐々木' },
+    { name: 'Tanaka Taro', surname: '田中' },
   ];
 
   it('不変条件: 自動確定・不在の断定をした相手には、どちらの辞書にも同じ姓の別人がいない（姓の正解表で判定）', () => {
@@ -374,6 +383,51 @@ describe('bridgeCommittedTurn: 同じ姓の別人がいれば必ず復唱する 
     ).toBe('heardNeedsConfirmation');
     const mori = turn('森', [staff('h', '森花子', 'もりはなこ')], [away('m', '森', 'もり')]);
     expect(mori.event).toMatchObject({ type: 'heardNeedsConfirmation', unavailable: true });
+  });
+
+  it('読みの無い 1 文字の姓: 林太郎と林花子（読みなし）でも自動で確定・断定しない', () => {
+    expect(turn('林太郎', [staff('t', '林太郎')], [away('h', '林花子')]).event.type).toBe('heardNeedsConfirmation');
+    expect(turn('林太郎', [staff('t', '林太郎')], [away('h', '林花子', 'はやしはなこ')]).event.type).toBe(
+      'heardNeedsConfirmation',
+    );
+    expect(turn('林花子', [staff('t', '林太郎', 'はやしたろう')], [away('h', '林花子')]).event).toMatchObject({
+      type: 'heardNeedsConfirmation',
+      unavailable: true,
+    });
+  });
+
+  it('表記の違う同じ姓（タナカ と 田中 花子）は、読みの無い側の表示名を読みとして比べる', () => {
+    const result = turn('田中花子', [staff('h', '田中 花子', 'たなか はなこ')], [away('t', 'タナカ')]);
+    expect(result.event.type).toBe('heardNeedsConfirmation');
+  });
+
+  it('姓の違う 2 人の別名が同点なら、不在の側も比較に入れて曖昧として復唱する（#1284 の合算）', () => {
+    const withAlias = (s: Staff): Staff => ({ ...s, aliases: ['部長'] });
+    const result = turn('部長', [withAlias(staff('s', '鈴木 一郎', 'すずき いちろう'))], [
+      withAlias(away('a', '佐藤 花子', 'さとう はなこ')),
+    ]);
+    expect(result.event).toMatchObject({ type: 'heardNeedsConfirmation', reason: 'ambiguous_candidates' });
+    // 下界: 不在の側がいなければ、同じ別名でも自動で確定する（合算の効果だけを見ている）。
+    expect(turn('部長', [withAlias(staff('s', '鈴木 一郎', 'すずき いちろう'))]).event.type).toBe('heardAccepted');
+  });
+
+  it('不在の名指しでも、在席の候補を比較に入れて「不在です」と断定しない（不在側の合算）', () => {
+    // 部署は姓の規則の対象外なので、合算の top3 だけで決まる。差 0.2 は既定の 0.1 では明確、0.3 では曖昧。
+    const unit = (minMarginOverSecond: number) =>
+      bridgeCommittedTurn({
+        text: 'さとう',
+        directory: {
+          staff: [],
+          departments: [{ id: 'g', name: '佐藤商事部', kana: 'さとうしょうじぶ', displayOrder: 0, enabled: true }],
+        },
+        unavailableDirectory: dir([away('a', '佐藤', 'さとう')]),
+        sttConfidence: 0.95,
+        thresholds: { ...T, minMarginOverSecond },
+        t: 0,
+      }).event;
+    expect(unit(0.3)).toMatchObject({ type: 'heardNeedsConfirmation', unavailable: true });
+    // 下界: 差が閾値より大きければ、従来どおり不在と断定する。
+    expect(unit(0.1)).toEqual({ type: 'heardUnavailable', displayName: '佐藤' });
   });
 
   it('無効になった担当者（enabled: false）は、同じ姓の比較の相手に入れない', () => {
@@ -413,11 +467,27 @@ describe('sharesSurname', () => {
     [n('林 太郎'), n('林花子'), true],
     [n('森'), n('森花子'), true],
     [n('林太郎', 'はやしたろう'), n('林花子', 'はやしはなこ'), true],
-    [n('林太郎'), n('林花子'), false],
+    // 区切りも読みも無いと姓の長さが分からないので、先頭 1 文字の一致で同じ姓とみなす（安全側。増えるのは復唱だけ）。
+    [n('林太郎'), n('林花子'), true],
+    [n('林太郎'), n('林花子', 'はやしはなこ'), true],
+    [n('佐藤'), n('佐野'), true],
+    [n('タナカ'), n('田中 花子', 'たなか はなこ'), true],
+    [n('ﾀﾅｶ ｼﾞﾛｳ'), n('田中 花子', 'たなか はなこ'), true],
+    [n('Taro Tanaka'), n('Hanako Tanaka'), true],
+    [n('TANAKA, Jiro'), n('Tanaka Hanako'), true],
+    [n('田中・花子'), n('田中 太郎'), true],
+    // 読みの姓が 2 音（もり）、1 音（い）でも拾う。
+    [n('森花子', 'もりはなこ'), n('森太郎', 'もりたろう'), true],
+    [n('井', 'い'), n('井太郎', 'いたろう'), true],
+    // 比べられない組（読みが揃わず文字の系統が違う、かなとラテン文字の読み）は同じ姓とみなす。
+    [n('田中次郎'), n('タナカ ジロウ', 'たなか じろう'), true],
+    [n('田中 花子', 'たなか はなこ'), n('Tanaka Taro'), true],
+    // 下界: 比べられる組は、姓が違えば同じ姓としない。
+    [n('鈴木太郎'), n('田中 花子', 'たなか はなこ'), false],
+    [n('鈴木 太郎'), n('Tanaka Taro'), true],
     [n('タナカ'), n('たなか はなこ'), true],
     [n('Tanaka Hanako'), n('tanaka Taro'), true],
     [n('ＴＡＮＡＫＡ'), n('TANAKA Taro'), true],
-    [n('佐藤'), n('佐野'), false],
     [n('佐藤', 'さとう'), n('佐野', 'さの'), false],
     [n('田中 花子'), n('田村 花子'), false],
     [n('田中 花子'), n('鈴木 花子'), false],
