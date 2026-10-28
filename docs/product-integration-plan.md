@@ -220,7 +220,7 @@ URL クエリ `?effectiveConfig=1|0`（後勝ち）」。**端末 1 台単位で
 - 受付体験の版モデル（draft/published・rollback 単位）→ #420
 - 新旧 KioskFlow の切替方式（feature flag の粒度・撤去条件）→ #422（**[ADR 0004](adr/0004-kiosk-experience-migration-flag.md) で決定済**）
 
-- 音声で聞き取った来訪者の氏名の確定（ADR 0007 の境界の一部置き換え）→ #1057 / #1077（**[ADR 0011](adr/0011-voice-visitor-name-confirmation.md) で提案**。owner の承認待ち）
+- 音声で聞き取った来訪者の氏名の確定（ADR 0007 の境界の一部置き換え）→ #1057 / #1077（**[ADR 0011](adr/0011-voice-visitor-name-confirmation.md) で決定**、2026-10-28）
 
 ---
 
