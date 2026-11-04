@@ -123,6 +123,24 @@ test.describe('音声で氏名を聞き取る (ADR 0011、#1290)', () => {
     await expect(page.getByTestId('voice-readback')).toHaveCount(0);
   });
 
+  test('復唱の途中で「やさしい日本語」へ切り替えても、通知を読み直さず復唱のまま', async ({ page }) => {
+    await openKiosk(page, { visitorName: '受付 太郎です' });
+    await toVisitorInfo(page);
+    await expect(voiceMode(page)).toHaveAttribute('data-voice-mode', 'readback');
+    const before = (await spokenTexts(page)).length;
+
+    await page.getByTestId('a11y-menu-button').click();
+    await page.getByTestId('a11y-simple-japanese-toggle').click();
+    await page.getByTestId('a11y-menu-close').click();
+
+    // 何も起きないことの確認なので、読み上げが走りうる時間（代役は 50ms で終わる）を置いてから見る。
+    await page.waitForTimeout(500);
+    const after = await spokenTexts(page);
+    expect(after.slice(before), `切り替え後の読み上げ: ${after.slice(before).join(' / ')}`).toEqual([]);
+    await expect(voiceMode(page)).toHaveAttribute('data-voice-mode', 'readback');
+    await expect(page.getByTestId('voice-confirm-yes')).toBeVisible();
+  });
+
   test('不在の人を名指ししたら、無言で聞き直さずに不在を告げる', async ({ page }) => {
     await openKiosk(page, { target: '鈴木 花子', unavailableStaffId: 'staff-suzuki' });
     await page.getByTestId('start-reception').click();

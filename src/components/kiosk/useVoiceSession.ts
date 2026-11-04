@@ -24,7 +24,7 @@ export type UseVoiceSessionResult = {
   confirmYes: () => void;
   confirmNo: () => void;
   /** 氏名の聞き取りへの入力（ADR 0011、#1290）。 */
-  visitorName: (input: VisitorNameCaptureInput) => void;
+  visitorName: (input: VisitorNameCaptureInput) => boolean;
 };
 
 /**

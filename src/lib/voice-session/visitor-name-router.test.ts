@@ -128,6 +128,51 @@ describe('createVisitorNameRouter', () => {
     expect(confirmed).toEqual([]);
   });
 
+  it('通知を読み上げてよいのは、enter が聞き取りを始めたときだけ (#1290 の独立レビュー M-A)', () => {
+    const { router } = setup();
+    router.notifyReceptionState('inputVisitorInfo');
+    expect(router.visitorName({ type: 'enter', eligible: true })).toBe(true);
+    // 同じ画面での再送（言語の切り替え等）は、どの局面でも始めない。
+    expect(router.visitorName({ type: 'enter', eligible: true })).toBe(false);
+    router.visitorName({ type: 'noticeFinished', ok: true });
+    expect(router.visitorName({ type: 'enter', eligible: true })).toBe(false);
+    router.takeTurn('受付 太郎です');
+    expect(router.visitorName({ type: 'enter', eligible: true })).toBe(false);
+    // 聞けない画面の enter は始めない。
+    router.notifyReceptionState('confirming');
+    router.notifyReceptionState('inputVisitorInfo');
+    expect(router.visitorName({ type: 'enter', eligible: false })).toBe(false);
+    // 下界: 画面を出て入り直したら、また始める。
+    router.notifyReceptionState('confirming');
+    router.notifyReceptionState('inputVisitorInfo');
+    expect(router.visitorName({ type: 'enter', eligible: true })).toBe(true);
+  });
+
+  it('何も変えない入力では、答えを待つ時間を測り直さない (#1290 の独立レビュー MINOR-1)', () => {
+    const arms: number[] = [];
+    let pending: (() => void) | null = null;
+    const router = createVisitorNameRouter({
+      emit: () => {},
+      onVisitorNameConfirmed: () => {},
+      sttConfidence: () => 0.9,
+      resetTurn: () => {},
+      timer: (fn, ms) => {
+        arms.push(ms);
+        pending = fn;
+        return () => {
+          pending = null;
+        };
+      },
+    });
+    onScreen(router);
+    router.takeTurn('受付 太郎です');
+    expect(arms).toHaveLength(2); // 尋ねる・復唱
+    router.visitorName({ type: 'enter', eligible: true });
+    router.visitorName({ type: 'noticeFinished', ok: true });
+    expect(arms).toHaveLength(2);
+    expect(pending).not.toBeNull();
+  });
+
   it('打ち始めたら畳み、待ち時間も止める', () => {
     const { router, events, timer } = setup();
     onScreen(router);

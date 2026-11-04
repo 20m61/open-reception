@@ -71,7 +71,8 @@ export interface VoiceSessionController {
    * （`enter`。音声で聞いてよいか）、通知の読み上げが終わったとき（`noticeFinished`）、
    * キーボードで入力したとき（`typing`）に呼ぶ。未実装の controller では no-op。
    */
-  visitorName?(input: VisitorNameCaptureInput): void;
+  /** 戻り値は、この入力で氏名の聞き取りを始めたか（通知を読み上げてよいか）。 */
+  visitorName?(input: VisitorNameCaptureInput): boolean;
 }
 
 /** 解決済み候補を既存選択へ橋渡しするコールバック（Kiosk が selection を進める）。 */

@@ -91,9 +91,12 @@ export function VoiceSessionLayer({
   const noticeText = visitorNameVoice?.noticeText ?? '';
   useEffect(() => {
     if (eligible === null) return;
-    visitorName({ type: 'enter', eligible });
-    if (!eligible || speakNotice === undefined) {
-      if (eligible) visitorName({ type: 'noticeFinished', ok: false });
+    // 🔴 通知を読み上げるのは、この enter が聞き取りを始めたときだけ。同じ画面での再送
+    // （言語の切り替えで noticeText が変わる等）では、復唱・打鍵の最中に通知を流さない (#1290)。
+    const started = visitorName({ type: 'enter', eligible });
+    if (!started) return;
+    if (speakNotice === undefined) {
+      visitorName({ type: 'noticeFinished', ok: false });
       return;
     }
     let cancelled = false;

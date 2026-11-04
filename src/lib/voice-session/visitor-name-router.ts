@@ -42,7 +42,13 @@ export type VisitorNameRouterDeps = {
 
 export type VisitorNameRouter = {
   notifyReceptionState(state: ReceptionState): void;
-  visitorName(input: VisitorNameCaptureInput): void;
+  /**
+   * 通知の結果・キーボード入力・画面へ入ったこと（`enter`）を受ける。
+   * 戻り値は**この入力で聞き取りを始めたか**（`off` から `notice` へ移ったか）。通知を読み上げて
+   * よいのは `true` のときだけ。同じ画面での `enter` の再送（言語の切り替え等）で通知を読み直すと、
+   * 復唱や来訪者の打鍵の最中に通知が流れ、マイクが拾えば言い直しの回数まで消費する (#1290)。
+   */
+  visitorName(input: VisitorNameCaptureInput): boolean;
   /** 確定した発話を受け取ったら true（相手の解決へは回さない）。 */
   takeTurn(text: string): boolean;
   /** 復唱中のボタンの答えなら true。 */
@@ -92,10 +98,13 @@ export function createVisitorNameRouter(deps: VisitorNameRouterDeps): VisitorNam
     }
   };
 
-  const apply = (event: VisitorNameCaptureEvent) => {
+  const apply = (event: VisitorNameCaptureEvent): void => {
+    const before = capture;
     const step = stepVisitorNameCapture(capture, event);
     capture = step.state;
     if (step.effect) toUi(step.effect);
+    // 何も変えない入力（enter の再送等）では待ち時間を測り直さない。
+    if (capture === before) return;
     // 待つのは名乗り・答えを待つ局面だけ。局面へ入り直すたび（言い直し・復唱）に測り直す。
     stopTimer();
     if (capture.phase === 'asking' || capture.phase === 'readback') {
@@ -117,8 +126,10 @@ export function createVisitorNameRouter(deps: VisitorNameRouterDeps): VisitorNam
       if (wasActive) deps.emit({ type: 'visitorNameStopped' });
     },
     visitorName(input) {
-      if (receptionState !== SCREEN) return;
+      if (receptionState !== SCREEN) return false;
+      const wasOff = capture.phase === 'off';
       apply(input);
+      return wasOff && capture.phase === 'notice';
     },
     takeTurn(text) {
       if (receptionState !== SCREEN) return false;

@@ -66,10 +66,8 @@ export class VoiceKioskStore {
     this.controller.confirmNo();
   };
 
-  /** 氏名の聞き取りへの入力（ADR 0011、#1290）。controller が未実装なら no-op。 */
-  visitorName = (input: VisitorNameCaptureInput): void => {
-    this.controller.visitorName?.(input);
-  };
+  /** 氏名の聞き取りへの入力（ADR 0011、#1290）。戻り値は聞き取りを始めたか。controller が未実装なら false。 */
+  visitorName = (input: VisitorNameCaptureInput): boolean => this.controller.visitorName?.(input) ?? false;
 
   /**
    * 現在の受付局面（`ReceptionState`）を controller へ中継する (issue #364/#363/#361 第9wave)。
