@@ -48,13 +48,16 @@ export function extractVisitorName(transcript: string): ProposedValue<string> | 
   return { value, confidence: introduced ? CONFIDENCE_SELF_INTRODUCED : CONFIDENCE_BARE };
 }
 
+/** 問い返しで終わる答え（「〜ですか」「〜かな」）。 */
+const QUESTION_END = /(?:か|かな|かね)$/u;
+
 export type ReadbackAnswer = 'yes' | 'no' | 'unknown';
 
 /**
  * 丁寧な否定（「〜ではありません」「合っていません」）も含める。肯定の語で始まっても否定を優先する。
  * 🔴 「ません」だけでは否定にしない —— 「問題ありません」「構いません」「すみません」は肯定や前置き (#1296)。
  */
-const NEGATIVE = /(?:いいえ|いや|違|ちが|(?:では|じゃ)(?:ない|ありません)|(?:合って|あって)い?ません|^no\b)/iu;
+const NEGATIVE = /(?:いいえ|いや|違|ちが|(?:では|じゃ|でも)(?:ない|ありません)|(?:合って|あって)い?(?:ない|ません)|^no\b)/iu;
 const AFFIRMATIVE = /^(?:はい|ええ|そうです|そう|お願いします|おねがいします|合って|あって|大丈夫|問題(?:ありません|ない)|構いません|かまいません|yes\b)/iu;
 
 /**
@@ -62,9 +65,12 @@ const AFFIRMATIVE = /^(?:はい|ええ|そうです|そう|お願いします|�
  * 「はい」とみなさない（「はい、違います」）。STT の確信度の下限は呼び出し側が先に見る（§3-b）。
  */
 export function classifyReadbackAnswer(text: string): ReadbackAnswer {
-  const normalized = text.normalize('NFKC').replace(EDGE_PUNCT, '');
+  const raw = text.normalize('NFKC');
+  const normalized = raw.replace(EDGE_PUNCT, '');
   if (normalized === '') return 'unknown';
   if (NEGATIVE.test(normalized)) return 'no';
+  // 問い返し・迷い（「そうですか？」「そうかな」）は肯定ではない。確定は、はっきりした肯定だけ。
+  if (/[?？]/u.test(raw) || QUESTION_END.test(normalized)) return 'unknown';
   if (AFFIRMATIVE.test(normalized)) return 'yes';
   return 'unknown';
 }
