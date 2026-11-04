@@ -24,6 +24,12 @@
       "module": "brace-expansion",
       "reason": "GHSA-rgw5-rvv9-x895 と同じ。aws-cdk-lib の bundleDependencies（minimatch 経由の brace-expansion 5.0.8）に同梱されており、overrides でも audit fix でも到達できない。最新の aws-cdk-lib 2.272.0 でも同梱は 5.0.9 で対象範囲内（2026-10-03 確認）。aws-cdk-lib は synth 時にしか動かず Lambda へは配られないため、外部入力がこの経路へ届かない。owner が 2026-10-03 に期限付きの受容を承認。",
       "expires": "2026-11-01"
+    },
+    {
+      "id": "GHSA-g3hv-75wg-m249",
+      "module": "minimatch",
+      "reason": "aws-cdk-lib@2.273.0 の bundleDependencies に同梱された minimatch@10.2.5（修正版は 11.0.1 以上）。tarball 内に含まれるため overrides でも audit fix でも到達できず、npm audit も fixAvailable=false を返す（2026-11-04 確認）。aws-cdk-lib は synth 時にしか動かず Lambda へは配られないため、外部入力がこの経路へ届かない。外す条件: aws-cdk-lib が minimatch 11.0.1 以上を同梱する版へ更新されたら、この entry を削除する。owner が 2026-11-04 に 30 日の期限付きの受容を承認。",
+      "expires": "2026-12-04"
     }
   ]
 }
