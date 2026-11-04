@@ -71,7 +71,7 @@ export interface VoiceSessionController {
    * （`enter`。音声で聞いてよいか）、通知の読み上げが終わったとき（`noticeFinished`）、
    * キーボードで入力したとき（`typing`）に呼ぶ。未実装の controller では no-op。
    */
-  /** 戻り値は、この入力で氏名の聞き取りを始めたか（通知を読み上げてよいか）。 */
+  /** 戻り値は、いま通知を読み上げるべきか（通知の完了を待つ局面か）。 */
   visitorName?(input: VisitorNameCaptureInput): boolean;
 }
 

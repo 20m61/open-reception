@@ -87,3 +87,17 @@ describe('名乗りでない決まり文句', () => {
     },
   );
 });
+
+/** 丁寧な否定（「〜ではありません」）を「はい」と読まない (#1296 の Codex レビュー)。合成データだけを使う。 */
+describe('復唱への丁寧な否定', () => {
+  it.each(['そうではありません', '大丈夫ではありません', 'そうじゃありません', '合っていません', 'そうではないです'])(
+    '「%s」は no',
+    (text) => {
+      expect(classifyReadbackAnswer(text)).toBe('no');
+    },
+  );
+
+  it.each(['そうです', '大丈夫です', '合ってます'])('下界: 「%s」は yes', (text) => {
+    expect(classifyReadbackAnswer(text)).toBe('yes');
+  });
+});

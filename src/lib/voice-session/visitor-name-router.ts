@@ -44,9 +44,13 @@ export type VisitorNameRouter = {
   notifyReceptionState(state: ReceptionState): void;
   /**
    * 通知の結果・キーボード入力・画面へ入ったこと（`enter`）を受ける。
-   * 戻り値は**この入力で聞き取りを始めたか**（`off` から `notice` へ移ったか）。通知を読み上げて
-   * よいのは `true` のときだけ。同じ画面での `enter` の再送（言語の切り替え等）で通知を読み直すと、
-   * 復唱や来訪者の打鍵の最中に通知が流れ、マイクが拾えば言い直しの回数まで消費する (#1290)。
+   * 戻り値は**いま通知を読み上げるべきか**（入力の後も通知の完了を待つ局面か）。通知を読み上げて
+   * よいのは `true` のときだけ (#1290):
+   * - 通知の途中の `enter` の再送（言語の切り替え等）は `true`。新しい言語で読み直し、その完了で
+   *   尋ねる（前の読み上げの完了は音声レイヤの cleanup が捨てるので、読み直さないと通知の局面に
+   *   取り残される）
+   * - 通知を読み終えた後の再送は `false`。復唱や来訪者の打鍵の最中に通知を流さない（マイクが
+   *   拾えば言い直しの回数まで消費する）
    */
   visitorName(input: VisitorNameCaptureInput): boolean;
   /** 確定した発話を受け取ったら true（相手の解決へは回さない）。 */
@@ -127,9 +131,8 @@ export function createVisitorNameRouter(deps: VisitorNameRouterDeps): VisitorNam
     },
     visitorName(input) {
       if (receptionState !== SCREEN) return false;
-      const wasOff = capture.phase === 'off';
       apply(input);
-      return wasOff && capture.phase === 'notice';
+      return capture.phase === 'notice';
     },
     takeTurn(text) {
       if (receptionState !== SCREEN) return false;

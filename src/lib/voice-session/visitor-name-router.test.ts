@@ -132,8 +132,9 @@ describe('createVisitorNameRouter', () => {
     const { router } = setup();
     router.notifyReceptionState('inputVisitorInfo');
     expect(router.visitorName({ type: 'enter', eligible: true })).toBe(true);
-    // 同じ画面での再送（言語の切り替え等）は、どの局面でも始めない。
-    expect(router.visitorName({ type: 'enter', eligible: true })).toBe(false);
+    // 通知の途中の再送（言語の切り替え等）は、新しい言語で読み直す（通知の完了を待つ局面のまま）。
+    expect(router.visitorName({ type: 'enter', eligible: true })).toBe(true);
+    // 通知を読み終えた後の再送は、どの局面でも読み直さない。
     router.visitorName({ type: 'noticeFinished', ok: true });
     expect(router.visitorName({ type: 'enter', eligible: true })).toBe(false);
     router.takeTurn('受付 太郎です');
@@ -146,6 +147,20 @@ describe('createVisitorNameRouter', () => {
     router.notifyReceptionState('confirming');
     router.notifyReceptionState('inputVisitorInfo');
     expect(router.visitorName({ type: 'enter', eligible: true })).toBe(true);
+  });
+
+  it('通知の途中で言語が切り替わっても、読み直した通知の完了で尋ねる（通知の局面に取り残さない）', () => {
+    // 音声レイヤの effect の順序を再現する: enter → 読み上げ → cleanup（前の完了を捨てる）→ enter → 読み上げ → 完了。
+    const { router, events, timer } = setup();
+    router.notifyReceptionState('inputVisitorInfo');
+    expect(router.visitorName({ type: 'enter', eligible: true })).toBe(true);
+    // 1 回目の読み上げの完了は cleanup で捨てられ、届かない。
+    expect(router.visitorName({ type: 'enter', eligible: true })).toBe(true);
+    router.visitorName({ type: 'noticeFinished', ok: true });
+    expect(events.at(-1)).toEqual({ type: 'visitorNameAsk', retry: false });
+    expect(timer.pendingMs).toBe(VISITOR_NAME_ANSWER_TIMEOUT_MS);
+    expect(router.takeTurn('受付 太郎です')).toBe(true);
+    expect(events.at(-1)).toEqual({ type: 'visitorNameReadback', name: '受付 太郎' });
   });
 
   it('何も変えない入力では、答えを待つ時間を測り直さない (#1290 の独立レビュー MINOR-1)', () => {

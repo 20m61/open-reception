@@ -14,11 +14,13 @@ export type VoiceNameKioskOptions = {
   visitorName?: string;
   target?: string;
   ttsFails?: boolean;
+  /** 読み上げが終わるまでの時間（既定 50ms）。通知の途中の操作を再現する。 */
+  ttsDurationMs?: number;
   unavailableStaffId?: string;
 };
 
 export async function openVoiceNameKiosk(page: Page, options: VoiceNameKioskOptions = {}): Promise<void> {
-  await page.addInitScript((ttsFails: boolean) => {
+  await page.addInitScript(({ ttsFails, ttsDurationMs }: { ttsFails: boolean; ttsDurationMs: number }) => {
     const spoken: string[] = [];
     (window as unknown as { __spoken: string[] }).__spoken = spoken;
     class Utterance {
@@ -39,13 +41,13 @@ export async function openVoiceNameKiosk(page: Page, options: VoiceNameKioskOpti
           setTimeout(() => {
             if (ttsFails) return u.onerror?.();
             u.onstart?.();
-            setTimeout(() => u.onend?.(), 50);
+            setTimeout(() => u.onend?.(), ttsDurationMs);
           }, 0);
         },
         cancel() {},
       },
     });
-  }, options.ttsFails === true);
+  }, { ttsFails: options.ttsFails === true, ttsDurationMs: options.ttsDurationMs ?? 50 });
 
   await page.route('**/api/kiosk/voice', async (route) => {
     const response = await route.fetch();

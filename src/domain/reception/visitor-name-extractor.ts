@@ -50,7 +50,8 @@ export function extractVisitorName(transcript: string): ProposedValue<string> | 
 
 export type ReadbackAnswer = 'yes' | 'no' | 'unknown';
 
-const NEGATIVE = /(?:いいえ|いや|違|ちが|じゃない|ではない|^no\b)/iu;
+/** 丁寧な否定（「〜ではありません」「合っていません」）も含める。肯定の語で始まっても否定を優先する。 */
+const NEGATIVE = /(?:いいえ|いや|違|ちが|(?:では|じゃ)(?:ない|ありません)|ません|^no\b)/iu;
 const AFFIRMATIVE = /^(?:はい|ええ|そうです|そう|お願いします|おねがいします|合って|あって|大丈夫|yes\b)/iu;
 
 /**

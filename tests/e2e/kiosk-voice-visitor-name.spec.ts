@@ -141,6 +141,22 @@ test.describe('音声で氏名を聞き取る (ADR 0011、#1290)', () => {
     await expect(page.getByTestId('voice-confirm-yes')).toBeVisible();
   });
 
+  test('通知の途中で「やさしい日本語」へ切り替えたら、読み直した通知の後に尋ねる（無言で止まらない）', async ({ page }) => {
+    await openKiosk(page, { visitorName: '受付 太郎です', ttsDurationMs: 2000 });
+    await toVisitorInfo(page);
+    // 通知の読み上げ中（代役は 2 秒で終わる）に切り替える。
+    await expect
+      .poll(async () => (await spokenTexts(page)).some((t) => t.startsWith('受付のため、お名前をお伺いします。')))
+      .toBe(true);
+    await page.getByTestId('a11y-menu-button').click();
+    await page.getByTestId('a11y-simple-japanese-toggle').click();
+    await page.getByTestId('a11y-menu-close').click();
+
+    // 読み直した通知の完了で尋ね、名乗りを復唱する。
+    await expect(voiceMode(page)).toHaveAttribute('data-voice-mode', 'readback', { timeout: 10_000 });
+    await expect(page.getByTestId('voice-confirm-yes')).toBeVisible();
+  });
+
   test('不在の人を名指ししたら、無言で聞き直さずに不在を告げる', async ({ page }) => {
     await openKiosk(page, { target: '鈴木 花子', unavailableStaffId: 'staff-suzuki' });
     await page.getByTestId('start-reception').click();

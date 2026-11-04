@@ -66,7 +66,7 @@ export class VoiceKioskStore {
     this.controller.confirmNo();
   };
 
-  /** 氏名の聞き取りへの入力（ADR 0011、#1290）。戻り値は聞き取りを始めたか。controller が未実装なら false。 */
+  /** 氏名の聞き取りへの入力（ADR 0011、#1290）。戻り値は、いま通知を読み上げるべきか。controller が未実装なら false。 */
   visitorName = (input: VisitorNameCaptureInput): boolean => this.controller.visitorName?.(input) ?? false;
 
   /**

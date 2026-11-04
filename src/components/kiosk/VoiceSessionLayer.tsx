@@ -91,10 +91,11 @@ export function VoiceSessionLayer({
   const noticeText = visitorNameVoice?.noticeText ?? '';
   useEffect(() => {
     if (eligible === null) return;
-    // 🔴 通知を読み上げるのは、この enter が聞き取りを始めたときだけ。同じ画面での再送
-    // （言語の切り替えで noticeText が変わる等）では、復唱・打鍵の最中に通知を流さない (#1290)。
-    const started = visitorName({ type: 'enter', eligible });
-    if (!started) return;
+    // 🔴 通知を読み上げるのは、結線が「通知の完了を待つ局面」と答えたときだけ (#1290)。
+    // 通知の途中の再送（言語の切り替え）は新しい言語で読み直す（前の完了は下の cleanup が捨てる）。
+    // 読み終えた後の再送では、復唱・打鍵の最中に通知を流さない。
+    const shouldSpeak = visitorName({ type: 'enter', eligible });
+    if (!shouldSpeak) return;
     if (speakNotice === undefined) {
       visitorName({ type: 'noticeFinished', ok: false });
       return;
