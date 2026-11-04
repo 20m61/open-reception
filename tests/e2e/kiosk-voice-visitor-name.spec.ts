@@ -129,6 +129,12 @@ test.describe('音声で氏名を聞き取る (ADR 0011、#1290)', () => {
     await page.getByTestId('purpose-meeting').click();
     await expect(voiceMode(page)).toHaveAttribute('data-voice-mode', /unavailable|readback/);
     await expect(page.getByTestId('voice-caption')).toContainText('鈴木 花子');
+    // 復唱を経る経路では「はい」の後に不在を告げる (#803)。復唱で止まったままを緑にしない。
+    if ((await voiceMode(page).getAttribute('data-voice-mode')) === 'readback') {
+      await page.getByTestId('voice-confirm-yes').click();
+    }
+    await expect(voiceMode(page)).toHaveAttribute('data-voice-mode', 'unavailable');
+    await expect(page.getByTestId('voice-caption')).toContainText('鈴木 花子は現在不在です');
     await page.screenshot({ path: `${SHOTS}/07-unavailable-target.png` });
   });
 });
