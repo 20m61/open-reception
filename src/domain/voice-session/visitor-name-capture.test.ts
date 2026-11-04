@@ -255,6 +255,40 @@ describe('キーボードとの関係（§3-c・§4）', () => {
   });
 });
 
+describe('使えなかった言い直しは draft から消す（#1290、replaceConversationSlot）', () => {
+  const candidateIn = (state: VisitorNameCapture) =>
+    state.phase === 'asking' || state.phase === 'readback' ? state.draft.visitorName : 'no-draft';
+
+  it('聞き直している間の draft に、退けた・使えなかった候補を残さない（どの失敗の種類でも）', () => {
+    const failures: VisitorNameCaptureEvent[][] = [
+      [heard('いいえ')],
+      [{ type: 'answer', yes: false }],
+      [heard('はい', STT_LOW)],
+      [heard('えっと')],
+      [{ type: 'noAnswer' }],
+    ];
+    for (const failure of failures) {
+      const { state } = run([...READY, heard('受付 太郎です'), ...failure]);
+      expect(state.phase, JSON.stringify(failure)).toBe('asking');
+      expect(candidateIn(state), JSON.stringify(failure)).toBeUndefined();
+    }
+  });
+
+  it('使える値にならなかった名乗り（下限未満・上限超え・名乗りでない）の後も、draft は空', () => {
+    for (const bad of [heard('受付です', STT_LOW), heard('あ'.repeat(VISITOR_NAME_MAX_LENGTH + 1)), heard('田中さんに会いに来ました')]) {
+      const { state } = run([...READY, bad]);
+      expect(state.phase).toBe('asking');
+      expect(candidateIn(state)).toBeUndefined();
+    }
+  });
+
+  it('復唱中の draft には、いま復唱している候補だけがある（下界）', () => {
+    const { state } = run([...READY, heard('受付 太郎です'), heard('いいえ'), heard('受付 花子です')]);
+    expect(state.phase).toBe('readback');
+    expect(candidateIn(state)).toMatchObject({ kind: 'resolved', value: '受付 花子' });
+  });
+});
+
 describe('画面を出たら捨てる（§3-c・§6）', () => {
   it('leave で候補も回数も捨てる。再入場は数え直す', () => {
     const left = run([...READY, heard('受付です'), heard('いいえ'), { type: 'leave' }]);

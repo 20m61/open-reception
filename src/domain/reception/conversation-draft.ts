@@ -228,6 +228,16 @@ function isPastScreen(key: keyof ConversationDraft, state: ReceptionState): bool
   return here >= 0 && RETAINED_STATE_ORDER.indexOf(SLOT_SCREEN[key]) < here;
 }
 
+/**
+ * 状態 `state` で、`key` の slot がまだ開いているか（受付途中の画面に居て、その slot の画面を
+ * 通り過ぎていない）。言い直しが使える値にならなかったときに `replaceConversationSlot` で
+ * 消してよいのは、開いている slot だけ（通り過ぎた画面の値は状態機械が受け取り済みなので、
+ * draft の上で消すと画面の状態と食い違う。直すのは `BACK` で戻ってから）。
+ */
+export function isConversationSlotOpen(key: keyof ConversationDraft, state: ReceptionState): boolean {
+  return DRAFT_RETAINED_STATES.has(state) && !isPastScreen(key, state);
+}
+
 function withoutUndefined(draft: ConversationDraft): ConversationDraft {
   const next: ConversationDraft = {};
   for (const key of DRAFT_KEYS) {

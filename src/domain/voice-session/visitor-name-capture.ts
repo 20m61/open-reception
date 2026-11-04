@@ -1,4 +1,5 @@
 import {
+  isConversationSlotOpen,
   mergeConversationDraft,
   nextConversationFocus,
   replaceConversationSlot,
@@ -22,7 +23,8 @@ import { DEFAULT_ENTITY_RESOLUTION_THRESHOLDS } from '@/domain/voice-stt/entity-
  * - 失敗は累計 `VISITOR_NAME_MAX_ATTEMPTS` 回まで。尽きたらキーボードへ移る（§3-c）。
  * - 打ち始めたら止め、この画面では戻らない（§3-c）。画面を出たら候補も回数も捨てる（§6）。
  *
- * PII: 候補の氏名は `readback` の局面の draft にしか置かない。確定・失敗・退出で捨てる。
+ * PII: 候補の氏名は `readback` の局面の draft にしか残さない。退けた・使えなかった言い直しは
+ * `replaceConversationSlot` で draft から消し（`asking` の draft に氏名は無い）、確定・退出で draft ごと捨てる。
  * 効果（`readback` / `confirmed`）で外へ渡す氏名は、画面の表示・読み上げ・入力欄にだけ使い、
  * ログ・計測へ渡さない。
  */
@@ -38,7 +40,7 @@ export type VisitorNameKeyboardReason = 'ineligible' | 'noticeFailed' | 'typing'
 export type VisitorNameCapture =
   | { phase: 'off' }
   | { phase: 'notice' }
-  | { phase: 'asking'; failures: number }
+  | { phase: 'asking'; failures: number; draft: ConversationDraft }
   | { phase: 'readback'; failures: number; draft: ConversationDraft }
   | { phase: 'keyboard'; reason: VisitorNameKeyboardReason }
   | { phase: 'confirmed' };
@@ -94,12 +96,22 @@ function candidateName(text: string, sttConfidence: number): ConversationDraft['
   ).visitorName;
 }
 
-function failed(failures: number): VisitorNameCaptureStep {
+const SCREEN = 'inputVisitorInfo' as const;
+
+/**
+ * 言い直しが使える値にならなかった（「いいえ」・下限未満・抽出できない・上限超え・無応答）。
+ * 氏名の slot がまだ開いているので、`replaceConversationSlot` で消してから聞き直す
+ * （merge は「言及なし」を前の値の維持と読むので、消さないと前の候補が draft に残る。#1088）。
+ */
+function failed(failures: number, draft: ConversationDraft): VisitorNameCaptureStep {
   const next = failures + 1;
   if (next >= VISITOR_NAME_MAX_ATTEMPTS) {
     return { state: { phase: 'keyboard', reason: 'exhausted' }, effect: { kind: 'keyboard' } };
   }
-  return { state: { phase: 'asking', failures: next }, effect: { kind: 'askAgain' } };
+  const cleared = isConversationSlotOpen('visitorName', SCREEN)
+    ? replaceConversationSlot(draft, 'visitorName', undefined)
+    : draft;
+  return { state: { phase: 'asking', failures: next, draft: cleared }, effect: { kind: 'askAgain' } };
 }
 
 function readbackName(draft: ConversationDraft): string | undefined {
@@ -107,37 +119,38 @@ function readbackName(draft: ConversationDraft): string | undefined {
   return slot?.kind === 'resolved' ? slot.value : undefined;
 }
 
-function heardInAsking(failures: number, text: string, sttConfidence: number): VisitorNameCaptureStep {
+function heardInAsking(
+  state: Extract<VisitorNameCapture, { phase: 'asking' }>,
+  text: string,
+  sttConfidence: number,
+): VisitorNameCaptureStep {
   const slot = candidateName(text, sttConfidence);
-  if (slot === undefined) return failed(failures);
-  const draft = mergeConversationDraft({}, { visitorName: slot }, 'inputVisitorInfo');
+  if (slot === undefined) return failed(state.failures, state.draft);
+  const draft = mergeConversationDraft(state.draft, { visitorName: slot }, SCREEN);
   const name = readbackName(draft);
-  if (name === undefined || nextConversationFocus(draft, 'inputVisitorInfo').kind !== 'readback') {
-    return failed(failures);
+  if (name === undefined || nextConversationFocus(draft, SCREEN).kind !== 'readback') {
+    return failed(state.failures, draft);
   }
+  const failures = state.failures;
   return { state: { phase: 'readback', failures, draft }, effect: { kind: 'readback', name } };
 }
 
 function confirm(state: Extract<VisitorNameCapture, { phase: 'readback' }>): VisitorNameCaptureStep {
   const name = readbackName(state.draft);
-  if (name === undefined) return failed(state.failures);
+  if (name === undefined) return failed(state.failures, state.draft);
   const draft = replaceConversationSlot(state.draft, 'visitorName', {
     kind: 'resolved',
     value: name,
     evidence: { source: 'voice', certainty: 'confirmed' },
   });
   // 復唱への肯定で、planner から見ても氏名が取得済みになっていること（#1088 と同じ判定）。
-  if (nextConversationFocus(draft, 'inputVisitorInfo').kind !== 'finalConfirmation') return failed(state.failures);
+  if (nextConversationFocus(draft, SCREEN).kind !== 'finalConfirmation') return failed(state.failures, state.draft);
   return { state: { phase: 'confirmed' }, effect: { kind: 'confirmed', name } };
 }
 
-/**
- * 復唱を退けたら聞き直す。`asking` は draft を持たないので、前の候補は構造的に残らない
- * （merge は「言及なし」を前の値の維持と読むため、draft を持ち越すと前の氏名がまた復唱される。
- * #1088 の `replaceConversationSlot` の注記と同じ欠陥を、持ち越さないことで避ける）。
- */
+/** 復唱を退けたら（「いいえ」・下限未満・どちらでもない・無応答）、候補を消して氏名から聞き直す（§3-c）。 */
 function rejected(state: Extract<VisitorNameCapture, { phase: 'readback' }>): VisitorNameCaptureStep {
-  return failed(state.failures);
+  return failed(state.failures, state.draft);
 }
 
 export function stepVisitorNameCapture(
@@ -161,7 +174,7 @@ export function stepVisitorNameCapture(
       if (event.type === 'typing') return { state: { phase: 'keyboard', reason: 'typing' } };
       if (event.type !== 'noticeFinished') return { state };
       return event.ok
-        ? { state: { phase: 'asking', failures: 0 }, effect: { kind: 'listen' } }
+        ? { state: { phase: 'asking', failures: 0, draft: {} }, effect: { kind: 'listen' } }
         : { state: { phase: 'keyboard', reason: 'noticeFailed' } };
 
     case 'asking':
@@ -169,9 +182,9 @@ export function stepVisitorNameCapture(
         case 'typing':
           return { state: { phase: 'keyboard', reason: 'typing' }, effect: { kind: 'stopped' } };
         case 'heard':
-          return heardInAsking(state.failures, event.text, event.sttConfidence);
+          return heardInAsking(state, event.text, event.sttConfidence);
         case 'noAnswer':
-          return failed(state.failures);
+          return failed(state.failures, state.draft);
         default:
           return { state };
       }
