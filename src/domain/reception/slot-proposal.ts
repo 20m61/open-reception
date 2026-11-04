@@ -1,6 +1,10 @@
 import { isVisitorNameWithinLimit } from './session';
+import type { ReceptionState } from './state';
 import {
+  isConversationSlotOpen,
+  mergeConversationDraft,
   normalizeConversationDraft,
+  replaceConversationSlot,
   type ConversationDraft,
   type ConversationSlot,
   type ConversationTarget,
@@ -277,4 +281,41 @@ export function resolveReceptionSlotProposal(
     ...(visitorName ? { visitorName } : {}),
     ...(unavailableTarget ? { unavailableTarget } : {}),
   };
+}
+
+/**
+ * 1 発話の提案を draft へ足す (#1290、owner の判断 A)。
+ *
+ * - 使える値（`target` / `visitorName`）は `mergeConversationDraft` で足す（画面で確定した値は
+ *   音声で上書きしない・通り過ぎた画面の slot は変えない、は merge の規則のまま）。
+ * - その slot に触れたのに使える値にならなかった（不在の人の名指し・一致なし・下限未満・
+ *   長すぎる氏名）ときは、slot が**まだ開いている**ときだけ `replaceConversationSlot` で消す。
+ *   merge は「言及なし」を前の値の維持と読むので、消さないと前の相手・氏名がまた復唱される。
+ *
+ * 🔴 本番の KioskFlow の相手の経路は、まだ `bridgeCommittedTurn` を直接使っていてここを通らない
+ * （本番の配線は #1292）。氏名の聞き取りは `visitor-name-capture.ts` が同じ規則で消している。
+ */
+export function mergeSlotProposalIntoDraft(
+  draft: ConversationDraft,
+  proposal: ReceptionSlotProposal,
+  options: ResolveSlotProposalOptions,
+  state: ReceptionState,
+): ConversationDraft {
+  const resolved = resolveReceptionSlotProposal(proposal, options);
+  let next = mergeConversationDraft(
+    draft,
+    {
+      ...(resolved.target ? { target: resolved.target } : {}),
+      ...(resolved.visitorName ? { visitorName: resolved.visitorName } : {}),
+    },
+    state,
+  );
+  const mentioned = (value: ProposedValue<string> | undefined) => value !== undefined && value.value.trim() !== '';
+  if (mentioned(proposal.targetQuery) && !resolved.target && isConversationSlotOpen('target', state)) {
+    next = replaceConversationSlot(next, 'target', undefined);
+  }
+  if (mentioned(proposal.visitorName) && !resolved.visitorName && isConversationSlotOpen('visitorName', state)) {
+    next = replaceConversationSlot(next, 'visitorName', undefined);
+  }
+  return next;
 }
