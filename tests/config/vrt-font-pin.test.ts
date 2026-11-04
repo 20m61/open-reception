@@ -2,10 +2,12 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { makeTempFile } from '../helpers/temp';
 import {
   ALLOWED_FAMILIES,
   FONT_PIN_CHECKED_ENV,
   checkPinnedFontsOnce,
+  runPinnedFcList,
   PINNED_FONTCONFIG_FILE,
   REQUIRED_FAMILIES,
   missingPinnedFamilies,
@@ -128,7 +130,7 @@ describe('missingPinnedFamilies / unexpectedFamilies', () => {
     expect(unexpectedFamilies(full)).toEqual([]);
   });
 
-  it('許可してよいファミリーは実測で見えた 14 個（実装の定数から期待値を導かない）', () => {
+  it('許可してよいファミリーは実測で見えた 14 個 ＋ 古い fonts-liberation の Narrow（実装の定数から期待値を導かない）', () => {
     expect([...ALLOWED_FAMILIES].sort()).toEqual(
       [
         'WenQuanYi Zen Hei',
@@ -140,6 +142,7 @@ describe('missingPinnedFamilies / unexpectedFamilies', () => {
         'Liberation Sans',
         'Liberation Mono',
         'Liberation Serif',
+        'Liberation Sans Narrow',
         'FreeSans',
         'FreeMono',
         'FreeSerif',
@@ -252,5 +255,16 @@ describe.runIf(process.platform === 'linux' && hasFcList)('この環境の fontc
       env: { ...process.env, FONTCONFIG_FILE: PINNED_FONTCONFIG_FILE },
     });
     expect(match).toMatch(/WenQuanYi Zen Hei/);
+  });
+});
+
+describe.runIf(process.platform === 'linux' && hasFcList)('runPinnedFcList（config が使う fc-list）', () => {
+  it('与えた env のまま実行する（system の env で数えない）', () => {
+    // フォントのディレクトリを 1 つも読まない設定。env が渡っていれば何も見えない。
+    const empty = makeTempFile('vrt-font-pin-', '<?xml version="1.0"?><fontconfig></fontconfig>', '.conf');
+    expect(runPinnedFcList({ ...process.env, FONTCONFIG_FILE: empty }).trim()).toBe('');
+    const pinned = runPinnedFcList({ ...process.env, FONTCONFIG_FILE: PINNED_FONTCONFIG_FILE });
+    expect(missingPinnedFamilies(pinned)).toEqual([]);
+    expect(unexpectedFamilies(pinned)).toEqual([]);
   });
 });

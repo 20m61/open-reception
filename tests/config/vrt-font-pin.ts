@@ -1,11 +1,13 @@
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 
 /**
  * VRT の撮影フォントを固定する (#1289)。
  *
- * linux の baseline は、`playwright install-deps` が入れるフォント群から **IPA ゴシックと
- * Unifont を除き**、fontconfig 既定の DejaVu を足した環境と同じ描画になる（どちらも install-deps が
- * 入れるが、入っていると baseline と合わない。実測は `docs/quality-gate.md`「VRT の撮影フォント」）。
+ * linux の baseline は、`playwright install-deps` が入れるフォント群から **IPA ゴシックを除き**、
+ * fontconfig 既定の DejaVu を足した環境と同じ描画になる（IPA は install-deps が入れるが、見えると
+ * baseline と合わない。Unifont も入れるが、見えても今の画面の描画は変わらなかった。どちらも許可しない。
+ * 実測は `docs/quality-gate.md`「VRT の撮影フォント」）。
  * Cloud の環境にはそのほかに Noto Sans CJK・システムの Inter などもあり、日本語のフォールバック先と
  * 合成ボールドの掛かり方が変わって VRT 14 件が落ちていた。
  *
@@ -44,6 +46,9 @@ export const ALLOWED_FAMILIES: ReadonlySet<string> = new Set([
   'Liberation Sans',
   'Liberation Mono',
   'Liberation Serif',
+  // Ubuntu 22.04 / Debian 12 の fonts-liberation（1.07.x）は Narrow を同じディレクトリに置く。
+  // 名前で指定されたときだけ使われ（Arial Narrow の metric alias）、VRT の描画は変えない。
+  'Liberation Sans Narrow',
   'FreeSans',
   'FreeMono',
   'FreeSerif',
@@ -84,6 +89,14 @@ export function unexpectedFamilies(listing: string): string[] {
   return familyLines(listing)
     .filter((names) => !names.some((name) => ALLOWED_FAMILIES.has(name)))
     .map((names) => names.join(','));
+}
+
+/**
+ * 与えた env のまま `fc-list : family` を実行する（config から使う）。env をそのまま渡すことを
+ * テストで縛る —— ここで system の env を使うと、Cloud では毎回偽の「混入」を出す。
+ */
+export function runPinnedFcList(env: Record<string, string | undefined>): string {
+  return execFileSync('fc-list', [':', 'family'], { encoding: 'utf8', env: env as NodeJS.ProcessEnv });
 }
 
 /** 既に確かめたことを worker へ伝える環境変数（config は worker ごとに読まれ、worker は env を継ぐ）。 */

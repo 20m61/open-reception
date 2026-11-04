@@ -720,16 +720,17 @@ linux の chromium には、撮影に使うフォントの**許可リスト**（
 `FONTCONFIG_FILE` で渡している（`playwright.config.ts` / `tests/config/vrt-font-pin.ts`）。
 darwin は CoreText なので何も変わらない。
 
-**なぜ要るか。** linux の baseline は、`playwright install-deps` のフォント群から **IPA ゴシックと
-Unifont を除き**、fontconfig 既定の DejaVu を足した環境と同じ描画になる（IPA と Unifont は
-install-deps 自身が入れるが、どちらかが見えると baseline と合わない。下の表）。Cloud の環境には
+**なぜ要るか。** linux の baseline は、`playwright install-deps` のフォント群から **IPA ゴシックを
+除き**、fontconfig 既定の DejaVu を足した環境と同じ描画になる（IPA は install-deps 自身が入れるが、
+見えると baseline と合わない。下の表）。Unifont も install-deps が入れるが、見えても今の画面の描画は
+変わらなかった（実測）。それでも許可リストには入れない（知らないものは通さない）。Cloud の環境には
 さらに Noto Sans CJK・システムの Inter なども入っていて、
 日本語の描画が変わり、**手を加えていない main でも VRT が 14 件落ちていた**（2026-10 の PR は
 全部「VRT 14 件だけ FAIL」として扱われていた）。コードの退行ではない。
 
 | 許可する（`<dir>`） | 外す（実測でどれも baseline と合わなくなる） |
 | --- | --- |
-| WenQuanYi Zen Hei・DejaVu・Liberation・FreeFont・Loma（tlwg）・Noto Color Emoji | IPA ゴシック・Noto Sans/Serif CJK・Unifont・システムの Inter（JetBrains Mono 等もディレクトリごと読まない） |
+| WenQuanYi Zen Hei・DejaVu・Liberation・FreeFont・Loma（tlwg）・Noto Color Emoji | IPA ゴシック・Noto Sans/Serif CJK・Unifont・システムの Inter（JetBrains Mono 等もディレクトリごと読まない。Unifont は見えても一致したが、許可していないものは通さない） |
 
 2026-10-28 の Cloud の環境での実測（`pristine-state` の VRT 16 本、`--retries=0`）:
 
@@ -742,6 +743,7 @@ install-deps 自身が入れるが、どちらかが見えると baseline と合
 | 許可リスト ＋ IPA ゴシック | 14 failed |
 | DejaVu と WenQuanYi だけ | 5 failed |
 | 許可リスト（conf.d を読まない） | 14 failed（合成ボールド・ヒンティングが変わる） |
+| 許可リスト ＋ Unifont（2026-11-04） | 16 passed（Unifont は今の画面では使われない） |
 | **許可リスト** | **16 passed（3 回連続）** |
 
 - **baseline は撮り直していない。** 許可リストで既存の baseline と画素単位で一致する
@@ -753,7 +755,11 @@ install-deps 自身が入れるが、どちらかが見えると baseline と合
   `playwright.config.ts` がそれを `[vrt-font-pin]` の警告で実行ごとに 1 度だけ名指しする（VRT は
   描画差で落ちる）。Debian/Ubuntu では `npx playwright install-deps chromium`・`fonts-dejavu-core`・
   `fontconfig`（`fc-list` の CLI。install-deps はライブラリしか入れない）で揃う。IPA と Unifont は
-  install-deps が入れるが、許可したディレクトリの外なので見えない
+  install-deps が入れるが、許可したディレクトリの外なので見えない。Ubuntu 22.04 / Debian 12 の
+  `fonts-liberation`（1.07.x）が置く `Liberation Sans Narrow` は、名前で指定されたときだけ使われる
+  （VRT の描画を変えない）ので許可している
+- 許可リストは `/etc/fonts/conf.d` を読むので、その `50-user.conf` 経由で**開発者個人のフォント**
+  （`~/.config/fontconfig/fonts.conf`・`~/.fonts`）も見えうる。見えれば上の警告が名指しする
 - 🔴 **linux の unit（`--fast`）も、これらのフォントと `fc-list` を要求する。**
   `tests/config/vrt-font-pin.test.ts` は `fc-list` がある linux で、許可リストの中身を実際に
   解決して確かめる（`fc-list` が無ければその検査だけ飛ぶ）。フォントの欠けた開発機では unit が赤くなる

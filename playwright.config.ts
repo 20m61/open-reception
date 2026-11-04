@@ -1,7 +1,6 @@
-import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { defineConfig, devices } from '@playwright/test';
-import { checkPinnedFontsOnce, pinnedFontEnv } from './tests/config/vrt-font-pin';
+import { checkPinnedFontsOnce, pinnedFontEnv, runPinnedFcList } from './tests/config/vrt-font-pin';
 
 const PORT = Number(process.env.PORT ?? 3000);
 /**
@@ -91,9 +90,7 @@ const pinnedFonts = pinnedFontEnv(process.platform, process.env);
  * 許可リストのフォントが入っていない linux では、VRT は描画差で落ちる。コードの退行と
  * 見分けられるよう、何が足りない・混ざっているかを実行全体で 1 度だけ名指しする。
  */
-const fontPinWarning = checkPinnedFontsOnce(process.platform, process.env, (env) =>
-  execFileSync('fc-list', [':', 'family'], { encoding: 'utf8', env: env as NodeJS.ProcessEnv }),
-);
+const fontPinWarning = checkPinnedFontsOnce(process.platform, process.env, runPinnedFcList);
 if (fontPinWarning !== null) console.warn(fontPinWarning);
 
 // executablePath の解決と**マージ**する（置き換えると Claude Code on the web の
