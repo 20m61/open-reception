@@ -159,9 +159,19 @@ export function stepVisitorNameCapture(
 ): VisitorNameCaptureStep {
   if (event.type === 'leave') return { state: { phase: 'off' } };
   if (event.type === 'enter') {
-    return {
-      state: event.eligible ? { phase: 'notice' } : { phase: 'keyboard', reason: 'ineligible' },
-    };
+    // 🔴 聞き取りを始めるのは、画面へ入った最初の 1 回（`off` から）だけ。同じ画面にいる間の再送
+    // （言語の切り替え等）で、打ち始めた・確定した・回数を数えている状態を生き返らせない (#1290)。
+    if (state.phase === 'off') {
+      return {
+        state: event.eligible ? { phase: 'notice' } : { phase: 'keyboard', reason: 'ineligible' },
+      };
+    }
+    // 聞いている途中で聞けない条件へ変わったら、表示を畳んでキーボードへ移る（復唱を残さない）。
+    const listening = state.phase === 'notice' || state.phase === 'asking' || state.phase === 'readback';
+    if (!event.eligible && listening) {
+      return { state: { phase: 'keyboard', reason: 'ineligible' }, effect: { kind: 'stopped' } };
+    }
+    return { state };
   }
 
   switch (state.phase) {

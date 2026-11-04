@@ -117,6 +117,17 @@ describe('createVisitorNameRouter', () => {
     expect(timer.pendingMs).toBeNull();
   });
 
+  it('復唱への答えを待つ時間も測る。過ぎたら退けたものとして聞き直す (#1290 の独立レビュー m-5)', () => {
+    const { router, events, confirmed, timer } = setup();
+    onScreen(router);
+    router.takeTurn('受付 太郎です');
+    expect(events.at(-1)).toEqual({ type: 'visitorNameReadback', name: '受付 太郎' });
+    expect(timer.pendingMs).toBe(VISITOR_NAME_ANSWER_TIMEOUT_MS);
+    timer.fire();
+    expect(events.at(-1)).toEqual({ type: 'visitorNameAsk', retry: true });
+    expect(confirmed).toEqual([]);
+  });
+
   it('打ち始めたら畳み、待ち時間も止める', () => {
     const { router, events, timer } = setup();
     onScreen(router);

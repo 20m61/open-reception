@@ -64,3 +64,25 @@ describe('classifyReadbackAnswer', () => {
     expect(classifyReadbackAnswer(text)).toBe('unknown');
   });
 });
+
+/** 名乗りでない決まり文句・自分の促しの回り込みを、氏名の候補にしない (#1290 の独立レビュー m-1)。 */
+describe('名乗りでない決まり文句', () => {
+  it.each([
+    'すみません',
+    'すいません',
+    'ちょっと待ってください',
+    'もう一度、お名前をお話しください',
+    'わかりません',
+    '聞こえません',
+  ])('「%s」は下限を下回る', (text) => {
+    const proposal = extractVisitorName(text);
+    expect(proposal === undefined || proposal.confidence < FLOOR).toBe(true);
+  });
+
+  it.each(['受付 太郎', '受付太郎です', '待田 花子', '待田花子と申します'])(
+    '下界: 「%s」は下限以上の候補になる',
+    (text) => {
+      expect(extractVisitorName(text)?.confidence ?? 0).toBeGreaterThanOrEqual(FLOOR);
+    },
+  );
+});

@@ -364,7 +364,7 @@ export function voiceListeningStage(
  * 見える —— 名前を声で言った来訪者が、画面下部の字幕へ視線を落とすとは限らない。
  */
 export function announcementFor(
-  state: Pick<VoiceKioskState, 'mode' | 'readbackName' | 'readbackKind' | 'listeningPrompt'>,
+  state: Pick<VoiceKioskState, 'mode' | 'readbackName' | 'readbackKind' | 'listeningPrompt' | 'interimText'>,
 ): { key: VoiceKioskCaptionKey; name: string } | null {
   if (state.mode === 'unavailable') {
     return { key: 'voice.unavailable.staffAbsent', name: state.readbackName ?? '' };
@@ -377,7 +377,16 @@ export function announcementFor(
   if (state.mode === 'readback' && state.readbackKind === 'visitorName') {
     return { key: 'voice.readback.confirmVisitorName', name: state.readbackName ?? '' };
   }
-  if (state.mode === 'listening' && state.listeningPrompt === 'visitorNameRetry') {
+  /*
+   * 🔴 来訪者の発話の途中経過（interim）が出ている間は読み上げない。促しは `visitorNameAsk` の
+   * 遷移（interim を持たない）でだけ声に出す。途中経過ごとに作り直される状態を「新しい局面」と
+   * 読むと、来訪者の発話へ促しを何度も重ね、マイクが拾えば言い直しの回数まで消費する（#1290）。
+   */
+  if (
+    state.mode === 'listening' &&
+    state.listeningPrompt === 'visitorNameRetry' &&
+    state.interimText === undefined
+  ) {
     return { key: 'voice.visitorName.askAgain', name: '' };
   }
   if (state.mode === 'keyboardGuide') return { key: 'voice.visitorName.keyboard', name: '' };

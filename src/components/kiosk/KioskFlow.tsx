@@ -977,7 +977,7 @@ export function KioskFlow({
     setVisitorTypingSignal((n) => n + 1);
   }, []);
 
-  /** 言い直しが尽きた (§3-c)。氏名の入力欄へフォーカスを移す（iPad ではキーボードが開く）。 */
+  /** 言い直しが尽きた (§3-c)。氏名の入力欄へフォーカスを移す。iOS Safari は利用者の操作の外の `focus()` ではキーボードを開かないので、開くのは案内を見た来訪者が欄に触れたとき。 */
   const focusVisitorNameInput = useCallback(() => {
     document.querySelector<HTMLElement>('#visitor-name, [data-field-key="name"]')?.focus();
   }, []);

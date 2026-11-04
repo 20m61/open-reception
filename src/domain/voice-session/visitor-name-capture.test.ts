@@ -313,3 +313,44 @@ describe('画面を出たら捨てる（§3-c・§6）', () => {
     expect(JSON.stringify(state)).not.toContain('受付');
   });
 });
+
+/**
+ * 同じ画面にいる間の `enter` の再送（言語の切り替えで依存が変わる等）で、聞き取りを生き返らせない
+ * (#1290 の独立レビュー m-2)。合成データだけを使う。
+ */
+describe('同じ画面での enter の再送', () => {
+  const asking = [{ type: 'enter', eligible: true }, { type: 'noticeFinished', ok: true }] as const;
+
+  it.each([
+    ['打ち始めた後', [{ type: 'enter', eligible: true }, { type: 'typing' }]],
+    ['確定した後', [...asking, { type: 'heard', text: '受付 太郎です', sttConfidence: STT_OK }, { type: 'answer', yes: true }]],
+    ['通知を読めなかった後', [{ type: 'enter', eligible: true }, { type: 'noticeFinished', ok: false }]],
+  ] as const)('%s は、eligible な enter が来てもキーボードのまま／確定のまま', (_label, events) => {
+    const before = run(events as readonly VisitorNameCaptureEvent[]);
+    const after = run([{ type: 'enter', eligible: true }], before.state);
+    expect(after.state).toEqual(before.state);
+    expect(after.effects).toEqual([]);
+  });
+
+  it('聞き取り中に eligible な enter が来ても、回数と候補を捨てない', () => {
+    const before = run([...asking, { type: 'heard', text: 'えーと', sttConfidence: STT_LOW }]);
+    const after = run([{ type: 'enter', eligible: true }], before.state);
+    expect(after.state).toEqual(before.state);
+  });
+
+  it.each([
+    ['通知の読み上げ中', [{ type: 'enter', eligible: true }]],
+    ['聞き取り中', [...asking]],
+    ['復唱中', [...asking, { type: 'heard', text: '受付 太郎です', sttConfidence: STT_OK }]],
+  ] as const)('%s に聞けない条件へ変わったら、表示を畳んでキーボードへ移る', (_label, events) => {
+    const before = run(events as readonly VisitorNameCaptureEvent[]);
+    const after = run([{ type: 'enter', eligible: false }], before.state);
+    expect(after.state).toEqual({ phase: 'keyboard', reason: 'ineligible' });
+    expect(after.effects).toEqual([{ kind: 'stopped' }]);
+  });
+
+  it('下界: 画面を出た後の enter は、また通知から始める', () => {
+    const before = run([...asking, { type: 'leave' }]);
+    expect(run([{ type: 'enter', eligible: true }], before.state).state).toEqual({ phase: 'notice' });
+  });
+});
