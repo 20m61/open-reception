@@ -40,6 +40,9 @@ import {
 // 用件の一覧（`RECEPTION_PURPOSES`）もここから消えた (#422 inc5-b 増分 3a)。
 // どの用件をどの順で出すかは契約が決め、画面はアイコンと説明文だけを足す。
 import {
+  VISITOR_NAME_MAX_LENGTH,
+  isVisitorNameWithinLimit,
+  normalizeVisitorNameInput,
   type ReceptionPurposeId,
   type VisitorInfo,
 } from '@/domain/reception/session';
@@ -281,6 +284,10 @@ type ReceptionScreenProps = {
   sttAdapterFactory: SttAdapterFactory | undefined;
   /** 取次段階 (#363)。Vonage 非同期通話ビューが段階表示する。旧形応答では空配列。 */
   callStages: CallStage[];
+  /**
+   * 来訪者情報の欄へキーボードで入力した (ADR 0011 §3-c、#1290)。音声の氏名の聞き取りと復唱を止める。
+   */
+  onVisitorTyping: () => void;
 };
 
 export function renderScreen({
@@ -318,6 +325,7 @@ export function renderScreen({
   videoAnswerTimeoutMs,
   feedback,
   sttAdapterFactory,
+  onVisitorTyping,
   callStages,
 }: ReceptionScreenProps) {
   const tr = makeT(locale);
@@ -365,6 +373,7 @@ export function renderScreen({
         <VisitorInfoView
           initial={data.visitor}
           onSubmit={(visitor) => dispatch({ type: 'SUBMIT_VISITOR_INFO', visitor })}
+          onTyping={onVisitorTyping}
           locale={locale}
           privacyNoticeOverride={privacyNoticeOverride}
           presenceCameraEnabled={presenceCameraEnabled}
@@ -1192,12 +1201,15 @@ export function TargetView({
 function VisitorInfoView({
   initial,
   onSubmit,
+  onTyping,
   locale,
   privacyNoticeOverride,
   presenceCameraEnabled,
 }: {
   initial?: VisitorInfo;
   onSubmit: (v: VisitorInfo) => void;
+  /** いずれかの欄へキーボードで入力した（音声の聞き取りを止める。ADR 0011 §3-c）。 */
+  onTyping: () => void;
   locale: Locale;
   privacyNoticeOverride: string | undefined;
   presenceCameraEnabled: boolean;
@@ -1206,7 +1218,15 @@ function VisitorInfoView({
   const [name, setName] = useState(initial?.name ?? '');
   const [company, setCompany] = useState(initial?.company ?? '');
   const [note, setNote] = useState(initial?.note ?? '');
-  const valid = name.trim().length > 0;
+  // 氏名は前後の空白・ゼロ幅文字を落としてから判定・送信する。上限は音声と同じ値（ADR 0011 §3-e）。
+  // HTML の maxLength は UTF-16 単位で数えるので使わない（`isVisitorNameWithinLimit` は code point）。
+  const normalizedName = normalizeVisitorNameInput(name);
+  const nameTooLong = !isVisitorNameWithinLimit(normalizedName);
+  const valid = normalizedName.length > 0 && !nameTooLong;
+  const typed = <T,>(set: (value: T) => void) => (value: T) => {
+    onTyping();
+    set(value);
+  };
 
   return (
     <>
@@ -1227,9 +1247,22 @@ function VisitorInfoView({
             className="input"
             data-testid="visitor-name"
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => typed(setName)(e.target.value)}
             autoComplete="off"
+            aria-invalid={nameTooLong || undefined}
+            aria-describedby={nameTooLong ? 'visitor-name-error' : undefined}
           />
+          {nameTooLong ? (
+            <p
+              id="visitor-name-error"
+              className="field__error"
+              data-testid="visitor-name-too-long"
+              role="alert"
+              lang={htmlLangFor(locale)}
+            >
+              {tr('reception.nameTooLong', { max: String(VISITOR_NAME_MAX_LENGTH) })}
+            </p>
+          ) : null}
         </div>
         <div className="field">
           <label className="field__label" htmlFor="visitor-company" lang={htmlLangFor(locale)}>
@@ -1240,7 +1273,7 @@ function VisitorInfoView({
             className="input"
             data-testid="visitor-company"
             value={company}
-            onChange={(e) => setCompany(e.target.value)}
+            onChange={(e) => typed(setCompany)(e.target.value)}
             autoComplete="off"
           />
         </div>
@@ -1253,7 +1286,7 @@ function VisitorInfoView({
             className="input"
             data-testid="visitor-note"
             value={note}
-            onChange={(e) => setNote(e.target.value)}
+            onChange={(e) => typed(setNote)(e.target.value)}
             autoComplete="off"
           />
         </div>
@@ -1267,7 +1300,7 @@ function VisitorInfoView({
           disabled={!valid}
           onClick={() =>
             onSubmit({
-              name: name.trim(),
+              name: normalizedName,
               company: company.trim() || undefined,
               note: note.trim() || undefined,
             })

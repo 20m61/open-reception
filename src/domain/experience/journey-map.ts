@@ -94,8 +94,9 @@ export const VOICE_MODE_TO_EXPERIENCE: Record<VoiceKioskMode, AnyExperienceState
   // **発信直前の `confirming` ではない**（ADR 0007）。readback が確認するのは「聞き取った内容」で、
   // README の UX pattern「Recognition confirmation」に当たる＝ `recognizing` の内側の 1 局面。
   // 音声で相手を決めても必ず inputVisitorInfo → confirming を通るため、発信前の確認ゲートは
-  // 受付状態機械に 1 つしかない。**保証の実体は `VoiceSessionHooks` が `onResolved` しか
-  // 公開していないこと**（`lib/voice-session/exposure-guard.test.ts` が固定）。
+  // 受付状態機械に 1 つしかない。**保証の実体は `VoiceSessionHooks` が `onResolved` と
+  // `onVisitorNameConfirmed`（ADR 0011）しか公開せず、どちらも `CONFIRM` を起こさないこと**
+  // （`lib/voice-session/exposure-guard.test.ts` がハンドラごとに固定）。氏名の復唱も同じ `recognizing`。
   // `REQUIRES_CONFIRMATION_ACTIONS` はチャット経路と宣言値にしか使われておらず、音声は止めない。
   readback: 'recognizing',
   // 読み上げ中・ダッキング中は体験状態を変えない（同じ状態の中の演出）。
@@ -106,6 +107,9 @@ export const VOICE_MODE_TO_EXPERIENCE: Record<VoiceKioskMode, AnyExperienceState
   // **同じ体験状態**へ写す —— 来訪者から見れば「その人には繋がらない」という同じ事実で、
   // 経路（音声で名指し / 呼び出して応答が無い）が違うだけである。
   unavailable: 'person_unavailable',
+  // 氏名の言い直しが尽きてキーボードへ案内する局面 (ADR 0011 §3-c、#1290)。音声が聞き取れず
+  // 画面へ移る、という `fallback` と同じ体験状態。
+  keyboardGuide: 'speech_unclear',
 };
 
 /**

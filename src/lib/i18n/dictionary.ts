@@ -78,6 +78,14 @@ export type MessageKey =
   // 受付フロー画面の見出し・目的・主要ボタン（#103 increment 3）
   | 'reception.targetPrompt'
   | 'reception.visitorInfoPrompt'
+  | 'voice.visitorName.ask'
+  | 'voice.visitorName.askAgain'
+  | 'voice.visitorName.keyboard'
+  | 'voice.readback.confirmVisitorName'
+  | 'privacy.voicePrefix'
+  | 'privacy.voiceSummary'
+  | 'reception.nameTooLong'
+  | 'customFlow.voiceNameFillRemaining'
   | 'reception.purpose.meeting'
   | 'reception.purpose.delivery'
   | 'reception.purpose.interview'
@@ -433,6 +441,14 @@ const ja: DefaultDictionary = {
   'kiosk.action.more.hide': '閉じる',
   'reception.targetPrompt': '担当者・部署をお選びください',
   'reception.visitorInfoPrompt': '来訪者情報を入力してください',
+  'voice.visitorName.ask': 'お名前をお話しください',
+  'voice.visitorName.askAgain': 'もう一度、お名前をお話しください',
+  'voice.visitorName.keyboard': 'お名前は画面から入力してください。お困りのときは「お困りですか？」を押してください',
+  'voice.readback.confirmVisitorName': '{name}様でよろしいですか？',
+  'privacy.voicePrefix': '受付のため、お名前をお伺いします。声に出したくない場合は、画面から入力できます。記録の扱いは画面に表示しています。',
+  'privacy.voiceSummary': 'お名前は担当者への取り次ぎにのみ使用し、記録には保存しません。',
+  'reception.nameTooLong': 'お名前は{max}文字以内で入力してください',
+  'customFlow.voiceNameFillRemaining': 'お名前を入れました。残りの項目を入力してください',
   'reception.purpose.meeting': '面会',
   'reception.purpose.delivery': '納品',
   'reception.purpose.interview': '打ち合わせ',
@@ -765,6 +781,14 @@ const en: LocaleDictionary = {
   'kiosk.action.more.hide': 'Close',
   'reception.targetPrompt': 'Choose a person or department',
   'reception.visitorInfoPrompt': 'Please enter your details',
+  'voice.visitorName.ask': 'Please say your name',
+  'voice.visitorName.askAgain': 'Please say your name again',
+  'voice.visitorName.keyboard': 'Please enter your name on the screen. If you need help, tap "Need help?"',
+  'voice.readback.confirmVisitorName': 'Is your name {name}?',
+  'privacy.voicePrefix': 'We will ask for your name to check you in. If you prefer not to say it aloud, you can enter it on the screen. How we handle it is shown on the screen.',
+  'privacy.voiceSummary': 'Your name is used only to notify staff and is not saved to any record.',
+  'reception.nameTooLong': 'Please enter your name in {max} characters or fewer',
+  'customFlow.voiceNameFillRemaining': 'Your name has been entered. Please fill in the remaining items',
   'reception.purpose.meeting': 'Visit',
   'reception.purpose.delivery': 'Delivery',
   'reception.purpose.interview': 'Meeting',
@@ -1092,6 +1116,14 @@ const ko: LocaleDictionary = {
   'kiosk.action.more.hide': '닫기',
   'reception.targetPrompt': '담당자·부서를 선택해 주세요',
   'reception.visitorInfoPrompt': '방문자 정보를 입력해 주세요',
+  'voice.visitorName.ask': '성함을 말씀해 주세요',
+  'voice.visitorName.askAgain': '성함을 다시 한번 말씀해 주세요',
+  'voice.visitorName.keyboard': '성함은 화면에서 입력해 주세요. 도움이 필요하시면 "도움이 필요하신가요?"를 눌러 주세요',
+  'voice.readback.confirmVisitorName': '{name} 님이 맞으십니까?',
+  'privacy.voicePrefix': '접수를 위해 성함을 여쭙겠습니다. 소리 내어 말씀하기 어려우시면 화면에서 입력하실 수 있습니다. 정보 처리 방법은 화면에 표시되어 있습니다.',
+  'privacy.voiceSummary': '성함은 담당자 호출 목적으로만 사용되며 기록에 저장되지 않습니다.',
+  'reception.nameTooLong': '성함은 {max}자 이내로 입력해 주세요',
+  'customFlow.voiceNameFillRemaining': '성함을 입력했습니다. 나머지 항목을 입력해 주세요',
   'reception.purpose.meeting': '면회',
   'reception.purpose.delivery': '납품',
   'reception.purpose.interview': '미팅',
@@ -1414,6 +1446,14 @@ const zh: LocaleDictionary = {
   'kiosk.action.more.hide': '关闭',
   'reception.targetPrompt': '请选择负责人或部门',
   'reception.visitorInfoPrompt': '请输入来访者信息',
+  'voice.visitorName.ask': '请说出您的姓名',
+  'voice.visitorName.askAgain': '请再说一次您的姓名',
+  'voice.visitorName.keyboard': '请在屏幕上输入您的姓名。如需帮助，请点击“需要帮助吗？”',
+  'voice.readback.confirmVisitorName': '请问您是{name}吗？',
+  'privacy.voicePrefix': '为办理登记，我们需要询问您的姓名。如不便说出，也可以在屏幕上输入。信息的处理方式显示在屏幕上。',
+  'privacy.voiceSummary': '您的姓名仅用于通知接待人员，不会保存到记录中。',
+  'reception.nameTooLong': '姓名请在{max}个字符以内',
+  'customFlow.voiceNameFillRemaining': '已填入您的姓名。请填写其余项目',
   'reception.purpose.meeting': '会面',
   'reception.purpose.delivery': '送货',
   'reception.purpose.interview': '洽谈',
@@ -1742,6 +1782,14 @@ const jaSimple: LocaleDictionary = {
   'reception.listening': '聞いて います…',
   'reception.voiceHint': 'タップして 検索欄に 入れます。ないようを 見て えらんで ください',
   'reception.visitorInfoPrompt': 'お名前などを 入れて ください',
+  'voice.visitorName.ask': 'お名前を 言って ください',
+  'voice.visitorName.askAgain': 'もう一度 お名前を 言って ください',
+  'voice.visitorName.keyboard': 'お名前は 画面で 入れて ください。こまったときは 「お困りですか？」を おして ください',
+  'voice.readback.confirmVisitorName': '{name}さんで いいですか？',
+  'privacy.voicePrefix': '受付のために お名前を ききます。声に 出したくない ときは 画面で 入れられます。お名前の あつかいは 画面に 書いて あります。',
+  'privacy.voiceSummary': 'お名前は 係の人に 知らせる ためだけに つかい、記録には のこしません。',
+  'reception.nameTooLong': 'お名前は {max}文字 までで 入れて ください',
+  'customFlow.voiceNameFillRemaining': 'お名前を 入れました。のこりも 入れて ください',
   'reception.fieldPurpose': 'ようけん',
   'reception.fieldTarget': '会う 人',
   'reception.fieldName': 'お名前',

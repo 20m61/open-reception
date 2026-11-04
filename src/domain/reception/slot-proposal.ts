@@ -1,6 +1,10 @@
 import { isVisitorNameWithinLimit } from './session';
+import type { ReceptionState } from './state';
 import {
+  isConversationSlotOpen,
+  mergeConversationDraft,
   normalizeConversationDraft,
+  replaceConversationSlot,
   type ConversationDraft,
   type ConversationSlot,
   type ConversationTarget,
@@ -44,6 +48,23 @@ export type ReceptionUtteranceExtractionRequest = {
 export interface ReceptionUtteranceExtractor {
   extract(request: ReceptionUtteranceExtractionRequest): Promise<ReceptionSlotProposal>;
 }
+
+/**
+ * 不在の人を名指しされた (#1290)。`target` が無いことと区別するための結果。
+ * `response` は kiosk の音声経路（#803 `bridgeCommittedTurn`）と同じ判断:
+ * - `announce`: 高信頼ではっきり名指しされた。不在を告げる。
+ * - `readback`: 確信が無い（STT・抽出器の確信度、同じ姓の別人）。断定せず復唱して確かめる。
+ * どちらでも選択へは進めない（`target` は作らない）。`target` は告げる・復唱するための表示用。
+ */
+export type UnavailableTargetMention = {
+  target: ConversationTarget;
+  response: 'announce' | 'readback';
+};
+
+/** `resolveReceptionSlotProposal` の結果。draft へ足す slot と、不在の人の名指し。 */
+export type ReceptionSlotProposalResolution = Pick<ConversationDraft, 'target' | 'visitorName'> & {
+  unavailableTarget?: UnavailableTargetMention;
+};
 
 export type SlotProposalResolutionPolicy = {
   /** extractor confidence を provisional `high` とみなす閾値。 */
@@ -152,10 +173,10 @@ function resolveTargetProposal(
   sttConfidence: number,
   policy: SlotProposalResolutionPolicy,
   thresholds: EntityResolutionThresholds,
-): ConversationDraft['target'] {
-  if (!proposal) return undefined;
+): Pick<ReceptionSlotProposalResolution, 'target' | 'unavailableTarget'> {
+  if (!proposal) return {};
   const query = proposal.value.trim();
-  if (query === '') return undefined;
+  if (query === '') return {};
 
   const callable: EntityDirectory = {
     staff: directory.staff.filter((staff) => staff.available),
@@ -174,21 +195,53 @@ function resolveTargetProposal(
     t: 0,
   });
 
-  // 一致なし、または不在の人を名指しされた（在席の別人は選ばない）。
-  // 不在の名指しを区別して返す型は ConversationDraft に無いので、ここでは slot を作らない。
-  if (bridged.resolved === null) return undefined;
+  // 一致なし、または不在の人を名指しされた（在席の別人は選ばない）。どちらも slot は作らない。
+  // 不在の名指しは `unavailableTarget` で区別して返す（無言で聞き直さないため。#1290）。
+  if (bridged.resolved === null) {
+    const mention = unavailableMention(bridged.event, unavailable, directory, proposal, policy);
+    return mention ? { unavailableTarget: mention } : {};
+  }
 
   const top1 = candidateToTarget(bridged.resolved, directory);
-  if (top1 === null) return undefined;
+  if (top1 === null) return {};
   if (bridged.event.type === 'heardAccepted' && isProposalHigh(proposal, policy)) {
-    return resolvedVoice(top1);
+    return { target: resolvedVoice(top1) };
   }
 
   // 自動確定しない。在席の候補だけ（bridge の top1 を含む）を、来訪者が選ぶ修復の対象にする。
   const candidates = resolveEntities(callable, query)
     .top3.map((candidate) => candidateToTarget(candidate, directory))
     .filter((value): value is ConversationTarget => value !== null);
-  return ambiguousVoice(candidates);
+  return { target: ambiguousVoice(candidates) };
+}
+
+/**
+ * bridge が「不在の人を名指しされた」と判断したときの結果 (#1290)。告げるのは bridge が断定し
+ * （`heardUnavailable`）、かつ抽出器の確信度も下限以上のときだけ。それ以外は復唱する。
+ */
+function unavailableMention(
+  event: ReturnType<typeof bridgeCommittedTurn>['event'],
+  unavailable: EntityDirectory,
+  directory: EntityDirectory,
+  proposal: ProposedValue<string>,
+  policy: SlotProposalResolutionPolicy,
+): UnavailableTargetMention | undefined {
+  const named =
+    event.type === 'heardUnavailable'
+      ? event.displayName
+      : event.type === 'heardNeedsConfirmation' && event.unavailable === true
+        ? event.displayName
+        : undefined;
+  if (named === undefined) return undefined;
+  const staff = unavailable.staff.find((s) => s.displayName === named);
+  if (staff === undefined) return undefined;
+  const target = candidateToTarget(
+    { kind: 'staff', id: staff.id, displayName: staff.displayName, entityConfidence: 1 },
+    directory,
+  );
+  if (target === null) return undefined;
+  const announce = event.type === 'heardUnavailable' && isProposalHigh(proposal, policy);
+  return { target, response: announce ? 'announce' : 'readback' };
 }
 
 /**
@@ -206,10 +259,10 @@ function resolveTargetProposal(
 export function resolveReceptionSlotProposal(
   proposal: ReceptionSlotProposal,
   options: ResolveSlotProposalOptions,
-): Pick<ConversationDraft, 'target' | 'visitorName'> {
+): ReceptionSlotProposalResolution {
   const policy = options.policy ?? DEFAULT_SLOT_PROPOSAL_RESOLUTION_POLICY;
   const thresholds = options.entityThresholds ?? DEFAULT_ENTITY_RESOLUTION_THRESHOLDS;
-  const target = resolveTargetProposal(
+  const { target, unavailableTarget } = resolveTargetProposal(
     proposal.targetQuery,
     options.directory,
     options.sttConfidence,
@@ -226,5 +279,43 @@ export function resolveReceptionSlotProposal(
   return {
     ...(target ? { target } : {}),
     ...(visitorName ? { visitorName } : {}),
+    ...(unavailableTarget ? { unavailableTarget } : {}),
   };
+}
+
+/**
+ * 1 発話の提案を draft へ足す (#1290、owner の判断 A)。
+ *
+ * - 使える値（`target` / `visitorName`）は `mergeConversationDraft` で足す（画面で確定した値は
+ *   音声で上書きしない・通り過ぎた画面の slot は変えない、は merge の規則のまま）。
+ * - その slot に触れたのに使える値にならなかった（不在の人の名指し・一致なし・下限未満・
+ *   長すぎる氏名）ときは、slot が**まだ開いている**ときだけ `replaceConversationSlot` で消す。
+ *   merge は「言及なし」を前の値の維持と読むので、消さないと前の相手・氏名がまた復唱される。
+ *
+ * 🔴 本番の KioskFlow の相手の経路は、まだ `bridgeCommittedTurn` を直接使っていてここを通らない
+ * （本番の配線は #1292）。氏名の聞き取りは `visitor-name-capture.ts` が同じ規則で消している。
+ */
+export function mergeSlotProposalIntoDraft(
+  draft: ConversationDraft,
+  proposal: ReceptionSlotProposal,
+  options: ResolveSlotProposalOptions,
+  state: ReceptionState,
+): ConversationDraft {
+  const resolved = resolveReceptionSlotProposal(proposal, options);
+  let next = mergeConversationDraft(
+    draft,
+    {
+      ...(resolved.target ? { target: resolved.target } : {}),
+      ...(resolved.visitorName ? { visitorName: resolved.visitorName } : {}),
+    },
+    state,
+  );
+  const mentioned = (value: ProposedValue<string> | undefined) => value !== undefined && value.value.trim() !== '';
+  if (mentioned(proposal.targetQuery) && !resolved.target && isConversationSlotOpen('target', state)) {
+    next = replaceConversationSlot(next, 'target', undefined);
+  }
+  if (mentioned(proposal.visitorName) && !resolved.visitorName && isConversationSlotOpen('visitorName', state)) {
+    next = replaceConversationSlot(next, 'visitorName', undefined);
+  }
+  return next;
 }

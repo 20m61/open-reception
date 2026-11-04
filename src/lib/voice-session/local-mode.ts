@@ -80,6 +80,38 @@ export function shouldUseLocalVoiceOrchestrator(search: string): boolean {
 const LOCAL_SYNTHETIC_STT_CONFIDENCE = 0.4;
 
 /**
+ * 合成の名乗りの STT confidence (#1290)。氏名は確信度に関係なく必ず復唱する（ADR 0011 §3-b）ので、
+ * 相手の合成発話のように下限未満へ置いて復唱を強いる必要は無い。下限（0.6）以上に置かないと、
+ * 名乗りが毎回「聞き取れなかった」になって氏名の経路を一度も通せない。
+ */
+const LOCAL_SYNTHETIC_VISITOR_NAME_STT_CONFIDENCE = 0.9;
+
+/**
+ * 合成で喋らせる内容 (#1290)。**検証用。** `?voiceOrchestrator=1` を付けた端末でだけ効き、
+ * e2e と画面の撮影が合成データで来訪者の発話を再現するために使う。
+ *
+ * - `visitorName`: 氏名を尋ねられるたびに名乗る文（`?voiceVisitorName=`）。無ければ名乗らない
+ *   （聞き取りを待ったまま。待ち時間が過ぎれば言い直しになる）。
+ * - `target`: 相手選択で喋る文（`?voiceTarget=`）。無ければ在席の先頭の担当者名（従来どおり）。
+ *   不在の担当者を名指しする場面の再現に使う。
+ */
+export type LocalVoiceScript = { visitorName?: string; target?: string };
+
+/** 合成の 1 発話の上限。URL から来るので、長さで受付画面を壊させない。 */
+const LOCAL_SCRIPT_MAX_LENGTH = 200;
+
+export function localVoiceScriptFromSearch(search: string): LocalVoiceScript {
+  const params = new URLSearchParams(search);
+  const read = (key: string): string | undefined => {
+    const value = params.get(key)?.trim();
+    return value ? value.slice(0, LOCAL_SCRIPT_MAX_LENGTH) : undefined;
+  };
+  const visitorName = read('voiceVisitorName');
+  const target = read('voiceTarget');
+  return { ...(visitorName ? { visitorName } : {}), ...(target ? { target } : {}) };
+}
+
+/**
  * mock provider 駆動の `VoiceSessionFactory` を作る。
  *
  * 発話候補は `directory` そのものから導く。**別引数で受け取らない** ── 受け取ると
@@ -125,9 +157,23 @@ export function createLocalVoiceSessionFactory(
    * ので、合成発話（`spoken`）はこちらからは選ばない。
    */
   unavailableDirectory?: EntityDirectory,
+  /** 合成で喋らせる内容（検証用。`localVoiceScriptFromSearch`）。 */
+  script: LocalVoiceScript = {},
 ): VoiceSessionFactory {
-  const spoken = directory.staff[0]?.displayName ?? '';
-  return (emit, hooks) => {
+  const spoken = script.target ?? directory.staff[0]?.displayName ?? '';
+  return (outerEmit, hooks) => {
+    /*
+     * 氏名を尋ねられたら（初回・言い直し）、合成の名乗りを流す (#1290)。結線が UI イベントを
+     * emit している最中に次のターンを入れると、結線の状態機械へ再入するので、次のタスクへ回す。
+     */
+    const emit: typeof outerEmit = (event) => {
+      outerEmit(event);
+      if (event.type !== 'visitorNameAsk' || script.visitorName === undefined) return;
+      const name = script.visitorName;
+      setTimeout(() => {
+        if (orchestrator !== null) driveWithSyntheticAudio(orchestrator, name);
+      }, 0);
+    };
     // `construct` はこの factory 呼び出しの中で同期的に 1 回呼ばれる。その回の
     // orchestrator を掴んで、相手選択へ到達したときだけ合成発話を流す。
     let orchestrator: VoiceSessionOrchestrator | null = null;
@@ -168,7 +214,9 @@ export function createLocalVoiceSessionFactory(
       {
         directory,
         ...(unavailableDirectory ? { unavailableDirectory } : {}),
-        sttConfidence: LOCAL_SYNTHETIC_STT_CONFIDENCE,
+        // 相手の合成発話は下限未満（復唱を強いる）。それ以外（合成の名乗り・答え）は下限以上。
+        sttConfidence: (text) =>
+          text === spoken ? LOCAL_SYNTHETIC_STT_CONFIDENCE : LOCAL_SYNTHETIC_VISITOR_NAME_STT_CONFIDENCE,
         now: () => Date.now(),
       },
     )(emit, hooks);

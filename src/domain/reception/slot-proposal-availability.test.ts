@@ -250,3 +250,54 @@ describe('voice target: 同じ姓の担当者がいれば自動確定しない (
     expect(autoResolved).toBeGreaterThan(0);
   });
 });
+
+/**
+ * 不在の人を名指しされたことを、結果の型で区別する (#1290)。`target` が無いだけだと
+ * 「誰とも一致しなかった」と見分けられず、呼び出し側は無言で聞き直すしかない。
+ * kiosk の音声経路（#803 `bridgeCommittedTurn`）と同じく、はっきりしていれば告げ、
+ * 確信が無ければ復唱する。
+ */
+describe('voice target: 不在の人の名指しを結果で返す (#1290)', () => {
+  const directoryOf = (specs: readonly StaffSpec[]): EntityDirectory => ({ staff: specs.map(staff), departments });
+  const resolve = (specs: readonly StaffSpec[], query: string, opts: { stt?: number; extractor?: number } = {}) =>
+    resolveReceptionSlotProposal(
+      { targetQuery: { value: query, confidence: opts.extractor ?? 0.99 } },
+      { directory: directoryOf(specs), sttConfidence: opts.stt ?? 0.99 },
+    );
+  const away: StaffSpec = { id: 'staff-suzuki', displayName: '鈴木', kana: 'すずき', available: false };
+
+  it('高信頼ではっきり名指しされたら、告げる（announce）。target は作らない', () => {
+    const result = resolve([away], '鈴木');
+    expect(result.target).toBeUndefined();
+    expect(result.unavailableTarget).toEqual({
+      target: { type: 'staff', id: 'staff-suzuki', label: '鈴木', sublabel: '営業部' },
+      response: 'announce',
+    });
+  });
+
+  it('STT の確信度が低ければ、断定せず復唱する（readback）', () => {
+    expect(resolve([away], '鈴木', { stt: 0.3 }).unavailableTarget?.response).toBe('readback');
+  });
+
+  it('抽出器の確信度が下限未満でも、断定せず復唱する', () => {
+    expect(resolve([away], '鈴木', { extractor: 0.5 }).unavailableTarget?.response).toBe('readback');
+  });
+
+  it('同じ姓の在席者がいれば、不在の名指しにしない（在席の候補の修復に回す。#1090 MAJOR-1 と同じ）', () => {
+    const result = resolve([away, { id: 'staff-suzuki-2', displayName: '鈴木', kana: 'すずき' }], '鈴木');
+    expect(result.unavailableTarget).toBeUndefined();
+    expect(result.target?.kind).toBe('ambiguous');
+  });
+
+  it('誰とも一致しないときは、不在の名指しにしない（区別できる）', () => {
+    const result = resolve([away], '山田');
+    expect(result.target).toBeUndefined();
+    expect(result.unavailableTarget).toBeUndefined();
+  });
+
+  it('在席の人をはっきり名指ししたときは付かない（下界: 告げる対象は不在の人だけ）', () => {
+    const result = resolve([{ id: 'staff-yamada', displayName: '山田', kana: 'やまだ' }], '山田');
+    expect(result.target?.kind).toBe('resolved');
+    expect(result.unavailableTarget).toBeUndefined();
+  });
+});

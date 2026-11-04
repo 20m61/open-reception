@@ -177,11 +177,105 @@ describe('createOrchestratorVoiceSession (実 orchestrator を束ねる seam・f
     expect(fake.calls).toContain('close');
   });
 
-  it('notifyReceptionState (#364/#363/#361 第9wave) を実装しない — 実 orchestrator 経路は受付局面通知の影響を受けない（中立な no-op 契約）', () => {
+  it('受付局面の通知だけでは何も起きない（相手の解決・発話の開始へ影響しない）', () => {
+    // 以前は「notifyReceptionState を実装しない」で縛っていた。氏名の聞き取り (#1290) が画面の出入りを
+    // 知るために実装するようになったので、守りたかった性質（通知で発話や確定が起きない）を直接縛る。
+    const onResolved = vi.fn();
     const fake = fakeOrchestrator();
-    const { emit } = collector();
-    const controller = createOrchestratorVoiceSession(fake.construct, { directory })(emit);
-    expect(controller.notifyReceptionState).toBeUndefined();
+    const { emit, events } = collector();
+    const controller = createOrchestratorVoiceSession(fake.construct, { directory, sttConfidence: 0.95 })(emit, {
+      onResolved,
+    });
+    for (const state of ['idle', 'selectingPurpose', 'selectingTarget', 'inputVisitorInfo', 'confirming', 'idle'] as const) {
+      controller.notifyReceptionState?.(state);
+    }
+    expect(events).toEqual([]);
+    expect(onResolved).not.toHaveBeenCalled();
+    expect(fake.calls.filter((c) => c !== 'resetTurn')).toEqual([]);
+  });
+
+  describe('氏名の聞き取り (ADR 0011、#1290)', () => {
+    function onNameScreen(controller: ReturnType<ReturnType<typeof createOrchestratorVoiceSession>>) {
+      controller.notifyReceptionState?.('inputVisitorInfo');
+      controller.visitorName?.({ type: 'enter', eligible: true });
+      controller.visitorName?.({ type: 'noticeFinished', ok: true });
+    }
+
+    it('inputVisitorInfo の発話は相手の解決へ回らず、復唱 → 「はい」で onVisitorNameConfirmed だけを呼ぶ', () => {
+      const onResolved = vi.fn();
+      const onVisitorNameConfirmed = vi.fn();
+      const fake = fakeOrchestrator();
+      const { emit, events } = collector();
+      const controller = createOrchestratorVoiceSession(fake.construct, { directory, sttConfidence: 0.95 })(emit, {
+        onResolved,
+        onVisitorNameConfirmed,
+      });
+      onNameScreen(controller);
+      // 担当者名と同じ発話でも、この画面では氏名の候補として扱う（SELECT_TARGET を起こさない）。
+      fake.getCallbacks()!.onTurnCommitted!('佐藤です', 'silence');
+      expect(events.at(-1)).toEqual({ type: 'visitorNameReadback', name: '佐藤' });
+      fake.getCallbacks()!.onTurnCommitted!('はい', 'silence');
+      expect(onVisitorNameConfirmed).toHaveBeenCalledExactlyOnceWith('佐藤');
+      expect(onResolved).not.toHaveBeenCalled();
+      expect(events.some((e) => e.type === 'heardAccepted' || e.type === 'heardNeedsConfirmation')).toBe(false);
+      // 発話ごとにターンを区切る。
+      expect(fake.calls.filter((c) => c === 'resetTurn')).toHaveLength(2);
+    });
+
+    it('ボタンの「はい」も同じ入口（音声とタッチの等価）。復唱中でなければ相手の復唱の答えとして扱う', () => {
+      const onVisitorNameConfirmed = vi.fn();
+      const onResolved = vi.fn();
+      const fake = fakeOrchestrator();
+      const { emit } = collector();
+      const controller = createOrchestratorVoiceSession(fake.construct, { directory, sttConfidence: 0.95 })(emit, {
+        onResolved,
+        onVisitorNameConfirmed,
+      });
+      onNameScreen(controller);
+      fake.getCallbacks()!.onTurnCommitted!('受付です', 'silence');
+      controller.confirmYes();
+      expect(onVisitorNameConfirmed).toHaveBeenCalledExactlyOnceWith('受付');
+      expect(onResolved).not.toHaveBeenCalled();
+    });
+
+    it('構築時の deps.onResolved は氏名の確定に使わない（hooks の onVisitorNameConfirmed だけ）', () => {
+      const onResolved = vi.fn();
+      const fake = fakeOrchestrator();
+      const { emit } = collector();
+      const controller = createOrchestratorVoiceSession(fake.construct, {
+        directory,
+        sttConfidence: 0.95,
+        onResolved,
+      })(emit);
+      onNameScreen(controller);
+      fake.getCallbacks()!.onTurnCommitted!('受付です', 'silence');
+      fake.getCallbacks()!.onTurnCommitted!('はい', 'silence');
+      expect(onResolved).not.toHaveBeenCalled();
+    });
+
+    it('画面を出たら途中のターンを捨てる', () => {
+      const fake = fakeOrchestrator();
+      const { emit } = collector();
+      const controller = createOrchestratorVoiceSession(fake.construct, { directory })(emit);
+      onNameScreen(controller);
+      fake.calls.length = 0;
+      controller.notifyReceptionState?.('idle');
+      expect(fake.calls).toEqual(['resetTurn']);
+    });
+
+    it('synthetic 経路も同じ（demo-studio 再現）', () => {
+      const onVisitorNameConfirmed = vi.fn();
+      const { emit, events } = collector();
+      const driver = createSyntheticVoiceSession({ directory, sttConfidence: 0.95 });
+      const controller = driver.factory(emit, { onVisitorNameConfirmed });
+      controller.notifyReceptionState?.('inputVisitorInfo');
+      controller.visitorName?.({ type: 'enter', eligible: true });
+      controller.visitorName?.({ type: 'noticeFinished', ok: true });
+      driver.hearTurn('受付 花子です');
+      expect(events.at(-1)).toEqual({ type: 'visitorNameReadback', name: '受付 花子' });
+      controller.confirmYes();
+      expect(onVisitorNameConfirmed).toHaveBeenCalledExactlyOnceWith('受付 花子');
+    });
   });
 
   it('onEvalEvent の stt.partial(stable) を interim(hearPartial) へ写像する（#361/#364 第11wave 実経路結線）', () => {

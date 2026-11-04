@@ -71,3 +71,22 @@ export function resolvePrivacyNoticeContent(
     presenceCameraNote: opts.presenceCameraEnabled ? tr('privacy.presenceCameraNote') : undefined,
   };
 }
+
+/**
+ * 氏名を声で尋ねる前に読み上げる通知 (ADR 0011 §2、#1290)。
+ *
+ * 「固定の前置き（氏名を伺うこと・声に出したくなければ画面から入力できること）＋要約」。
+ * 要約は、テナントの上書き（`overrideSummary`。ja のみ、画面の要約と同じ規則）があればそれを、
+ * 無ければ短い版を読む。前置きは上書きの有無に関係なく必ず読む（上書きの文面に、画面から
+ * 入力できる旨が入っているとは限らないため）。画面の文面の正本は `resolvePrivacyNoticeContent`。
+ */
+export function resolvePrivacyNoticeSpeech(
+  locale: Locale,
+  opts: { overrideSummary?: string },
+): string {
+  const tr = makeT(locale);
+  const trimmedOverride = opts.overrideSummary?.trim();
+  const summary =
+    locale === DEFAULT_LOCALE && trimmedOverride ? trimmedOverride : tr('privacy.voiceSummary');
+  return `${tr('privacy.voicePrefix')}${summary}`;
+}

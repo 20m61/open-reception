@@ -30,6 +30,19 @@ export function isVisitorNameWithinLimit(name: string): boolean {
   return Array.from(name.trim().normalize('NFC')).length <= VISITOR_NAME_MAX_LENGTH;
 }
 
+const EDGE_INVISIBLE = /^[\s\p{Default_Ignorable_Code_Point}]+|[\s\p{Default_Ignorable_Code_Point}]+$/gu;
+
+/**
+ * 入力欄・保存値へ入る前の氏名の正規化 (#1290)。キーボードと音声の両方に同じものを通す。
+ *
+ * 前後の空白と、表示されない文字（U+200B ゼロ幅スペースなどの Default_Ignorable_Code_Point）を
+ * 落とす。前後に残すと、画面にも読み上げにも出ないまま保存値と上限の数に入る。
+ * 中の文字は変えない（名前の一部を勝手に書き換えない）。
+ */
+export function normalizeVisitorNameInput(name: string): string {
+  return name.replace(EDGE_INVISIBLE, '');
+}
+
 export type CallOutcome = 'connected' | 'timeout' | 'failed' | 'cancelled';
 
 export type ReceptionSession = {

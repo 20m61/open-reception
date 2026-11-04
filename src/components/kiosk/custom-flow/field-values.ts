@@ -5,6 +5,7 @@
  * 提供する。UI（React）から切り離してユニットテストできるようにする。
  */
 import type { FlowField } from '@/domain/reception/custom-flow';
+import { isVisitorNameWithinLimit, normalizeVisitorNameInput } from '@/domain/reception/session';
 import type { FlowFieldValues } from './types';
 
 /** フィールド定義から初期入力値を作る（text/select は空文字、checkbox は false）。 */
@@ -37,4 +38,38 @@ export function unsatisfiedRequiredKeys(
   values: FlowFieldValues,
 ): string[] {
   return fields.filter((f) => !isFieldSatisfied(f, values[f.key])).map((f) => f.key);
+}
+
+/** 氏名として扱う欄の key（`flowValuesToVisitorInfo` が `VisitorInfo.name` へ写す欄）。 */
+export const VISITOR_NAME_FIELD_KEY = 'name';
+
+/**
+ * 氏名の欄が上限（`VISITOR_NAME_MAX_LENGTH`）を超えているか (#1290)。音声とキーボードに
+ * 同じ上限を課す（ADR 0011 §3-e）。数え方は `isVisitorNameWithinLimit`（code point、前後の
+ * 空白・ゼロ幅文字を除く）。HTML の `maxLength` は UTF-16 単位なので使わない。
+ */
+export function isNameFieldTooLong(fields: readonly FlowField[], values: FlowFieldValues): boolean {
+  if (!fields.some((f) => f.key === VISITOR_NAME_FIELD_KEY)) return false;
+  const value = values[VISITOR_NAME_FIELD_KEY];
+  return typeof value === 'string' && !isVisitorNameWithinLimit(normalizeVisitorNameInput(value));
+}
+
+/** 送信できるか: 必須がすべて埋まり、氏名が上限以内。 */
+export function canSubmitFlowValues(fields: readonly FlowField[], values: FlowFieldValues): boolean {
+  return areRequiredFieldsSatisfied(fields, values) && !isNameFieldTooLong(fields, values);
+}
+
+/**
+ * 音声で確定した氏名を欄へ入れる（ADR 0011 §5、#1290）。`name` 以外の欄は変えない。
+ * `complete` は、入れた後に送信できる（必須がすべて埋まった）か。埋まっていなければ
+ * 呼び出し側は送信せず、残りの欄の入力を案内する。
+ */
+export function applyVoiceName(
+  fields: readonly FlowField[],
+  values: FlowFieldValues,
+  name: string,
+): { values: FlowFieldValues; complete: boolean } {
+  if (!fields.some((f) => f.key === VISITOR_NAME_FIELD_KEY)) return { values, complete: false };
+  const next = { ...values, [VISITOR_NAME_FIELD_KEY]: normalizeVisitorNameInput(name) };
+  return { values: next, complete: canSubmitFlowValues(fields, next) };
 }

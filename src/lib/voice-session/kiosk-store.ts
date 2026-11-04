@@ -17,6 +17,7 @@ import {
 } from '@/domain/voice-session/kiosk-view';
 import type { ReceptionState } from '@/domain/reception/state';
 import type { VoiceSessionController, VoiceSessionFactory, VoiceSessionHooks } from './kiosk-binding';
+import type { VisitorNameCaptureInput } from './visitor-name-router';
 
 export class VoiceKioskStore {
   private state: VoiceKioskState = initialVoiceKioskState();
@@ -64,6 +65,9 @@ export class VoiceKioskStore {
   confirmNo = (): void => {
     this.controller.confirmNo();
   };
+
+  /** 氏名の聞き取りへの入力（ADR 0011、#1290）。戻り値は、いま通知を読み上げるべきか。controller が未実装なら false。 */
+  visitorName = (input: VisitorNameCaptureInput): boolean => this.controller.visitorName?.(input) ?? false;
 
   /**
    * 現在の受付局面（`ReceptionState`）を controller へ中継する (issue #364/#363/#361 第9wave)。
