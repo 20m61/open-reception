@@ -194,6 +194,8 @@ describe('不在辞書の転送（local factory）(#803)', () => {
    * 端末が**選べない相手を自分から名乗り出す**ことになる。
    */
   it('合成発話は在席側の辞書から選ぶ', () => {
-    expect(LOCAL).toContain('const spoken = directory.staff[0]?.displayName');
+    // 既定（指定なし）は在席側の先頭。検証用に `?voiceTarget=` を明示したとき（#1290。不在の名指しの
+    // 再現）だけ、その文を喋る ―― 端末が**自分から**不在の相手を名乗り出すことはない。
+    expect(LOCAL).toContain("const spoken = script.target ?? directory.staff[0]?.displayName ?? '';");
   });
 });
