@@ -48,9 +48,6 @@ export function extractVisitorName(transcript: string): ProposedValue<string> | 
   return { value, confidence: introduced ? CONFIDENCE_SELF_INTRODUCED : CONFIDENCE_BARE };
 }
 
-/** 問い返しで終わる答え（「〜ですか」「〜かな」）。 */
-const QUESTION_END = /(?:か|かな|かね)$/u;
-
 export type ReadbackAnswer = 'yes' | 'no' | 'unknown';
 
 /**
@@ -58,19 +55,29 @@ export type ReadbackAnswer = 'yes' | 'no' | 'unknown';
  * 🔴 「ません」だけでは否定にしない —— 「問題ありません」「構いません」「すみません」は肯定や前置き (#1296)。
  */
 const NEGATIVE = /(?:いいえ|いや|違|ちが|(?:では|じゃ|でも)(?:ない|ありません)|(?:合って|あって)い?(?:ない|ません)|^no\b)/iu;
-const AFFIRMATIVE = /^(?:はい|ええ|そうです|そう|お願いします|おねがいします|合って|あって|大丈夫|問題(?:ありません|ない)|構いません|かまいません|yes\b)/iu;
+
+/**
+ * 🔴 **肯定は許可の列挙で決める（数え上げない）** (#1296)。答え全体が、決まった肯定の句と前置きだけで
+ * できているときに限って「はい」とする。迷い・問い返し（「そうかなあ」「そうですかー」「そうだっけ」）や
+ * 過去の否定（「合ってなかった」）を禁止として数え上げると、語尾を 1 文字伸ばすだけで抜け、違う氏名を
+ * 確定する向きに倒れる。列挙に無い答えは「どちらでもない」で退ける（言い直しを 1 回使うだけの安全な向き）。
+ */
+const YES_PHRASE =
+  'はい|ええ|うん|そう(?:です|ですね|ですよ|ですよね)?|その(?:とおり|通り)(?:です)?|確かに|(?:合って|あって)い?ます|大丈夫(?:です)?|問題(?:ありません|ない(?:です)?)|構いません|かまいません|お願いします|おねがいします|正しいです|yes|ok|okay';
+/** 肯定の前後に添えるだけの語。これだけでは肯定にならない。 */
+const FILLER_PHRASE = 'すみません|すいません|申し訳ありません|えっと|えーと|あの';
+const SEPARATOR = '[\\s。、．，.,!！?？]*';
+const ONLY_AFFIRMATIVE = new RegExp(`^(?:(?:${YES_PHRASE}|${FILLER_PHRASE})${SEPARATOR})+$`, 'iu');
+const HAS_AFFIRMATIVE = new RegExp(`(?:${YES_PHRASE})`, 'iu');
 
 /**
  * 復唱への答えを「はい／いいえ／どちらでもない」に分ける。否定の語が 1 つでも混ざれば
  * 「はい」とみなさない（「はい、違います」）。STT の確信度の下限は呼び出し側が先に見る（§3-b）。
  */
 export function classifyReadbackAnswer(text: string): ReadbackAnswer {
-  const raw = text.normalize('NFKC');
-  const normalized = raw.replace(EDGE_PUNCT, '');
+  const normalized = text.normalize('NFKC').replace(EDGE_PUNCT, '');
   if (normalized === '') return 'unknown';
   if (NEGATIVE.test(normalized)) return 'no';
-  // 問い返し・迷い（「そうですか？」「そうかな」）は肯定ではない。確定は、はっきりした肯定だけ。
-  if (/[?？]/u.test(raw) || QUESTION_END.test(normalized)) return 'unknown';
-  if (AFFIRMATIVE.test(normalized)) return 'yes';
+  if (ONLY_AFFIRMATIVE.test(normalized) && HAS_AFFIRMATIVE.test(normalized)) return 'yes';
   return 'unknown';
 }
