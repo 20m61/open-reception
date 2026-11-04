@@ -66,7 +66,7 @@ const YES_PHRASE =
   'はい|ええ|うん|そう(?:です|ですね|ですよ|ですよね)?|その(?:とおり|通り)(?:です)?|確かに|(?:合って|あって)い?ます|大丈夫(?:です)?|問題(?:ありません|ない(?:です)?)|構いません|かまいません|お願いします|おねがいします|正しいです|yes|ok|okay';
 /** 肯定の前後に添えるだけの語。これだけでは肯定にならない。 */
 const FILLER_PHRASE = 'すみません|すいません|申し訳ありません|えっと|えーと|あの';
-const SEPARATOR = '[\\s。、．，.,!！?？]*';
+const SEPARATOR = '[\\s。、．，.,!！]*';
 const ONLY_AFFIRMATIVE = new RegExp(`^(?:(?:${YES_PHRASE}|${FILLER_PHRASE})${SEPARATOR})+$`, 'iu');
 const HAS_AFFIRMATIVE = new RegExp(`(?:${YES_PHRASE})`, 'iu');
 
@@ -75,9 +75,13 @@ const HAS_AFFIRMATIVE = new RegExp(`(?:${YES_PHRASE})`, 'iu');
  * 「はい」とみなさない（「はい、違います」）。STT の確信度の下限は呼び出し側が先に見る（§3-b）。
  */
 export function classifyReadbackAnswer(text: string): ReadbackAnswer {
-  const normalized = text.normalize('NFKC').replace(EDGE_PUNCT, '');
+  const raw = text.normalize('NFKC');
+  const normalized = raw.replace(EDGE_PUNCT, '');
   if (normalized === '') return 'unknown';
   if (NEGATIVE.test(normalized)) return 'no';
+  // 「？」を含む答えは、どこにあっても肯定にしない。「合ってます？」「大丈夫？」は来訪者からの問い返しで、
+  // 「はい？」は聞き返し。STT の上がり調子かどうかは区別できないので、退ける向きに倒す (#1296)。
+  if (/[?？]/u.test(raw)) return 'unknown';
   if (ONLY_AFFIRMATIVE.test(normalized) && HAS_AFFIRMATIVE.test(normalized)) return 'yes';
   return 'unknown';
 }
