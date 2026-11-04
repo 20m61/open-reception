@@ -115,7 +115,8 @@ test.describe('音声で氏名を聞き取る (ADR 0011、#1290)', () => {
     await page.getByTestId('voice-confirm-yes').click();
     await expect(page.getByTestId('confirm-name')).toHaveText('受付 太郎');
     const before = (await spokenTexts(page)).length;
-    await page.getByTestId('escape-back').click();
+    // 確認画面の戻る操作はフッターの「修正する」（逃げ道バーの 戻る は確認画面では出さない。#240/#325）。
+    await page.getByTestId('confirm-back').click();
     await expect(page.getByTestId('visitor-name')).toHaveValue('受付 太郎');
     await page.waitForTimeout(500);
     expect((await spokenTexts(page)).slice(before).some((t) => t.includes('お名前をお伺いします'))).toBe(false);
